@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Run Test 48 Hours
+Exec=konsole --hold -e bash -c 'cd /home/radxa/rk3576-linux-tests && ./start-tests.sh --all --time 2880 --auto-report-open'
+Icon=utilities-system-monitor
+Terminal=false
+Categories=System;

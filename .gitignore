@@ -1,0 +1,5 @@
+# exclude test results 
+results/*
+
+# but keep the results folder
+!results/.gitkeep 
