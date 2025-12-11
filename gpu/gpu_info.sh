@@ -8,6 +8,10 @@ echo
 kernel_ver="$(uname -r)"
 echo "Kernel version : $kernel_ver"
 
+# Hostname
+hostname_val="$(hostname)"
+echo "Hostname       : $hostname_val"
+
 # Distro name
 if [ -f /etc/os-release ]; then
     . /etc/os-release
