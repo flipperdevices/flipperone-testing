@@ -40,7 +40,7 @@ if [ -d /sys/class/drm ]; then
     echo
 
     # For each card/render node, show bound driver
-    for node in /sys/class/drm/card* /sys/class/drm/renderD* 2>/dev/null; do
+    for node in /sys/class/drm/card* /sys/class/drm/renderD*; do
         [ -e "$node" ] || continue
         driver_path=""
         if [ -e "$node/device/driver" ]; then
