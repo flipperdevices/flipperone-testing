@@ -1,6 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+echo "=== System Information ==="
+echo
+
+# Kernel version
+kernel_ver="$(uname -r)"
+echo "Kernel version : $kernel_ver"
+
+# Distro name
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    echo "Distro         : ${PRETTY_NAME:-$NAME $VERSION_ID}"
+else
+    echo "Distro         : (no /etc/os-release found)"
+fi
+
+echo
 echo "=== GPU/Graphics Stack Diagnostic ==="
 echo
 
@@ -127,30 +143,28 @@ echo "GL renderer        : ${ogl_renderer:-unknown}"
 echo "Session type       : $session_type"
 echo
 
-# Simple logic for a human-readable summary
 summary="Unknown graphics configuration."
 
 if echo "${ogl_renderer,,}" | grep -q "llvmpipe"; then
     if [ -z "$gpu_module" ]; then
-        summary="No Mali GPU driver in use; system is using software rendering (llvmpipe) on CPU."
+        summary="No Mali GPU driver in use; system is using software rendering (llvmpipe)."
     else
-        summary="GPU module '$gpu_module' is loaded, but OpenGL is still using software rendering (llvmpipe)."
+        summary="GPU module '$gpu_module' is loaded, but OpenGL still uses software rendering (llvmpipe)."
     fi
 elif echo "${ogl_renderer,,}" | grep -q "mali"; then
     if [ "$gpu_module" = "panfrost" ]; then
-        summary="Using open-source panfrost driver with Mali GPU for hardware-accelerated rendering."
+        summary="Using open-source panfrost driver for hardware-accelerated Mali rendering."
     elif [ -n "$gpu_module" ]; then
-        summary="Using GPU module '$gpu_module' with Mali hardware for accelerated rendering."
+        summary="Using GPU module '$gpu_module' for Mali hardware-accelerated rendering."
     else
-        summary="OpenGL renderer reports Mali GPU, but no matching kernel module was detected."
+        summary="OpenGL shows Mali GPU, but no matching kernel module detected."
     fi
 elif echo "${ogl_renderer,,}" | grep -q "panfrost"; then
-    summary="Using open-source panfrost driver for hardware-accelerated rendering."
+    summary="Using open-source panfrost GPU driver with hardware acceleration."
 fi
 
-# Add note about session type
 if [ "$session_type" = "x11" ]; then
-    summary="$summary Graphics session: Xorg (X11)."
+    summary="$summary Graphics session: Xorg."
 elif [ "$session_type" = "wayland" ]; then
     summary="$summary Graphics session: Wayland (with Xwayland for X apps)."
 fi
