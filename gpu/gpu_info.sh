@@ -173,6 +173,27 @@ elif [ "$session_type" = "wayland" ]; then
     summary="$summary Graphics session: Wayland (with Xwayland for X apps)."
 fi
 
+echo
+########################################
+# 5. Display resolution & refresh rate
+########################################
+
+echo "=== Display resolution & refresh rate ==="
+
+display_info=""
+
+if command -v xrandr >/dev/null 2>&1; then
+    # Try to query X11 display (best-effort)
+    display_info="$(DISPLAY=${DISPLAY:-:0} xrandr --current 2>/dev/null | awk '/\*/{print $1 " @ " $2 " Hz"}' || true)"
+fi
+
+if [ -n "$display_info" ]; then
+    echo "  Display mode     : $display_info"
+else
+    echo "  Display mode     : unavailable (no X11 access or Wayland session)"
+fi
+
+
 echo "$summary"
 echo
 
