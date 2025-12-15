@@ -193,7 +193,7 @@ else
     echo "  Display mode     : unavailable (no X11 access or Wayland session)"
 fi
 
-
+echo
 echo "$summary"
 echo
 
