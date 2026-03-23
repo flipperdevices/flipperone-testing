@@ -1,6 +1,6 @@
-# RK3576 Board Test Suite
+# Flipper One testing scripts
 
-Comprehensive test suite for Radxa 4D board based on Rockchip RK3576 SoC. Designed for measuring various subsystems performance and power consumption in standby mode.
+Dirty vibe-coded tests scripts for Flipper One. To be completely rewrited.
 
 ## Features
 
