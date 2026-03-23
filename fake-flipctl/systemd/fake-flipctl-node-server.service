@@ -1,5 +1,5 @@
 [Unit]
-Description=fake-flipctl web UI
+Description=fake-flipctl Node.js HTTP server (port 8899, serves web UI and JSON APIs)
 After=network.target
 
 [Service]

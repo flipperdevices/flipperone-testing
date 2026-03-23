@@ -18,7 +18,7 @@ A web application that simulates the Flipper One LCD screen user interface. It r
 - **`/api/modem`** — aggregates `mmcli -m 0 -J`, `qmicli --nas-get-serving-system`, `--nas-get-cell-location-info`, `--nas-get-signal-strength` for RM530N-GL modem via `/dev/cdc-wdm0`; also reads sysfs byte counters on the modem net interface for live bandwidth
 - **`/api/disk`** — reads `df` for `/dev/mmcblk0p2` usage (eMMC)
 - **`/api/power`** — reads sysfs `/sys/class/power_supply/bq28z610-0` (voltage, current, capacity, charge, temp, time estimates)
-- Systemd unit: `fake-flipctl.service`
+- Systemd unit: `fake-flipctl-node-server.service`
 
 ### Client
 - **Bitmap font** (`js/font.js`) — custom 5x7 pixel font, 6x8 cell (supports ASCII 32-126)
@@ -69,10 +69,26 @@ count=1
 rules=499e477a-c004-4eac-ba76-430ec6419c46
 ```
 
-**Current task**: figure out how to launch Cog at exactly 256x144 from CLI (without relying on KDE window rules). Options to explore:
-- `cog -P wl -O ...` platform params
-- `kdotool` or `xdotool` to resize after launch
-- Apply the KDE rules file above and reload kwin
+### Kiosk mode (cage + cog, no KDE)
+
+The goal is to run Cog directly on the 256x144 SPI LCD without KDE. Cog's DRM plugin (`-P drm`) only works with GPU-backed connectors (HDMI on card2), not the SPI panel on card0. The solution is **cage** — a minimal Wayland kiosk compositor that handles non-GPU displays and runs one app fullscreen.
+
+Systemd units (in `systemd/`):
+- **`fake-flipctl-node-server.service`** — Node.js HTTP server (port 8899, web UI + JSON APIs), requires root for sysfs
+- **`fake-flipctl-wayland-cage.service`** — cage compositor + Cog browser on tty1, replaces getty, runs as `root` (required for `LIBSEAT_BACKEND=builtin` — libseat's builtin backend needs root to manage DRM/TTY directly, avoiding the need for seatd or a logind session)
+- **`fake-flipctl.target`** — groups both services; enabled on `multi-user.target`
+
+Install:
+```bash
+sudo cp systemd/*.service systemd/*.target /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable fake-flipctl.target fake-flipctl-wayland-cage.service fake-flipctl-node-server.service
+sudo reboot
+```
+
+DRM devices:
+- `/dev/dri/card0` — SPI LCD panel (256x144, panel-mipi-dbi-spi)
+- `/dev/dri/card2` — Rockchip GPU/HDMI (only used when external monitor connected)
 
 ## File: test-screen.html
 
@@ -83,7 +99,6 @@ Test pattern page for verifying LCD display alignment — draws 1px border, diag
 ```
 fake-flipctl/
 ├── server.js              # Node.js HTTP server + API endpoints
-├── fake-flipctl.service   # Systemd unit file
 ├── index.html             # Main app entry point
 ├── test-screen.html       # Display test pattern
 ├── css/style.css          # Layout, canvas scaling
@@ -99,5 +114,9 @@ fake-flipctl/
 │       ├── modem5g.js     # 5G Modem info via /api/modem (polls every 500ms)
 │       ├── diskspace.js   # Disk space via /api/disk
 │       └── power.js       # Battery info via /api/power (polls every 2s)
+├── systemd/
+│   ├── fake-flipctl-node-server.service   # Node.js HTTP server (port 8899)
+│   ├── fake-flipctl-wayland-cage.service  # cage + cog kiosk on tty1
+│   └── fake-flipctl.target                # Groups server + UI
 └── assets/                # (reserved for future icons/sprites)
 ```
