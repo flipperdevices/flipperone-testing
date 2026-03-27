@@ -6,7 +6,20 @@ var Input = (function() {
         'ArrowRight': 'right',
         'Enter': 'ok',
         'Escape': 'back',
-        'Backspace': 'back'
+        'Backspace': 'back',
+        'k': 'ok',
+        'i': 'up',
+        'm': 'down',
+        'j': 'left',
+        'l': 'right',
+        'h': 'appsw',
+        'n': 'back',
+        'a': 'ptt',
+        'z': 'back',
+        'x': 'view',
+        'c': 'power',
+        'v': 'edit',
+        'b': 'run',
     };
 
     function Input() {
