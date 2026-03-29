@@ -221,6 +221,113 @@ function getPowerInfo() {
     return result;
 }
 
+var UPDATE_REPO = '/flipperone-testing';
+var UPDATE_BRANCH = 'dev';
+
+function getUpdateStatus() {
+    var result = { available: false, currentCommit: null, commits: [], error: null };
+    try {
+        result.currentCommit = execSync('git -C ' + UPDATE_REPO + ' log --oneline -1', { encoding: 'utf8', timeout: 5000 }).trim();
+    } catch (e) {
+        result.error = 'Cannot read local repo';
+        return result;
+    }
+    try {
+        execSync('git -C ' + UPDATE_REPO + ' fetch origin ' + UPDATE_BRANCH + ' 2>&1', { encoding: 'utf8', timeout: 15000 });
+    } catch (e) {
+        result.error = 'No internet';
+        return result;
+    }
+    try {
+        var log = execSync('git -C ' + UPDATE_REPO + ' log --oneline HEAD..origin/' + UPDATE_BRANCH, { encoding: 'utf8', timeout: 5000 }).trim();
+        if (log) {
+            result.available = true;
+            result.commits = log.split('\n');
+        }
+    } catch (e) {
+        result.error = 'Cannot compare branches';
+    }
+    return result;
+}
+
+function doUpdate() {
+    var result = { success: false, error: null };
+    try {
+        execSync('git -C ' + UPDATE_REPO + ' pull origin ' + UPDATE_BRANCH + ' 2>&1', { encoding: 'utf8', timeout: 30000 });
+        result.success = true;
+    } catch (e) {
+        result.error = e.message;
+    }
+    return result;
+}
+
+function getRoutingInfo() {
+    var routes = [];
+    try {
+        var out4 = execSync('ip -4 route show default 2>/dev/null', { encoding: 'utf8', timeout: 2000 });
+        var lines4 = out4.trim().split('\n');
+        for (var i = 0; i < lines4.length; i++) {
+            if (!lines4[i]) continue;
+            var m4 = lines4[i].match(/default via (\S+) dev (\S+).*?metric (\d+)/);
+            if (m4) routes.push({ family: 'IPv4', gateway: m4[1], dev: m4[2], metric: parseInt(m4[3], 10) });
+            else {
+                var m4b = lines4[i].match(/default via (\S+) dev (\S+)/);
+                if (m4b) routes.push({ family: 'IPv4', gateway: m4b[1], dev: m4b[2], metric: null });
+            }
+        }
+    } catch (e) {}
+    try {
+        var out6 = execSync('ip -6 route show default 2>/dev/null', { encoding: 'utf8', timeout: 2000 });
+        var lines6 = out6.trim().split('\n');
+        for (var j = 0; j < lines6.length; j++) {
+            if (!lines6[j]) continue;
+            var m6 = lines6[j].match(/default via (\S+) dev (\S+).*?metric (\d+)/);
+            if (m6) routes.push({ family: 'IPv6', gateway: m6[1], dev: m6[2], metric: parseInt(m6[3], 10) });
+            else {
+                var m6b = lines6[j].match(/default via (\S+) dev (\S+)/);
+                if (m6b) routes.push({ family: 'IPv6', gateway: m6b[1], dev: m6b[2], metric: null });
+            }
+        }
+    } catch (e) {}
+    return routes;
+}
+
+var ETH_IFACES = ['end0', 'end1'];
+
+function getEthernetInfo() {
+    var ifaces = [];
+    for (var i = 0; i < ETH_IFACES.length; i++) {
+        var name = ETH_IFACES[i];
+        var info = { name: name, state: null, ip4: [], ip6: [], gateway4: null, gateway6: null, dns: [] };
+        try {
+            var out = execSync('nmcli -t device show ' + name + ' 2>/dev/null', { encoding: 'utf8', timeout: 3000 });
+            var lines = out.split('\n');
+            for (var j = 0; j < lines.length; j++) {
+                var parts = lines[j].split(':');
+                var key = parts[0];
+                var val = parts.slice(1).join(':');
+                if (key === 'GENERAL.STATE') {
+                    info.state = val;
+                } else if (key.match(/^IP4\.ADDRESS/)) {
+                    info.ip4.push(val);
+                } else if (key.match(/^IP6\.ADDRESS/)) {
+                    info.ip6.push(val);
+                } else if (key === 'IP4.GATEWAY') {
+                    info.gateway4 = val || null;
+                } else if (key === 'IP6.GATEWAY') {
+                    info.gateway6 = val || null;
+                } else if (key.match(/^IP4\.DNS/)) {
+                    info.dns.push(val);
+                }
+            }
+        } catch (e) {
+            info.state = 'unavailable';
+        }
+        ifaces.push(info);
+    }
+    return ifaces;
+}
+
 function getDiskInfo() {
     var result = { device: '/dev/mmcblk0p2', mounted: false };
     try {
@@ -278,6 +385,39 @@ var server = http.createServer(function(req, res) {
         var modem = getModemInfo();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(modem));
+        return;
+    }
+    if (req.url === '/api/update/check') {
+        var update = getUpdateStatus();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(update));
+        return;
+    }
+    if (req.url === '/api/update/apply' && req.method === 'POST') {
+        var upResult = doUpdate();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(upResult));
+        if (upResult.success) {
+            // Restart both services after response is sent
+            setTimeout(function() {
+                require('child_process').exec(
+                    'systemctl restart fake-flipctl-node-server.service cog-seat1.service',
+                    function() {}
+                );
+            }, 500);
+        }
+        return;
+    }
+    if (req.url === '/api/routing') {
+        var routing = getRoutingInfo();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(routing));
+        return;
+    }
+    if (req.url === '/api/ethernet') {
+        var eth = getEthernetInfo();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(eth));
         return;
     }
     if (req.url === '/api/disk') {

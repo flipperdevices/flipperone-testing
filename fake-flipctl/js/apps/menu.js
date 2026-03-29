@@ -1,20 +1,51 @@
 var MenuScene = (function() {
     var items = [
-        '5G Modem',
-        'Wi-Fi',
-        'Bluetooth',
-        'Display info',
-        'GPIO Control',
-        'Input test',
-        'Disk info',
-        'Power info',
-        'Boot order'
+        'Network',
+        'Testing',
+        'System'
     ];
 
-    var appScenes = {
-        '5G Modem': function() { return new Modem5gScene(); },
-        'Disk info': function() { return new DiskSpaceScene(); },
-        'Power info': function() { return new PowerScene(); }
+    function networkMenu(sm) {
+        return new SubMenuScene(sm, 'Network', [
+            'Routing info',
+            '5G Modem',
+            'Wi-Fi',
+            'Ethernet'
+        ], {
+            'Routing info': function() { return new RoutingScene(); },
+            '5G Modem': function() { return new Modem5gScene(); },
+            'Ethernet': function() { return new EthernetScene(); }
+        });
+    }
+
+    function testingMenu(sm) {
+        return new SubMenuScene(sm, 'Testing', [
+            'Screen',
+            'Input',
+            'Sound',
+            'GPIO'
+        ], {
+            'Screen': function() { return new ScreenTestScene(); }
+        });
+    }
+
+    function systemMenu(sm) {
+        return new SubMenuScene(sm, 'System', [
+            'System info',
+            'Battery info',
+            'Disk info',
+            'Update'
+        ], {
+            'Battery info': function() { return new PowerScene(); },
+            'Disk info': function() { return new DiskSpaceScene(); },
+            'Update': function() { return new UpdateScene(); }
+        });
+    }
+
+    var subMenus = {
+        'Network': networkMenu,
+        'Testing': testingMenu,
+        'System': systemMenu
     };
 
     function MenuScene(sceneManager) {
@@ -44,9 +75,9 @@ var MenuScene = (function() {
                 }
             }
         } else if (action === 'ok') {
-            var factory = appScenes[items[this.selectedIndex]];
+            var factory = subMenus[items[this.selectedIndex]];
             if (factory) {
-                this.sceneManager.push(factory());
+                this.sceneManager.push(factory(this.sceneManager));
             }
         }
     };

@@ -90,6 +90,20 @@ DRM devices:
 - `/dev/dri/card0` — SPI LCD panel (256x144, panel-mipi-dbi-spi)
 - `/dev/dri/card2` — Rockchip GPU/HDMI (only used when external monitor connected)
 
+## Live development workflow
+
+Two copies of this project exist on the device:
+- **`/flipperone-testing/fake-flipctl/`** — the live copy served by the Node.js server. Edit here during development.
+- **`/home/user/f1/flipperone-testing/fake-flipctl/`** — mutagen-synced copy. Copy changes here when ready and commit only from this path.
+
+Both directories have `.git`, but **commits must only be made in `/home/user/f1/flipperone-testing/fake-flipctl/`**.
+
+### Edit & reload cycle
+
+1. Edit files in `/flipperone-testing/fake-flipctl/`
+2. Reload the UI: `sudo systemctl restart cog-seat1.service`
+3. When ready, copy changes to `/home/user/f1/flipperone-testing/fake-flipctl/` and commit there
+
 ## File: test-screen.html
 
 Test pattern page for verifying LCD display alignment — draws 1px border, diagonal cross, center crosshair, and corner coordinate labels at native 256x144.
