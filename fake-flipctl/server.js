@@ -398,12 +398,12 @@ var server = http.createServer(function(req, res) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(upResult));
         if (upResult.success) {
-            // Restart both services after response is sent
+            // Schedule restart via systemd-run so it survives our own restart
             setTimeout(function() {
-                require('child_process').exec(
-                    'systemctl restart fake-flipctl-node-server.service cog-seat1.service',
-                    function() {}
-                );
+                try {
+                    execSync('systemd-run --no-block bash -c "sleep 1 && systemctl restart fake-flipctl-node-server.service && sleep 2 && systemctl restart cog-seat1.service"',
+                        { encoding: 'utf8', timeout: 5000 });
+                } catch (e) {}
             }, 500);
         }
         return;
