@@ -250,14 +250,43 @@ function getUpdateStatus() {
     return result;
 }
 
+function logUpdate(msg) {
+    var ts = new Date().toISOString();
+    try { fs.appendFileSync('/tmp/fake-flipctl-update.log', ts + ' ' + msg + '\n'); } catch (e) {}
+    console.log('[update] ' + msg);
+}
+
 function doUpdate() {
     var result = { success: false, error: null };
+    logUpdate('Starting update');
     try {
-        execSync('git -C ' + UPDATE_REPO + ' pull origin ' + UPDATE_BRANCH + ' 2>&1', { encoding: 'utf8', timeout: 30000 });
+        logUpdate('git reset --hard HEAD');
+        var r1 = execSync('git -C ' + UPDATE_REPO + ' reset --hard HEAD 2>&1', { encoding: 'utf8', timeout: 5000 });
+        logUpdate('reset: ' + r1.trim());
+    } catch (e) {
+        logUpdate('reset failed: ' + e.message);
+        result.error = 'reset failed';
+        return result;
+    }
+    try {
+        logUpdate('git clean -fd');
+        var r2 = execSync('git -C ' + UPDATE_REPO + ' clean -fd 2>&1', { encoding: 'utf8', timeout: 5000 });
+        logUpdate('clean: ' + r2.trim());
+    } catch (e) {
+        logUpdate('clean failed: ' + e.message);
+    }
+    try {
+        logUpdate('git pull origin ' + UPDATE_BRANCH);
+        var r3 = execSync('git -C ' + UPDATE_REPO + ' pull origin ' + UPDATE_BRANCH + ' 2>&1', { encoding: 'utf8', timeout: 30000 });
+        logUpdate('pull: ' + r3.trim());
         result.success = true;
     } catch (e) {
-        result.error = e.message;
+        var msg = (e.stderr || e.stdout || e.message || 'Unknown error').toString();
+        var lines = msg.split('\n').filter(function(l) { return l.trim(); });
+        result.error = (lines[0] || 'Unknown error').substring(0, 120);
+        logUpdate('pull failed: ' + msg);
     }
+    logUpdate('Done, success=' + result.success);
     return result;
 }
 
