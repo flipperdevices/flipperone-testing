@@ -1,6 +1,7 @@
 # Flipper One testing scripts
 
-Dirty vibe-coded tests scripts for Flipper One. To be completely rewrited.
+Dirty vibe-coded tests scripts for Flipper One.
+To be completely rewrited.
 
 ## Features
 
