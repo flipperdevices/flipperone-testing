@@ -25,7 +25,8 @@ var MenuScene = (function() {
             'Sound',
             'GPIO'
         ], {
-            'Screen': function() { return new ScreenTestScene(); }
+            'Screen': function() { return new ScreenTestScene(); },
+            'Sound': function() { return new SoundMenuScene(sm); }
         });
     }
 

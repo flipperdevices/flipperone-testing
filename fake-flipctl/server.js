@@ -5,6 +5,7 @@ var http = require('http');
 var fs = require('fs');
 var path = require('path');
 var execSync = require('child_process').execSync;
+var exec = require('child_process').exec;
 
 var PORT = 8899;
 var BIND = '0.0.0.0';
@@ -21,7 +22,8 @@ var MIME = {
     '.js':   'application/javascript',
     '.png':  'image/png',
     '.ico':  'image/x-icon',
-    '.json': 'application/json'
+    '.json': 'application/json',
+    '.wav':  'audio/wav'
 };
 
 var BASE = __dirname;
@@ -377,6 +379,144 @@ function getDiskInfo() {
     return result;
 }
 
+var SOUND_DIR = '/flipperone-testing/sound/audio_files';
+var DRIVER_SCRIPT = '/flipperone-testing/sound/audio-driver-restart.sh';
+var audioChild = null;
+
+function getSoundFiles() {
+    var files = [];
+    try {
+        var entries = fs.readdirSync(SOUND_DIR);
+        for (var i = 0; i < entries.length; i++) {
+            if (/\.(wav|flac|ogg|aiff?|mp3|au|snd|caf|w64|wv|amr|voc|sph|xi)$/i.test(entries[i])) files.push(entries[i]);
+        }
+        files.sort();
+    } catch (e) {}
+    return files;
+}
+
+function playSoundFile(filename) {
+    // Sanitize: only allow filenames, no path separators
+    if (/[\/\\]/.test(filename)) return { success: false, error: 'Invalid filename' };
+    var filePath = path.join(SOUND_DIR, filename);
+    if (!fs.existsSync(filePath)) return { success: false, error: 'File not found' };
+
+    // Kill any currently playing audio
+    stopSound();
+
+    var cmd = 'play ' + JSON.stringify(filePath);
+    if (selectedAlsaDevice) {
+        cmd = 'AUDIODEV=' + selectedAlsaDevice + ' ' + cmd;
+    }
+
+    audioChild = exec(cmd, { timeout: 30000 }, function(err) {
+        audioChild = null;
+    });
+
+    return { success: true, file: filename };
+}
+
+function stopSound() {
+    if (audioChild) {
+        try { audioChild.kill(); } catch (e) {}
+        audioChild = null;
+    }
+}
+
+var selectedAlsaDevice = null; // e.g. "hw:3,0" — persists for this server session
+
+function getAudioDevices() {
+    var result = { devices: [], defaultDevice: selectedAlsaDevice };
+    try {
+        var out = execSync('aplay -l 2>/dev/null', { encoding: 'utf8', timeout: 3000 });
+        var lines = out.split('\n');
+        for (var i = 0; i < lines.length; i++) {
+            // Match: card 3: NAU8822 [On-board Analog NAU8822], device 0: ...
+            var m = lines[i].match(/^card (\d+): (\S+) \[([^\]]+)\], device (\d+): (.+)/);
+            if (m) {
+                var hwName = 'hw:' + m[1] + ',' + m[4];
+                result.devices.push({
+                    name: hwName,
+                    cardName: m[2],
+                    description: m[3],
+                    device: m[4],
+                    detail: m[5]
+                });
+            }
+        }
+    } catch (e) {}
+    return result;
+}
+
+function setDefaultDevice(deviceName) {
+    // Validate it's a real hw: device string
+    if (!/^hw:\d+,\d+$/.test(deviceName)) {
+        return { success: false, error: 'Invalid device name' };
+    }
+    selectedAlsaDevice = deviceName;
+    return { success: true, device: deviceName };
+}
+
+// Find NAU8822 card number dynamically
+function getNau8822Card() {
+    try {
+        var cards = fs.readFileSync('/proc/asound/cards', 'utf8');
+        var m = cards.match(/^\s*(\d+)\s+\[NAU8822/m);
+        return m ? m[1] : null;
+    } catch (e) { return null; }
+}
+
+function getVolume() {
+    var result = { speaker: null, headphone: null, speakerMuted: false, headphoneMuted: false };
+    var card = getNau8822Card();
+    if (!card) return result;
+    try {
+        var spk = execSync('amixer -c ' + card + ' get Speaker 2>/dev/null', { encoding: 'utf8', timeout: 2000 });
+        var ms = spk.match(/\[(\d+)%\]/);
+        if (ms) result.speaker = parseInt(ms[1], 10);
+        result.speakerMuted = /\[off\]/.test(spk);
+    } catch (e) {}
+    try {
+        var hp = execSync('amixer -c ' + card + ' get Headphone 2>/dev/null', { encoding: 'utf8', timeout: 2000 });
+        var mh = hp.match(/\[(\d+)%\]/);
+        if (mh) result.headphone = parseInt(mh[1], 10);
+        result.headphoneMuted = /\[off\]/.test(hp);
+    } catch (e) {}
+    return result;
+}
+
+function setVolume(control, pct) {
+    var card = getNau8822Card();
+    if (!card) return { success: false, error: 'NAU8822 not found' };
+    if (control !== 'Speaker' && control !== 'Headphone') return { success: false, error: 'Invalid control' };
+    pct = Math.max(0, Math.min(100, parseInt(pct, 10)));
+    try {
+        execSync('amixer -c ' + card + ' set ' + control + ' ' + pct + '% 2>/dev/null', { encoding: 'utf8', timeout: 2000 });
+        return { success: true, volume: pct };
+    } catch (e) {
+        return { success: false, error: e.message };
+    }
+}
+
+function restartAudioDriver() {
+    try {
+        var out = execSync(DRIVER_SCRIPT + ' 2>&1', { encoding: 'utf8', timeout: 15000 });
+        return { success: true, output: out };
+    } catch (e) {
+        var output = (e.stdout || '') + (e.stderr || '');
+        return { success: false, output: output || e.message };
+    }
+}
+
+function readJsonBody(req, callback) {
+    var body = '';
+    req.on('data', function(chunk) { body += chunk; });
+    req.on('end', function() {
+        try { callback(null, JSON.parse(body)); }
+        catch (e) { callback(e, null); }
+    });
+}
+
 function serveStatic(req, res) {
     var urlPath = req.url.split('?')[0];
     if (urlPath === '/') urlPath = '/index.html';
@@ -453,6 +593,75 @@ var server = http.createServer(function(req, res) {
         var info = getDiskInfo();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(info));
+        return;
+    }
+    if (req.url === '/api/sound/files') {
+        var soundFiles = getSoundFiles();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ files: soundFiles }));
+        return;
+    }
+    if (req.url === '/api/sound/play' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            if (err || !data || !data.file) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: 'Invalid request' }));
+                return;
+            }
+            var playResult = playSoundFile(data.file);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(playResult));
+        });
+        return;
+    }
+    if (req.url === '/api/sound/stop' && req.method === 'POST') {
+        stopSound();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+        return;
+    }
+    if (req.url === '/api/sound/devices') {
+        var audioDevs = getAudioDevices();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(audioDevs));
+        return;
+    }
+    if (req.url === '/api/sound/device' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            if (err || !data || !data.device) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: 'Invalid request' }));
+                return;
+            }
+            var setResult = setDefaultDevice(data.device);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(setResult));
+        });
+        return;
+    }
+    if (req.url === '/api/sound/volume' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            if (err || !data || data.volume === undefined || !data.control) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: 'Invalid request' }));
+                return;
+            }
+            var volResult = setVolume(data.control, data.volume);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(volResult));
+        });
+        return;
+    }
+    if (req.url === '/api/sound/volume' && req.method === 'GET') {
+        var vol = getVolume();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(vol));
+        return;
+    }
+    if (req.url === '/api/sound/restart-driver' && req.method === 'POST') {
+        var driverResult = restartAudioDriver();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(driverResult));
         return;
     }
     serveStatic(req, res);
