@@ -15,10 +15,10 @@ var Input = (function() {
         'h': 'appsw',
         'n': 'back',
         'a': 'ptt',
-        'z': 'back',
-        'x': 'view',
+        'z': 'esc',
+        'x': 'edit',
         'c': 'power',
-        'v': 'edit',
+        'v': 'view',
         'b': 'run',
     };
 
