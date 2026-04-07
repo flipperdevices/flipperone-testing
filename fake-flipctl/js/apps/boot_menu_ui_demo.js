@@ -32,6 +32,8 @@ var UIDemoScene = (function() {
     // ---
 
     var ITEM_SPACING = 1;
+    var BTN_W   = 48;
+    var BTN_GAP = 2;  // 5 × 48 + 4 × 4 = 256px exactly
 
     function UIDemoScene() {
         this.items = [
@@ -41,13 +43,47 @@ var UIDemoScene = (function() {
         ];
         this.selectedIndex = 0;
         this.items[this.selectedIndex].state = STATE_SELECTED;
+
+        // ── App-defined buttons ───────────────────────────────────────────────
+        // Each button maps to an input action (see input.js KEY_MAP).
+        // Pressing the key triggers the button animation + onPress callback.
+        var self = this;
+        this.app_defined_buttons = [
+            new UI.LeftButton  ('OFF',   BTN_W,             'esc',   function() { self._onEsc();  }),
+            new UI.MiddleButton('Edit', 1, BTN_W, BTN_GAP, 'edit', function() { self._onEdit(); }),
+            null,
+            null,
+            new UI.RightButton ('Run',   BTN_W,             'run',   function() { self._onRun();  }),
+        ];
+
+        // Build action → button lookup
+        this.btnActionMap = {};
+        for (var i = 0; i < this.app_defined_buttons.length; i++) {
+            var btn = this.app_defined_buttons[i];
+            if (btn && btn.action) this.btnActionMap[btn.action] = btn;
+        }
     }
+
+    // ── Button handlers ───────────────────────────────────────────────────────
+    UIDemoScene.prototype._onEsc   = function() { /* TODO */ };
+    UIDemoScene.prototype._onEdit  = function() { /* TODO */ };
+    UIDemoScene.prototype._onPower = function() { /* TODO */ };
+    UIDemoScene.prototype._onView  = function() { /* TODO */ };
+    UIDemoScene.prototype._onRun   = function() { /* TODO */ };
 
     UIDemoScene.prototype.enter = function() {};
     UIDemoScene.prototype.exit = function() {};
 
     UIDemoScene.prototype.handleInput = function(action) {
-        if (action === 'back') return 'pop';
+        // Check if action maps to a button
+        var btn = this.btnActionMap[action];
+        if (btn) {
+            var self = this;
+            btn.press();
+            if (btn.onPress) btn.onPress();
+            setTimeout(function() { btn.release(); }, 150);
+            return;
+        }
 
         if (action === 'up' || action === 'down') {
             this.items[this.selectedIndex].state = STATE_DEFAULT;
@@ -74,6 +110,12 @@ var UIDemoScene = (function() {
             this.items[i].render(canvas, startX, y);
         }
 
+        // Render buttons
+        for (var b = 0; b < this.app_defined_buttons.length; b++) {
+            var btn = this.app_defined_buttons[b];
+            if (!btn) continue;
+            btn.render(canvas);
+        }
     };
 
     return UIDemoScene;

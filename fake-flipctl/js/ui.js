@@ -110,12 +110,58 @@ var UI = (function() {
         return Math.floor((canvasHeight - STATUS_BAR_H - 2) / ITEM_H);
     }
 
+    // ── MiddleButton ──────────────────────────────────────────────────────────
+    // Button flush with bottom of screen. Rendering is in canvas.drawMiddleButton.
+    function _makeButton(drawMethod) {
+        return {
+            render:  function(canvas) { canvas[drawMethod](this.text, this.x, this.w, this.pressed); },
+            press:   function() { this.pressed = true; },
+            release: function() { this.pressed = false; }
+        };
+    }
+
+    // index — slot position (0..N-1), gap — px between buttons
+    function MiddleButton(text, index, w, gap, action, onPress) {
+        this.text    = text;
+        this.x       = index * (w + gap);
+        this.w       = w;
+        this.pressed = false;
+        this.action  = action  || null;
+        this.onPress = onPress || null;
+    }
+    MiddleButton.prototype = _makeButton('drawMiddleButton');
+
+    // Left button — always flush with left screen edge (x = 0)
+    function LeftButton(text, w, action, onPress) {
+        this.text    = text;
+        this.x       = 0;
+        this.w       = w;
+        this.pressed = false;
+        this.action  = action  || null;
+        this.onPress = onPress || null;
+    }
+    LeftButton.prototype = _makeButton('drawLeftButton');
+
+    // Right button — always flush with right screen edge (x = screenW - w)
+    function RightButton(text, w, action, onPress, screenW) {
+        this.text    = text;
+        this.x       = (screenW || 256) - w;
+        this.w       = w;
+        this.pressed = false;
+        this.action  = action  || null;
+        this.onPress = onPress || null;
+    }
+    RightButton.prototype = _makeButton('drawRightButton');
+
     return {
-        drawStatusBar: drawStatusBar,
-        drawMenuList: drawMenuList,
-        visibleCount: visibleCount,
-        STATUS_BAR_H: STATUS_BAR_H,
-        ITEM_H: ITEM_H,
-        PAD_LEFT: PAD_LEFT
+        drawStatusBar:  drawStatusBar,
+        drawMenuList:   drawMenuList,
+        visibleCount:   visibleCount,
+        MiddleButton:   MiddleButton,
+        LeftButton:     LeftButton,
+        RightButton:    RightButton,
+        STATUS_BAR_H:   STATUS_BAR_H,
+        ITEM_H:         ITEM_H,
+        PAD_LEFT:       PAD_LEFT
     };
 })();

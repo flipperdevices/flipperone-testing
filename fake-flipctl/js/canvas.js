@@ -40,6 +40,55 @@ var FlipCanvas = (function() {
         this.ctx.fillRect(x, y, 1, 1);
     };
 
+    // Shared button constants
+    var BTN_H = 17;
+    var BTN_R = 2;
+
+    function _btnColors(pressed) {
+        return { bg: pressed ? '#000' : '#EAEAEA', fg: pressed ? '#fff' : '#000' };
+    }
+    function _btnText(ctx, text, x, w, y, fg) {
+        var tw = HaxrcorpFont16.textWidth(text);
+        var tx = x + Math.floor((w - tw) / 2);
+        var ty = y + Math.floor((BTN_H - 11) / 2);
+        HaxrcorpFont16.draw(ctx, text, tx, ty, fg);
+    }
+
+    // Middle button — both top corners rounded
+    FlipCanvas.prototype.drawMiddleButton = function(text, x, w, pressed) {
+        var y = this.h - BTN_H;
+        var c = _btnColors(pressed);
+        this.ctx.fillStyle = c.bg;
+        this.ctx.fillRect(x + BTN_R, y,          w - BTN_R * 2, BTN_H);
+        this.ctx.fillRect(x,         y + BTN_R,  BTN_R,         BTN_H - BTN_R);
+        this.ctx.fillRect(x + w - BTN_R, y + BTN_R, BTN_R,     BTN_H - BTN_R);
+        this.ctx.fillRect(x + 1,     y + 1, 1, 1);  // top-left
+        this.ctx.fillRect(x + w - 2, y + 1, 1, 1);  // top-right
+        _btnText(this.ctx, text, x, w, y, c.fg);
+    };
+
+    // Left button — flush with left screen edge, only top-right corner rounded
+    FlipCanvas.prototype.drawLeftButton = function(text, x, w, pressed) {
+        var y = this.h - BTN_H;
+        var c = _btnColors(pressed);
+        this.ctx.fillStyle = c.bg;
+        this.ctx.fillRect(x,             y,         w - BTN_R, BTN_H);
+        this.ctx.fillRect(x + w - BTN_R, y + BTN_R, BTN_R,    BTN_H - BTN_R);
+        this.ctx.fillRect(x + w - 2,     y + 1, 1, 1);  // top-right corner pixel
+        _btnText(this.ctx, text, x, w, y, c.fg);
+    };
+
+    // Right button — flush with right screen edge, only top-left corner rounded
+    FlipCanvas.prototype.drawRightButton = function(text, x, w, pressed) {
+        var y = this.h - BTN_H;
+        var c = _btnColors(pressed);
+        this.ctx.fillStyle = c.bg;
+        this.ctx.fillRect(x + BTN_R, y,        w - BTN_R, BTN_H);
+        this.ctx.fillRect(x,         y + BTN_R, BTN_R,    BTN_H - BTN_R);
+        this.ctx.fillRect(x + 1,     y + 1, 1, 1);  // top-left corner pixel
+        _btnText(this.ctx, text, x, w, y, c.fg);
+    };
+
     // drawRoundRect(x, y, w, h, r, color) — filled rounded rect, r: 2 or 3
     FlipCanvas.prototype.drawRoundRect = function(x, y, w, h, r, color) {
         this.ctx.fillStyle = color || '#fff';
