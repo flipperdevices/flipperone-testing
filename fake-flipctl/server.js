@@ -10,9 +10,9 @@ var exec = require('child_process').exec;
 var PORT = 8899;
 var BIND = '0.0.0.0';
 
-// Must run as root
-if (process.getuid() !== 0) {
-    console.error('Error: server must be run as root');
+// On Linux (Flipper), root is required for sysfs access
+if (process.platform === 'linux' && process.getuid() !== 0) {
+    console.error('Error: server must be run as root on Linux');
     process.exit(1);
 }
 

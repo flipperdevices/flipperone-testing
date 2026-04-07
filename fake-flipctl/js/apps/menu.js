@@ -21,11 +21,13 @@ var MenuScene = (function() {
     function testingMenu(sm) {
         return new SubMenuScene(sm, 'Testing', [
             'Screen',
+            'Boot menu - UI demo',
             'Input',
             'Sound',
             'GPIO'
         ], {
             'Screen': function() { return new ScreenTestScene(); },
+            'Boot menu - UI demo': function() { return new UIDemoScene(); },
             'Sound': function() { return new SoundMenuScene(sm); }
         });
     }
