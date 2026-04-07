@@ -1,7 +1,7 @@
 var UIDemoScene = (function() {
-    var FONT_H   = 7;
+    var FONT_H   = 11;
     var PAD_X    = 4;
-    var PAD_Y    = 3;
+    var PAD_Y    = 1;
     var RADIUS   = 2;
     var COLOR_DIM = '#EAEAEA';  // shade of white for unselected items
 
@@ -19,13 +19,13 @@ var UIDemoScene = (function() {
     MenuItem.prototype.render = function(canvas, x, y) {
         if (this.state === STATE_DEFAULT) {
             canvas.drawRoundRect(x, y, this.w, this.h, RADIUS, COLOR_DIM);
-            canvas.drawText(this.text, x + PAD_X, y + PAD_Y, '#000');
+            HaxrcorpFont16.draw(canvas.ctx, this.text, x + PAD_X, y + PAD_Y, '#000');
         } else if (this.state === STATE_SELECTED) {
             canvas.drawRoundFrame(x, y, this.w, this.h, RADIUS, '#000');
-            canvas.drawText(this.text, x + PAD_X, y + PAD_Y, '#000');
+            HaxrcorpFont16.draw(canvas.ctx, this.text, x + PAD_X, y + PAD_Y, '#000');
         } else if (this.state === STATE_PRESSED) {
             canvas.drawRoundRect(x, y, this.w, this.h, RADIUS, '#000');
-            canvas.drawText(this.text, x + PAD_X, y + PAD_Y, '#fff');
+            HaxrcorpFont16.draw(canvas.ctx, this.text, x + PAD_X, y + PAD_Y, '#fff');
         }
     };
 
@@ -73,6 +73,7 @@ var UIDemoScene = (function() {
             var y = startY + i * (this.items[0].h + ITEM_SPACING);
             this.items[i].render(canvas, startX, y);
         }
+
     };
 
     return UIDemoScene;

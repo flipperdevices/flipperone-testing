@@ -1,4 +1,6 @@
-# exclude test results 
+.DS_Store
+
+# exclude test results
 results/*
 
 # but keep the results folder
