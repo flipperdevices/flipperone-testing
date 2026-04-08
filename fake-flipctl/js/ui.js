@@ -226,6 +226,71 @@ var UI = (function() {
         }
     };
 
+    // ── Keyboard ──────────────────────────────────────────────────────────────
+    // Virtual keyboard popup with multiple rows
+    function Keyboard(rows, onChar, onClose) {
+        this.rows = rows;
+        this.selectedRow = 0;
+        this.selectedCol = 0;
+        this.onChar = onChar || null;   // Called with character when ok pressed
+        this.onClose = onClose || null; // Called when esc pressed
+        this.pressedRow = -1;
+        this.pressedCol = -1;  // Track which button is pressed
+
+        // Position: centered on screen in container
+        var BTN_W = 15;
+        var BTN_H = 16;
+        var CONTAINER_W = 250;
+        var CONTAINER_H = 77;
+        var cols = rows[0].length;
+        var keyboardW = cols * BTN_W;
+        var keyboardH = rows.length * BTN_H;
+
+        this.x = Math.floor((256 - CONTAINER_W) / 2);
+        this.y = 70;  // 70px from top of screen
+        this.w = CONTAINER_W;
+        this.h = CONTAINER_H;
+    }
+
+    Keyboard.prototype.render = function(canvas) {
+        canvas.drawKeyboard(this.x, this.y, this.rows, this.selectedRow, this.selectedCol, this.pressedRow, this.pressedCol, '#fff', '#000');
+    };
+
+    Keyboard.prototype.handleInput = function(action) {
+        if (action === 'left') {
+            this.selectedCol = (this.selectedCol - 1 + this.rows[this.selectedRow].length) % this.rows[this.selectedRow].length;
+        } else if (action === 'right') {
+            this.selectedCol = (this.selectedCol + 1) % this.rows[this.selectedRow].length;
+        } else if (action === 'up') {
+            this.selectedRow = (this.selectedRow - 1 + this.rows.length) % this.rows.length;
+            // Adjust column if new row is shorter
+            if (this.selectedCol >= this.rows[this.selectedRow].length) {
+                this.selectedCol = this.rows[this.selectedRow].length - 1;
+            }
+        } else if (action === 'down') {
+            this.selectedRow = (this.selectedRow + 1) % this.rows.length;
+            // Adjust column if new row is shorter
+            if (this.selectedCol >= this.rows[this.selectedRow].length) {
+                this.selectedCol = this.rows[this.selectedRow].length - 1;
+            }
+        } else if (action === 'ok') {
+            var char = this.rows[this.selectedRow][this.selectedCol];
+            this.pressedRow = this.selectedRow;
+            this.pressedCol = this.selectedCol;
+            if (this.onChar) this.onChar(char);
+            var self = this;
+            setTimeout(function() {
+                self.pressedRow = -1;
+                self.pressedCol = -1;
+            }, 100);
+        } else if (action === 'back') {
+            // Back key deletes character (backspace)
+            if (this.onChar) this.onChar('\b');
+        } else if (action === 'esc') {
+            if (this.onClose) this.onClose();
+        }
+    };
+
     return {
         drawStatusBar:  drawStatusBar,
         drawMenuList:   drawMenuList,
@@ -234,6 +299,7 @@ var UI = (function() {
         LeftButton:     LeftButton,
         RightButton:    RightButton,
         PopupMenuLeft:  PopupMenuLeft,
+        Keyboard:       Keyboard,
         STATUS_BAR_H:   STATUS_BAR_H,
         ITEM_H:         ITEM_H,
         PAD_LEFT:       PAD_LEFT

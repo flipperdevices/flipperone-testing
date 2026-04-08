@@ -290,5 +290,164 @@ var FlipCanvas = (function() {
         ctx.fillRect(x, y + bodyH, 1, TAB_H - 4);
     };
 
+    // drawKeyboard(x, y, rows, selectedRow, selectedCol, pressedRow, pressedCol, bg, fg)
+    // Renders a virtual keyboard popup with rounded corners (r=4)
+    // rows: array of arrays of characters (e.g., [['q','w','e',...], [...], ...])
+    // selectedRow, selectedCol: current selection position
+    // pressedRow, pressedCol: button currently pressed (-1 if none)
+    // bg: background color, fg: border/text color
+    FlipCanvas.prototype.drawKeyboard = function(x, y, rows, selectedRow, selectedCol, pressedRow, pressedCol, bg, fg) {
+        var BTN_W = 15;
+        var BTN_H = 16;
+        var BTN_GAP = 0;  // No gap between buttons
+        var SPACE_W = 35;  // Width of space button
+        var R = 4;
+        var CONTAINER_W = 250;
+        var CONTAINER_H = 77;
+        var ctx = this.ctx;
+
+        // Calculate keyboard dimensions (account for space button in last row)
+        var cols = rows[0].length;
+        var lastRowWidth = (rows[rows.length - 1].length - 1) * BTN_W + SPACE_W;  // last row with space button
+        var maxRowWidth = Math.max(cols * BTN_W, lastRowWidth);
+        var keyboardW = maxRowWidth;
+        var keyboardH = rows.length * BTN_H;
+
+        // Position keyboard: 5px from top, 4px from right edge of container
+        var keyboardX = x + (CONTAINER_W - keyboardW - 4);
+        var keyboardY = y + 5;
+
+        // Draw container background with r=4 corners
+        ctx.fillStyle = bg;
+        this.drawRoundRect(x, y, CONTAINER_W, CONTAINER_H, 4, bg);
+
+        // Draw container border (top, left, right only - no bottom border)
+        ctx.fillStyle = fg;
+        // Top edge with corners
+        ctx.fillRect(x + 4, y, CONTAINER_W - 8, 1);
+        // Left edge (straight)
+        ctx.fillRect(x, y + 4, 1, CONTAINER_H - 4);
+        // Right edge (straight)
+        ctx.fillRect(x + CONTAINER_W - 1, y + 4, 1, CONTAINER_H - 4);
+        // TL corner outline
+        ctx.fillRect(x + 3, y, 1, 1);
+        ctx.fillRect(x + 2, y + 1, 1, 1);
+        ctx.fillRect(x + 1, y + 2, 1, 1);
+        ctx.fillRect(x, y + 3, 1, 1);
+        // TR corner outline
+        ctx.fillRect(x + CONTAINER_W - 4, y, 1, 1);
+        ctx.fillRect(x + CONTAINER_W - 3, y + 1, 1, 1);
+        ctx.fillRect(x + CONTAINER_W - 2, y + 2, 1, 1);
+        ctx.fillRect(x + CONTAINER_W - 1, y + 3, 1, 1);
+
+        // Draw keyboard background with r=4 corners (TL/TR/BR rounded, BL square)
+        ctx.fillStyle = bg;
+
+        // Background rectangles (keyboard inside container)
+        ctx.fillRect(keyboardX + R, keyboardY, keyboardW - R * 2, keyboardH);
+        ctx.fillRect(keyboardX, keyboardY + R, R, keyboardH - R);
+        ctx.fillRect(keyboardX + keyboardW - R, keyboardY + R, R, keyboardH - R * 2);
+
+        // Corner fill pixels (r=4)
+        // TL corner
+        ctx.fillRect(keyboardX + 3, keyboardY, 1, 1);
+        ctx.fillRect(keyboardX + 2, keyboardY + 1, 1, 1);
+        ctx.fillRect(keyboardX + 3, keyboardY + 1, 1, 1);
+        ctx.fillRect(keyboardX + 1, keyboardY + 2, 1, 1);
+        ctx.fillRect(keyboardX + 2, keyboardY + 2, 1, 1);
+        ctx.fillRect(keyboardX + 3, keyboardY + 2, 1, 1);
+        ctx.fillRect(keyboardX, keyboardY + 3, 1, 1);
+        ctx.fillRect(keyboardX + 1, keyboardY + 3, 1, 1);
+        ctx.fillRect(keyboardX + 2, keyboardY + 3, 1, 1);
+        ctx.fillRect(keyboardX + 3, keyboardY + 3, 1, 1);
+
+        // TR corner
+        ctx.fillRect(keyboardX + keyboardW - 4, keyboardY, 1, 1);
+        ctx.fillRect(keyboardX + keyboardW - 3, keyboardY + 1, 1, 1);
+        ctx.fillRect(keyboardX + keyboardW - 4, keyboardY + 1, 1, 1);
+        ctx.fillRect(keyboardX + keyboardW - 2, keyboardY + 2, 1, 1);
+        ctx.fillRect(keyboardX + keyboardW - 3, keyboardY + 2, 1, 1);
+        ctx.fillRect(keyboardX + keyboardW - 4, keyboardY + 2, 1, 1);
+        ctx.fillRect(keyboardX + keyboardW - 1, keyboardY + 3, 1, 1);
+        ctx.fillRect(keyboardX + keyboardW - 2, keyboardY + 3, 1, 1);
+        ctx.fillRect(keyboardX + keyboardW - 3, keyboardY + 3, 1, 1);
+        ctx.fillRect(keyboardX + keyboardW - 4, keyboardY + 3, 1, 1);
+
+        // BR corner
+        ctx.fillRect(keyboardX + keyboardW - 4, keyboardY + keyboardH - 4, 1, 1);
+        ctx.fillRect(keyboardX + keyboardW - 3, keyboardY + keyboardH - 4, 1, 1);
+        ctx.fillRect(keyboardX + keyboardW - 2, keyboardY + keyboardH - 4, 1, 1);
+        ctx.fillRect(keyboardX + keyboardW - 1, keyboardY + keyboardH - 4, 1, 1);
+        ctx.fillRect(keyboardX + keyboardW - 4, keyboardY + keyboardH - 3, 1, 1);
+        ctx.fillRect(keyboardX + keyboardW - 3, keyboardY + keyboardH - 3, 1, 1);
+        ctx.fillRect(keyboardX + keyboardW - 2, keyboardY + keyboardH - 3, 1, 1);
+        ctx.fillRect(keyboardX + keyboardW - 4, keyboardY + keyboardH - 2, 1, 1);
+        ctx.fillRect(keyboardX + keyboardW - 3, keyboardY + keyboardH - 2, 1, 1);
+        ctx.fillRect(keyboardX + keyboardW - 4, keyboardY + keyboardH - 1, 1, 1);
+
+        // Draw border and buttons
+        ctx.fillStyle = fg;
+
+        // Draw each button
+        for (var row = 0; row < rows.length; row++) {
+            for (var col = 0; col < rows[row].length; col++) {
+                var char = rows[row][col];
+                var isLastRowLastCol = (row === rows.length - 1 && col === rows[row].length - 1);
+                var isSpaceButton = (char === ' ' && isLastRowLastCol);
+                var btnW = isSpaceButton ? SPACE_W : BTN_W;
+
+                // Calculate button position
+                var btnX;
+                if (isSpaceButton) {
+                    // Space button positioned at the end of last row
+                    var lastRowNormalBtnsW = (col) * BTN_W;
+                    btnX = keyboardX + lastRowNormalBtnsW;
+                } else {
+                    btnX = keyboardX + col * BTN_W;
+                }
+
+                var btnY = keyboardY + row * BTN_H;
+                var isSelected = (row === selectedRow && col === selectedCol);
+                var isPressed = (row === pressedRow && col === pressedCol);
+
+                if (isPressed) {
+                    // Pressed state: filled black with white text
+                    this.drawRoundRect(btnX, btnY, btnW, BTN_H, 2, '#000');
+                    var charW = HaxrcorpFont16.textWidth(char || ' ');
+                    var charX = btnX + Math.floor((btnW - charW) / 2);
+                    var charY = btnY + 2;
+                    if (char !== ' ') HaxrcorpFont16.draw(ctx, char, charX, charY, '#fff');
+                } else if (isSelected) {
+                    // Selected state: black frame only
+                    this.drawRoundFrame(btnX, btnY, btnW, BTN_H, 2, '#000');
+                    var charW = HaxrcorpFont16.textWidth(char || ' ');
+                    var charX = btnX + Math.floor((btnW - charW) / 2);
+                    var charY = btnY + 2;
+                    if (char !== ' ') HaxrcorpFont16.draw(ctx, char, charX, charY, '#000');
+                } else {
+                    // Default state: gray frame only
+                    this.drawRoundFrame(btnX, btnY, btnW, BTN_H, 2, '#888');
+                    var charW = HaxrcorpFont16.textWidth(char || ' ');
+                    var charX = btnX + Math.floor((btnW - charW) / 2);
+                    var charY = btnY + 2;
+                    if (char !== ' ') HaxrcorpFont16.draw(ctx, char, charX, charY, '#000');
+                }
+            }
+        }
+
+        // Draw "back to DEL" label on the right
+        var labelX = keyboardX + cols * BTN_W + 5;
+        var labelY = keyboardY + Math.floor((keyboardH - 11) / 2);
+        HaxrcorpFont16.draw(ctx, 'back to', labelX, labelY - 6, '#000');
+        HaxrcorpFont16.draw(ctx, 'DEL', labelX, labelY + 2, '#000');
+    };
+
+    // drawCursor(x, y, width, height, color)
+    // Draws a blinking text cursor (vertical line)
+    FlipCanvas.prototype.drawCursor = function(x, y, w, h, color) {
+        this.ctx.fillStyle = color || '#000';
+        this.ctx.fillRect(x, y, w, h);
+    };
+
     return FlipCanvas;
 })();
