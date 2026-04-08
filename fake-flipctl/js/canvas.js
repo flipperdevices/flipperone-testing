@@ -435,11 +435,22 @@ var FlipCanvas = (function() {
             }
         }
 
-        // Draw "back to DEL" label on the right
-        var labelX = keyboardX + cols * BTN_W + 5;
-        var labelY = keyboardY + Math.floor((keyboardH - 11) / 2);
-        HaxrcorpFont16.draw(ctx, 'back to', labelX, labelY - 6, '#000');
-        HaxrcorpFont16.draw(ctx, 'DEL', labelX, labelY + 2, '#000');
+        // Draw back icon and "Delete" label on the right
+        var labelX = keyboardX + cols * BTN_W + 5 + 2;  // +3px to the right
+        var labelY = keyboardY + 12;  // Position icon higher
+
+        // Set semi-transparent alpha (0.5 = 50%)
+        ctx.globalAlpha = 0.5;
+
+        // Draw "Delete" text above icon (raised 3px)
+        var deleteTextY = labelY - 8 - 2;
+        HaxrcorpFont16.draw(ctx, 'Delete', labelX - 2, deleteTextY, '#000');
+
+        // Draw back icon (16x16) - shifted 2px right
+        this.drawIcon(Icons.back, labelX + 2, labelY + 1, '#000');
+
+        // Restore full opacity
+        ctx.globalAlpha = 1.0;
     };
 
     // drawCursor(x, y, width, height, color)
@@ -447,6 +458,29 @@ var FlipCanvas = (function() {
     FlipCanvas.prototype.drawCursor = function(x, y, w, h, color) {
         this.ctx.fillStyle = color || '#000';
         this.ctx.fillRect(x, y, w, h);
+    };
+
+    // drawIcon(icon, x, y, color)
+    // Draws a bitmap icon (from icons.js)
+    // icon: {w: width, h: height, d: [hex values]}
+    FlipCanvas.prototype.drawIcon = function(icon, x, y, color) {
+        if (!icon || !icon.d) return;
+
+        var ctx = this.ctx;
+        ctx.fillStyle = color || '#000';
+
+        for (var row = 0; row < icon.h; row++) {
+            var hexValue = icon.d[row];
+            if (hexValue === undefined) continue;
+
+            // Convert hex to binary and draw pixels
+            var bits = hexValue.toString(2).padStart(icon.w, '0');
+            for (var col = 0; col < icon.w && col < bits.length; col++) {
+                if (bits[col] === '1') {
+                    ctx.fillRect(x + col, y + row, 1, 1);
+                }
+            }
+        }
     };
 
     return FlipCanvas;
