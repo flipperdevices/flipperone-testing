@@ -21,7 +21,9 @@
 
         for (var i = 0; i < keys.length; i++) {
             if (scene && scene.handleInput) {
-                if (scene.handleInput(keys[i]) === 'pop') {
+                var action = keys[i].action || keys[i];
+                var rawKey = keys[i].key || null;
+                if (scene.handleInput(action, rawKey) === 'pop') {
                     scenes.pop();
                     scene = scenes.current();
                     needsRender = true;

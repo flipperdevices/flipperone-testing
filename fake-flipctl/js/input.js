@@ -29,7 +29,7 @@ var Input = (function() {
             var action = KEY_MAP[e.key];
             if (action) {
                 e.preventDefault();
-                self._queue.push(action);
+                self._queue.push({ action: action, key: e.key });
             }
         });
     }

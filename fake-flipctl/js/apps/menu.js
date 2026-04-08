@@ -10,22 +10,28 @@ var MenuScene = (function() {
             'Routing info',
             '5G Modem',
             'Wi-Fi',
-            'Ethernet'
+            'Ethernet',
+            'USB Ethernet'
         ], {
             'Routing info': function() { return new RoutingScene(); },
             '5G Modem': function() { return new Modem5gScene(); },
-            'Ethernet': function() { return new EthernetScene(); }
+            'Wi-Fi': function() { return new WifiMenuScene(sm); },
+            'Ethernet': function() { return new EthernetScene(); },
+            'USB Ethernet': function() { return new UsbEthScene(); }
         });
     }
 
     function testingMenu(sm) {
         return new SubMenuScene(sm, 'Testing', [
-            'Screen',
-            'Input',
+            'LCD Screen',
+            'Connected Monitors',
+            'Buttons Test',
             'Sound',
             'GPIO'
         ], {
-            'Screen': function() { return new ScreenTestScene(); },
+            'LCD Screen': function() { return new ScreenTestScene(); },
+            'Connected Monitors': function() { return new MonitorsScene(); },
+            'Buttons Test': function() { return new ButtonsTestScene(); },
             'Sound': function() { return new SoundMenuScene(sm); }
         });
     }
@@ -37,6 +43,7 @@ var MenuScene = (function() {
             'Disk info',
             'Update'
         ], {
+            'System info': function() { return new SysInfoScene(); },
             'Battery info': function() { return new PowerScene(); },
             'Disk info': function() { return new DiskSpaceScene(); },
             'Update': function() { return new UpdateScene(); }
