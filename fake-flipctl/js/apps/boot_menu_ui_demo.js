@@ -44,6 +44,7 @@ var UIDemoScene = (function() {
         this.selectedIndex = 0;
         this.items[this.selectedIndex].state = STATE_SELECTED;
         this.popup = null;  // active PopupMenuLeft, or null
+        this.popupClosing = false;  // Show Close button feedback while closing
 
         // ── App-defined buttons ───────────────────────────────────────────────
         // Each button maps to an input action (see input.js KEY_MAP).
@@ -51,6 +52,8 @@ var UIDemoScene = (function() {
         var self = this;
         var editBtn = new UI.MiddleButton('Edit', 1, BTN_W, BTN_GAP, 'edit', function() { self._onEdit(); });
         this._editBtn = editBtn;
+        var closeBtn = new UI.LeftButton('Close', BTN_W, 'esc', function() { /* popup handles esc */ });
+        this._closeBtn = closeBtn;
         this.app_defined_buttons = [
             new UI.LeftButton  ('OFF',   BTN_W,             'esc',   function() { self._onEsc();  }),
             editBtn,
@@ -88,9 +91,21 @@ var UIDemoScene = (function() {
     UIDemoScene.prototype.exit = function() {};
 
     UIDemoScene.prototype.handleInput = function(action) {
-        // If popup is open, route all input to it
+        // If popup is open, handle Close button feedback and close immediately
         if (this.popup) {
-            this.popup.handleInput(action);
+            if (action === 'esc') {
+                // Show feedback on Close button while closing popup
+                this._closeBtn.press();
+                this.popup.handleInput('esc');  // Close popup immediately
+                this.popupClosing = true;
+                var self = this;
+                setTimeout(function() {
+                    self._closeBtn.release();
+                    self.popupClosing = false;
+                }, 150);
+            } else {
+                this.popup.handleInput(action);
+            }
             return;
         }
 
@@ -137,8 +152,19 @@ var UIDemoScene = (function() {
             btn.render(canvas);
         }
 
-        // Render popup on top (replaces Edit button)
-        if (this.popup) this.popup.render(canvas);
+        // Render popup with semi-transparent white overlay
+        if (this.popup) {
+            // Draw white overlay with 75% opacity (25% transparency)
+            canvas.ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
+            canvas.ctx.fillRect(0, 0, canvas.w, canvas.h);
+            // Render popup on top
+            this.popup.render(canvas);
+            // Render Close button (left button, on top of OFF) with feedback
+            this._closeBtn.render(canvas);
+        } else if (this.popupClosing) {
+            // Show only Close button feedback, no overlay
+            this._closeBtn.render(canvas);
+        }
     };
 
     return UIDemoScene;
