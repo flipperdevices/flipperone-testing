@@ -49,6 +49,9 @@ var UIDemoScene = (function() {
         this.keyboardClosing = false;  // Show Close button feedback while closing keyboard
         this.inputText = '';  // Text entered via keyboard
         this.cursor = null;  // Blinking cursor for text input
+        this.tabHeader = null;  // TabHeader for keyboard
+        this.textInputBox = null;  // TextInputBox when keyboard is open
+        this.inputField = null;  // InputField for text entry
 
         // ── App-defined buttons ───────────────────────────────────────────────
         // Each button maps to an input action (see input.js KEY_MAP).
@@ -85,6 +88,10 @@ var UIDemoScene = (function() {
     };
     UIDemoScene.prototype._onEdit  = function() {
         var self = this;
+        // Create tab header, text input box and field
+        this.tabHeader = new UI.TabHeader('Text input');
+        this.textInputBox = new UI.TextInputBox();
+        this.inputField = new UI.InputField();
         // Open keyboard with full qwerty layout
         this.keyboard = new UI.Keyboard(
             [
@@ -106,6 +113,9 @@ var UIDemoScene = (function() {
             function() {
                 self.keyboard = null;
                 self.cursor = null;
+                self.tabHeader = null;
+                self.textInputBox = null;
+                self.inputField = null;
             }
         );
         // Create blinking cursor with 500ms blink interval
@@ -119,7 +129,34 @@ var UIDemoScene = (function() {
     UIDemoScene.prototype.exit = function() {};
 
     UIDemoScene.prototype.handleInput = function(action) {
-        // If keyboard is open, handle Close/Done buttons and keyboard input
+        // If input window is open, handle it
+        if (this.inputWindow && this.keyboard) {
+            if (action === 'esc') {
+                var self = this;
+                // Cancel input window
+                if (this.inputWindow.onCancel) this.inputWindow.onCancel();
+                this.inputWindow = null;
+                this.keyboard = null;
+                // Show feedback
+                this._closeBtn.press();
+                this.keyboardClosing = true;
+                setTimeout(function() {
+                    self._closeBtn.release();
+                    self.keyboardClosing = false;
+                }, 150);
+            } else if (action === 'ok') {
+                // Submit input window
+                if (this.inputWindow.onSubmit) this.inputWindow.onSubmit(this.inputWindow.text);
+                this.inputWindow = null;
+                this.keyboard = null;
+            } else {
+                // Pass other inputs to keyboard
+                this.keyboard.handleInput(action);
+            }
+            return;
+        }
+
+        // If keyboard is open (without input window), handle Close/Done buttons and keyboard input
         if (this.keyboard) {
             if (action === 'esc') {
                 var self = this;
@@ -204,21 +241,35 @@ var UIDemoScene = (function() {
 
         // Render keyboard if open
         if (this.keyboard) {
-            // Update cursor blink state
-            if (this.cursor) this.cursor.update();
-
             // Draw white overlay
             canvas.ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
             canvas.ctx.fillRect(0, 0, canvas.w, canvas.h);
+
+            // Render tab header
+            if (this.tabHeader) {
+                this.tabHeader.render(canvas);
+            }
+
+            // Render text input box
+            if (this.textInputBox) {
+                this.textInputBox.render(canvas);
+
+                // Render input field
+                if (this.inputField) {
+                    this.inputField.render(canvas);
+
+                    // Draw input text and cursor inside the field (10px padding left + 3px padding)
+                    if (this.cursor) this.cursor.update();
+                    HaxrcorpFont16.draw(canvas.ctx, this.inputText, 25, 27, '#000');
+                    if (this.cursor && this.cursor.isVisible()) {
+                        var cursorX = 25 + HaxrcorpFont16.textWidth(this.inputText) + 1;
+                        canvas.drawCursor(cursorX, 28, 1, 10, '#000');
+                    }
+                }
+            }
+
             // Render keyboard
             this.keyboard.render(canvas);
-            // Draw input text at top
-            HaxrcorpFont16.draw(canvas.ctx, this.inputText, 10, 10, '#000');
-            // Draw blinking cursor after text
-            if (this.cursor && this.cursor.isVisible()) {
-                var cursorX = 10 + HaxrcorpFont16.textWidth(this.inputText);
-                canvas.drawCursor(cursorX, 10, 1, 11, '#000');
-            }
             // Render Close and Done buttons
             this._closeBtn.render(canvas);
             this._doneBtn.render(canvas);

@@ -290,6 +290,192 @@ var FlipCanvas = (function() {
         ctx.fillRect(x, y + bodyH, 1, TAB_H - 4);
     };
 
+    // drawInputField(x, y, w, h, r, bgColor, borderColor)
+    // Input field with rounded corners (r=3)
+    // Simple bordered rectangle for text input
+    FlipCanvas.prototype.drawInputField = function(x, y, w, h, r, bgColor, borderColor) {
+        var ctx = this.ctx;
+
+        // ── Fill ──────────────────────────────────────────────────────────────
+        ctx.fillStyle = bgColor;
+
+        // Main rectangles
+        ctx.fillRect(x + r, y, w - r * 2, h);           // center
+        ctx.fillRect(x, y + r, r, h - r * 2);           // left edge
+        ctx.fillRect(x + w - r, y + r, r, h - r * 2);   // right edge
+
+        // Corner pixels (r=3)
+        // Top-left
+        ctx.fillRect(x + 2, y, 1, 1);
+        ctx.fillRect(x + 1, y + 1, 1, 1);
+        ctx.fillRect(x + 2, y + 1, 1, 1);
+        ctx.fillRect(x, y + 2, 1, 1);
+        ctx.fillRect(x + 1, y + 2, 1, 1);
+        ctx.fillRect(x + 2, y + 2, 1, 1);
+
+        // Top-right (mirror)
+        ctx.fillRect(x + w - 3, y, 1, 1);
+        ctx.fillRect(x + w - 2, y + 1, 1, 1);
+        ctx.fillRect(x + w - 3, y + 1, 1, 1);
+        ctx.fillRect(x + w - 1, y + 2, 1, 1);
+        ctx.fillRect(x + w - 2, y + 2, 1, 1);
+        ctx.fillRect(x + w - 3, y + 2, 1, 1);
+
+        // Bottom-left (inverted)
+        ctx.fillRect(x, y + h - 3, 1, 1);
+        ctx.fillRect(x + 1, y + h - 3, 1, 1);
+        ctx.fillRect(x + 2, y + h - 3, 1, 1);
+        ctx.fillRect(x + 1, y + h - 2, 1, 1);
+        ctx.fillRect(x + 2, y + h - 2, 1, 1);
+        ctx.fillRect(x + 2, y + h - 1, 1, 1);
+
+        // Bottom-right (mirror)
+        ctx.fillRect(x + w - 1, y + h - 3, 1, 1);
+        ctx.fillRect(x + w - 2, y + h - 3, 1, 1);
+        ctx.fillRect(x + w - 3, y + h - 3, 1, 1);
+        ctx.fillRect(x + w - 2, y + h - 2, 1, 1);
+        ctx.fillRect(x + w - 3, y + h - 2, 1, 1);
+        ctx.fillRect(x + w - 3, y + h - 1, 1, 1);
+
+        // ── Border ────────────────────────────────────────────────────────────
+        ctx.fillStyle = borderColor;
+
+        // Top-left corner outline (r=3)
+        ctx.fillRect(x + 2, y, 1, 1);
+        ctx.fillRect(x + 1, y + 1, 1, 1);
+        ctx.fillRect(x, y + 2, 1, 1);
+
+        // Top edge
+        ctx.fillRect(x + 3, y, w - 6, 1);
+
+        // Top-right corner outline
+        ctx.fillRect(x + w - 3, y, 1, 1);
+        ctx.fillRect(x + w - 2, y + 1, 1, 1);
+        ctx.fillRect(x + w - 1, y + 2, 1, 1);
+
+        // Right edge
+        ctx.fillRect(x + w - 1, y + 3, 1, h - 6);
+
+        // Bottom-right corner outline
+        ctx.fillRect(x + w - 1, y + h - 3, 1, 1);
+        ctx.fillRect(x + w - 2, y + h - 2, 1, 1);
+        ctx.fillRect(x + w - 3, y + h - 1, 1, 1);
+
+        // Bottom edge
+        ctx.fillRect(x + 3, y + h - 1, w - 6, 1);
+
+        // Bottom-left corner outline
+        ctx.fillRect(x, y + h - 3, 1, 1);
+        ctx.fillRect(x + 1, y + h - 2, 1, 1);
+        ctx.fillRect(x + 2, y + h - 1, 1, 1);
+
+        // Left edge
+        ctx.fillRect(x, y + 3, 1, h - 6);
+    };
+
+    // drawTabHeader(x, y, w, h)
+    // Tab header with rounded top corners (r=4)
+    // Solid black fill with white text
+    FlipCanvas.prototype.drawTabHeader = function(x, y, w, h) {
+        var R = 4;
+        var ctx = this.ctx;
+
+        ctx.fillStyle = '#000';
+
+        // Main rectangles
+        ctx.fillRect(x + R, y, w - R * 2, h);           // center
+        ctx.fillRect(x, y + R, R, h - R);               // left edge
+        ctx.fillRect(x + w - R, y + R, R, h - R);       // right edge
+
+        // Top-left corner pixels (r=4)
+        ctx.fillRect(x + 3, y, 1, 1);
+        ctx.fillRect(x + 2, y + 1, 1, 1);
+        ctx.fillRect(x + 3, y + 1, 1, 1);
+        ctx.fillRect(x + 1, y + 2, 1, 1);
+        ctx.fillRect(x + 2, y + 2, 1, 1);
+        ctx.fillRect(x + 3, y + 2, 1, 1);
+        ctx.fillRect(x, y + 3, 1, 1);
+        ctx.fillRect(x + 1, y + 3, 1, 1);
+        ctx.fillRect(x + 2, y + 3, 1, 1);
+        ctx.fillRect(x + 3, y + 3, 1, 1);
+
+        // Top-right corner pixels (mirror of top-left)
+        ctx.fillRect(x + w - 4, y, 1, 1);
+        ctx.fillRect(x + w - 3, y + 1, 1, 1);
+        ctx.fillRect(x + w - 4, y + 1, 1, 1);
+        ctx.fillRect(x + w - 2, y + 2, 1, 1);
+        ctx.fillRect(x + w - 3, y + 2, 1, 1);
+        ctx.fillRect(x + w - 4, y + 2, 1, 1);
+        ctx.fillRect(x + w - 1, y + 3, 1, 1);
+        ctx.fillRect(x + w - 2, y + 3, 1, 1);
+        ctx.fillRect(x + w - 3, y + 3, 1, 1);
+        ctx.fillRect(x + w - 4, y + 3, 1, 1);
+    };
+
+    // drawTextInputBox(x, y, w, h, bg, fg)
+    // Text input box with rounded top corners (r=4)
+    // Three-sided border: top, left, right (no bottom, connects to keyboard)
+    FlipCanvas.prototype.drawTextInputBox = function(x, y, w, h, bg, fg) {
+        var R = 4;
+        var ctx = this.ctx;
+
+        // ── Fill ──────────────────────────────────────────────────────────────
+        ctx.fillStyle = bg;
+
+        // Main rectangles for rounded top corners
+        ctx.fillRect(x + R, y, w - R * 2, h);           // center column (full height)
+        ctx.fillRect(x, y + R, R, h - R);               // left edge
+        ctx.fillRect(x + w - R, y + R, R, h - R);       // right edge
+
+        // Top-left corner pixels (r=4)
+        ctx.fillRect(x + 3, y, 1, 1);
+        ctx.fillRect(x + 2, y + 1, 1, 1);
+        ctx.fillRect(x + 3, y + 1, 1, 1);
+        ctx.fillRect(x + 1, y + 2, 1, 1);
+        ctx.fillRect(x + 2, y + 2, 1, 1);
+        ctx.fillRect(x + 3, y + 2, 1, 1);
+        ctx.fillRect(x, y + 3, 1, 1);
+        ctx.fillRect(x + 1, y + 3, 1, 1);
+        ctx.fillRect(x + 2, y + 3, 1, 1);
+        ctx.fillRect(x + 3, y + 3, 1, 1);
+
+        // Top-right corner pixels (mirror of top-left)
+        ctx.fillRect(x + w - 4, y, 1, 1);
+        ctx.fillRect(x + w - 3, y + 1, 1, 1);
+        ctx.fillRect(x + w - 4, y + 1, 1, 1);
+        ctx.fillRect(x + w - 2, y + 2, 1, 1);
+        ctx.fillRect(x + w - 3, y + 2, 1, 1);
+        ctx.fillRect(x + w - 4, y + 2, 1, 1);
+        ctx.fillRect(x + w - 1, y + 3, 1, 1);
+        ctx.fillRect(x + w - 2, y + 3, 1, 1);
+        ctx.fillRect(x + w - 3, y + 3, 1, 1);
+        ctx.fillRect(x + w - 4, y + 3, 1, 1);
+
+        // ── Border ────────────────────────────────────────────────────────────
+        ctx.fillStyle = fg;
+
+        // Top-left corner outline (r=4)
+        ctx.fillRect(x + 3, y, 1, 1);
+        ctx.fillRect(x + 2, y + 1, 1, 1);
+        ctx.fillRect(x + 1, y + 2, 1, 1);
+        ctx.fillRect(x, y + 3, 1, 1);
+
+        // Top edge
+        ctx.fillRect(x + 4, y, w - 8, 1);
+
+        // Top-right corner outline (r=4)
+        ctx.fillRect(x + w - 4, y, 1, 1);
+        ctx.fillRect(x + w - 3, y + 1, 1, 1);
+        ctx.fillRect(x + w - 2, y + 2, 1, 1);
+        ctx.fillRect(x + w - 1, y + 3, 1, 1);
+
+        // Right edge
+        ctx.fillRect(x + w - 1, y + 4, 1, h - 4);
+
+        // Left edge
+        ctx.fillRect(x, y + 4, 1, h - 4);
+    };
+
     // drawKeyboard(x, y, rows, selectedRow, selectedCol, pressedRow, pressedCol, bg, fg)
     // Renders a virtual keyboard popup with rounded corners (r=4)
     // rows: array of arrays of characters (e.g., [['q','w','e',...], [...], ...])

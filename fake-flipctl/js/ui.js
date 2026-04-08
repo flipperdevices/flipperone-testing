@@ -291,6 +291,56 @@ var UI = (function() {
         }
     };
 
+    // ── TabHeader ─────────────────────────────────────────────────────────────
+    // Tab header above main input box with rounded top corners (r=4)
+    // x coincides with TextInputBox (x=6)
+    // Black background with white text
+    function TabHeader(text) {
+        this.x = 6;
+        this.y = 3;          // 3px from top
+        this.text = text || '';
+        this.h = 16;         // Height of tab
+        // Width: text width + 3px padding on each side
+        this.w = HaxrcorpFont16.textWidth(this.text) + 6;
+    }
+
+    TabHeader.prototype.render = function(canvas) {
+        // Draw black background with rounded top corners
+        canvas.drawTabHeader(this.x, this.y, this.w, this.h);
+        // Draw white text (centered vertically)
+        var textY = this.y + Math.floor((this.h - 11) / 2);  // 11 is font height
+        HaxrcorpFont16.draw(canvas.ctx, this.text, this.x + 3, textY, '#fff');
+    };
+
+    // ── TextInputBox ──────────────────────────────────────────────────────
+    // Container for text input with rounded top corners
+    // Positioned 16px from top, extends to keyboard at 70px
+    // Height: 54px, Width: 244px (256 - 6px padding left - 6px padding right)
+    function TextInputBox() {
+        this.x = 6;
+        this.y = 16;
+        this.w = 244;  // 256 - 12 (6px padding each side)
+        this.h = 54;  // 70 - 16
+    }
+
+    TextInputBox.prototype.render = function(canvas) {
+        canvas.drawTextInputBox(this.x, this.y, this.w, this.h, '#fff', '#000');
+    };
+
+    // ── InputField ────────────────────────────────────────────────────────────
+    // Input field with rounded corners (r=3)
+    // Height: 14px, positioned inside TextInputBox with padding
+    function InputField() {
+        this.x = 22;         // 6px screen padding + 6px box padding + 10px field padding
+        this.y = 26;         // Inside TextInputBox (starts at 16) with 10px padding
+        this.w = 212;        // 244 (box width) - 6px left padding - 6px right padding - 10px left - 10px right
+        this.h = 14;
+    }
+
+    InputField.prototype.render = function(canvas) {
+        canvas.drawInputField(this.x, this.y, this.w, this.h, 3, '#fff', '#000');
+    };
+
     return {
         drawStatusBar:  drawStatusBar,
         drawMenuList:   drawMenuList,
@@ -300,6 +350,9 @@ var UI = (function() {
         RightButton:    RightButton,
         PopupMenuLeft:  PopupMenuLeft,
         Keyboard:       Keyboard,
+        TabHeader:      TabHeader,
+        TextInputBox:   TextInputBox,
+        InputField:     InputField,
         STATUS_BAR_H:   STATUS_BAR_H,
         ITEM_H:         ITEM_H,
         PAD_LEFT:       PAD_LEFT
