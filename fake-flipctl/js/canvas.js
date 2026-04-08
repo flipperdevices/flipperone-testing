@@ -144,5 +144,151 @@ var FlipCanvas = (function() {
         return BitmapFont.textWidth(text, scale);
     };
 
+    // drawPopupLeft(x, y, bodyW, bodyH, tabW, bg, tabBg, fg)
+    // Popup with two rectangles: body (top, TL/TR/BR rounded r=4, BL square)
+    // and tab (bottom, BL/BR rounded r=4, TL/TR square).
+    // Body: white (#fff), Tab: darker (#D0D0D0)
+    FlipCanvas.prototype.drawPopupLeft = function(x, y, bodyW, bodyH, tabW, bg, tabBg, fg) {
+        var TAB_H = 17;
+        var R = 4;
+        var ctx = this.ctx;
+
+        // ── Body Fill ────────────────────────────────────────────────────────
+        ctx.fillStyle = bg;
+
+        // Body main rectangles
+        ctx.fillRect(x + R, y, bodyW - R * 2, bodyH);           // top/center (without rounded corners)
+        ctx.fillRect(x, y + R, R, bodyH - R);                   // left edge (straight)
+        ctx.fillRect(x + bodyW - R, y + R, R, bodyH - R * 2);   // right edge (TR and BR space)
+
+        // Body corner fill pixels (r=4)
+        // TL corner
+        ctx.fillRect(x + 3, y, 1, 1);
+        ctx.fillRect(x + 2, y + 1, 1, 1);
+        ctx.fillRect(x + 3, y + 1, 1, 1);
+        ctx.fillRect(x + 1, y + 2, 1, 1);
+        ctx.fillRect(x + 2, y + 2, 1, 1);
+        ctx.fillRect(x + 3, y + 2, 1, 1);
+        ctx.fillRect(x, y + 3, 1, 1);
+        ctx.fillRect(x + 1, y + 3, 1, 1);
+        ctx.fillRect(x + 2, y + 3, 1, 1);
+        ctx.fillRect(x + 3, y + 3, 1, 1);
+        // TR corner (mirror TL)
+        ctx.fillRect(x + bodyW - 4, y, 1, 1);
+        ctx.fillRect(x + bodyW - 3, y + 1, 1, 1);
+        ctx.fillRect(x + bodyW - 4, y + 1, 1, 1);
+        ctx.fillRect(x + bodyW - 2, y + 2, 1, 1);
+        ctx.fillRect(x + bodyW - 3, y + 2, 1, 1);
+        ctx.fillRect(x + bodyW - 4, y + 2, 1, 1);
+        ctx.fillRect(x + bodyW - 1, y + 3, 1, 1);
+        ctx.fillRect(x + bodyW - 2, y + 3, 1, 1);
+        ctx.fillRect(x + bodyW - 3, y + 3, 1, 1);
+        ctx.fillRect(x + bodyW - 4, y + 3, 1, 1);
+        // BR corner (180 rotation of TL)
+        ctx.fillRect(x + bodyW - 4, y + bodyH - 4, 1, 1);
+        ctx.fillRect(x + bodyW - 3, y + bodyH - 4, 1, 1);
+        ctx.fillRect(x + bodyW - 2, y + bodyH - 4, 1, 1);
+        ctx.fillRect(x + bodyW - 1, y + bodyH - 4, 1, 1);
+        ctx.fillRect(x + bodyW - 4, y + bodyH - 3, 1, 1);
+        ctx.fillRect(x + bodyW - 3, y + bodyH - 3, 1, 1);
+        ctx.fillRect(x + bodyW - 2, y + bodyH - 3, 1, 1);
+        ctx.fillRect(x + bodyW - 4, y + bodyH - 2, 1, 1);
+        ctx.fillRect(x + bodyW - 3, y + bodyH - 2, 1, 1);
+        ctx.fillRect(x + bodyW - 4, y + bodyH - 1, 1, 1);
+
+        // ── Tab Fill ────────────────────────────────────────────────────────
+        ctx.fillStyle = tabBg;
+
+        // Tab main rectangles
+        ctx.fillRect(x + R, y + bodyH, tabW - R * 2, TAB_H);    // center/bottom
+        ctx.fillRect(x, y + bodyH, R, TAB_H - R);               // left edge (TL square)
+        ctx.fillRect(x + tabW - R, y + bodyH, R, TAB_H - R);    // right edge (TR square)
+
+        // Tab corner fill pixels (r=4)
+        // BL corner (inverted vertically from TL)
+        ctx.fillRect(x, y + bodyH + TAB_H - 4, 1, 1);
+        ctx.fillRect(x + 1, y + bodyH + TAB_H - 4, 1, 1);
+        ctx.fillRect(x + 2, y + bodyH + TAB_H - 4, 1, 1);
+        ctx.fillRect(x + 3, y + bodyH + TAB_H - 4, 1, 1);
+        ctx.fillRect(x + 1, y + bodyH + TAB_H - 3, 1, 1);
+        ctx.fillRect(x + 2, y + bodyH + TAB_H - 3, 1, 1);
+        ctx.fillRect(x + 3, y + bodyH + TAB_H - 3, 1, 1);
+        ctx.fillRect(x + 2, y + bodyH + TAB_H - 2, 1, 1);
+        ctx.fillRect(x + 3, y + bodyH + TAB_H - 2, 1, 1);
+        ctx.fillRect(x + 3, y + bodyH + TAB_H - 1, 1, 1);
+        // BR corner (inverted vertically from TR)
+        ctx.fillRect(x + tabW - 4, y + bodyH + TAB_H - 4, 1, 1);
+        ctx.fillRect(x + tabW - 3, y + bodyH + TAB_H - 4, 1, 1);
+        ctx.fillRect(x + tabW - 2, y + bodyH + TAB_H - 4, 1, 1);
+        ctx.fillRect(x + tabW - 1, y + bodyH + TAB_H - 4, 1, 1);
+        ctx.fillRect(x + tabW - 4, y + bodyH + TAB_H - 3, 1, 1);
+        ctx.fillRect(x + tabW - 3, y + bodyH + TAB_H - 3, 1, 1);
+        ctx.fillRect(x + tabW - 2, y + bodyH + TAB_H - 3, 1, 1);
+        ctx.fillRect(x + tabW - 4, y + bodyH + TAB_H - 2, 1, 1);
+        ctx.fillRect(x + tabW - 3, y + bodyH + TAB_H - 2, 1, 1);
+        ctx.fillRect(x + tabW - 4, y + bodyH + TAB_H - 1, 1, 1);
+
+        // ── Body Border ──────────────────────────────────────────────────────
+        ctx.fillStyle = fg;
+
+        // TL corner outline (r=4)
+        ctx.fillRect(x + 3, y, 1, 1);
+        ctx.fillRect(x + 2, y + 1, 1, 1);
+        ctx.fillRect(x + 1, y + 2, 1, 1);
+        ctx.fillRect(x, y + 3, 1, 1);
+
+        // Top edge
+        ctx.fillRect(x + 4, y, bodyW - 8, 1);
+
+        // TR corner outline (r=4)
+        ctx.fillRect(x + bodyW - 4, y, 1, 1);
+        ctx.fillRect(x + bodyW - 3, y + 1, 1, 1);
+        ctx.fillRect(x + bodyW - 2, y + 2, 1, 1);
+        ctx.fillRect(x + bodyW - 1, y + 3, 1, 1);
+
+        // Right edge of body
+        ctx.fillRect(x + bodyW - 1, y + 4, 1, bodyH - 8);
+
+        // BR corner outline (r=4)
+        ctx.fillRect(x + bodyW - 1, y + bodyH - 4, 1, 1);
+        ctx.fillRect(x + bodyW - 2, y + bodyH - 3, 1, 1);
+        ctx.fillRect(x + bodyW - 3, y + bodyH - 2, 1, 1);
+        ctx.fillRect(x + bodyW - 4, y + bodyH - 1, 1, 1);
+
+        // Bottom edge of body (right part, after tab)
+        if (bodyW > tabW) {
+            ctx.fillRect(x + tabW + 1, y + bodyH - 1, bodyW - tabW - 5, 1);
+        }
+
+        // Inner corner
+        ctx.fillRect(x + tabW, y + bodyH, 1, 1);
+
+        // Left edge of body
+        ctx.fillRect(x, y + 4, 1, bodyH - 4);
+
+        // ── Tab Border ───────────────────────────────────────────────────────
+
+        // BL corner outline (r=4)
+        ctx.fillRect(x, y + bodyH + TAB_H - 4, 1, 1);
+        ctx.fillRect(x + 1, y + bodyH + TAB_H - 3, 1, 1);
+        ctx.fillRect(x + 2, y + bodyH + TAB_H - 2, 1, 1);
+        ctx.fillRect(x + 3, y + bodyH + TAB_H - 1, 1, 1);
+
+        // Bottom edge of tab
+        ctx.fillRect(x + 4, y + bodyH + TAB_H - 1, tabW - 8, 1);
+
+        // BR corner outline (r=4)
+        ctx.fillRect(x + tabW - 4, y + bodyH + TAB_H - 1, 1, 1);
+        ctx.fillRect(x + tabW - 3, y + bodyH + TAB_H - 2, 1, 1);
+        ctx.fillRect(x + tabW - 2, y + bodyH + TAB_H - 3, 1, 1);
+        ctx.fillRect(x + tabW - 1, y + bodyH + TAB_H - 4, 1, 1);
+
+        // Right edge of tab
+        ctx.fillRect(x + tabW - 1, y + bodyH + 1, 1, TAB_H - 5);
+
+        // Left edge of tab
+        ctx.fillRect(x, y + bodyH, 1, TAB_H - 4);
+    };
+
     return FlipCanvas;
 })();

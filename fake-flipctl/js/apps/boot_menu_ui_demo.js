@@ -43,14 +43,17 @@ var UIDemoScene = (function() {
         ];
         this.selectedIndex = 0;
         this.items[this.selectedIndex].state = STATE_SELECTED;
+        this.popup = null;  // active PopupMenuLeft, or null
 
         // ── App-defined buttons ───────────────────────────────────────────────
         // Each button maps to an input action (see input.js KEY_MAP).
         // Pressing the key triggers the button animation + onPress callback.
         var self = this;
+        var editBtn = new UI.MiddleButton('Edit', 1, BTN_W, BTN_GAP, 'edit', function() { self._onEdit(); });
+        this._editBtn = editBtn;
         this.app_defined_buttons = [
             new UI.LeftButton  ('OFF',   BTN_W,             'esc',   function() { self._onEsc();  }),
-            new UI.MiddleButton('Edit', 1, BTN_W, BTN_GAP, 'edit', function() { self._onEdit(); }),
+            editBtn,
             null,
             null,
             new UI.RightButton ('Run',   BTN_W,             'run',   function() { self._onRun();  }),
@@ -66,7 +69,17 @@ var UIDemoScene = (function() {
 
     // ── Button handlers ───────────────────────────────────────────────────────
     UIDemoScene.prototype._onEsc   = function() { /* TODO */ };
-    UIDemoScene.prototype._onEdit  = function() { /* TODO */ };
+    UIDemoScene.prototype._onEdit  = function() {
+        var self = this;
+        this.popup = new UI.PopupMenuLeft(
+            ['Rename', 'Clone', 'Reset to default'],
+            this._editBtn.x,
+            BTN_W,
+            'Edit',  // button text for the tab
+            function(idx) { self.popup = null; /* TODO: handle idx */ },
+            function() { self.popup = null; }
+        );
+    };
     UIDemoScene.prototype._onPower = function() { /* TODO */ };
     UIDemoScene.prototype._onView  = function() { /* TODO */ };
     UIDemoScene.prototype._onRun   = function() { /* TODO */ };
@@ -75,6 +88,12 @@ var UIDemoScene = (function() {
     UIDemoScene.prototype.exit = function() {};
 
     UIDemoScene.prototype.handleInput = function(action) {
+        // If popup is open, route all input to it
+        if (this.popup) {
+            this.popup.handleInput(action);
+            return;
+        }
+
         // Check if action maps to a button
         var btn = this.btnActionMap[action];
         if (btn) {
@@ -110,12 +129,16 @@ var UIDemoScene = (function() {
             this.items[i].render(canvas, startX, y);
         }
 
-        // Render buttons
+        // Render buttons (skip Edit button when popup is open)
         for (var b = 0; b < this.app_defined_buttons.length; b++) {
             var btn = this.app_defined_buttons[b];
             if (!btn) continue;
+            if (this.popup && btn === this._editBtn) continue;
             btn.render(canvas);
         }
+
+        // Render popup on top (replaces Edit button)
+        if (this.popup) this.popup.render(canvas);
     };
 
     return UIDemoScene;

@@ -153,6 +153,79 @@ var UI = (function() {
     }
     RightButton.prototype = _makeButton('drawRightButton');
 
+    // ── PopupMenuLeft ────────────────────────────────────────────────────────
+    // Popup menu that appears above a button, replacing it with a tab.
+    // items    — array of label strings
+    // btnX     — left edge x position of the trigger button
+    // tabW     — width of the tab (button width, e.g., 48px)
+    // btnText  — fixed text for the tab (e.g., 'Edit')
+    // onSelect(index) — called when the user confirms a selection
+    // onClose()       — called when the popup is dismissed (esc / back)
+
+    var POPUP_ITEM_H = 13;  // px per menu item
+    var POPUP_PAD = 3;      // left/right/top/bottom padding inside body
+
+    function PopupMenuLeft(items, btnX, tabW, btnText, onSelect, onClose) {
+        this.items = items;
+        this.btnX = btnX;
+        this.tabW = tabW;
+        this.btnText = btnText;  // fixed button text for the tab
+        this.selIndex = 0;
+        this.onSelect = onSelect || null;
+        this.onClose = onClose || null;
+
+        // Calculate body width: longest item text + left/right padding (7px each)
+        var maxItemWidth = 0;
+        for (var i = 0; i < items.length; i++) {
+            var w = HaxrcorpFont16.textWidth(items[i]);
+            if (w > maxItemWidth) maxItemWidth = w;
+        }
+        this.bodyW = maxItemWidth + 7 + 7;  // 7px left + 7px right padding
+
+        // Calculate body height: items + top/bottom padding
+        this.bodyH = items.length * POPUP_ITEM_H + 2 * POPUP_PAD;
+
+        // Position: left-aligned with button, 4px above bottom (where tab sits)
+        this.x = btnX;
+        this.y = 144 - 17 - this.bodyH - 4;  // 144px screen height, 17px tab, 4px gap
+    }
+
+    PopupMenuLeft.prototype.render = function(canvas) {
+        // Draw shell (body + tab)
+        canvas.drawPopupLeft(this.x, this.y, this.bodyW, this.bodyH, this.tabW, '#fff', '#D0D0D0', '#000');
+
+        // Draw menu items
+        for (var i = 0; i < this.items.length; i++) {
+            var iy = this.y + POPUP_PAD + i * POPUP_ITEM_H;
+
+            // Draw selection highlight
+            if (i === this.selIndex) {
+                canvas.drawRoundFrame(this.x + POPUP_PAD, iy, this.bodyW - 2 * POPUP_PAD, POPUP_ITEM_H, 2, '#000');
+            }
+
+            // Draw item text (4px + 3px padding from left edge)
+            HaxrcorpFont16.draw(canvas.ctx, this.items[i], this.x + 7, iy + 1, '#000');
+        }
+
+        // Draw tab label (button text — centered in tab)
+        var tw = HaxrcorpFont16.textWidth(this.btnText);
+        var ttx = this.x + Math.floor((this.tabW - tw) / 2);
+        var tty = this.y + this.bodyH + Math.floor((17 - 11) / 2);
+        HaxrcorpFont16.draw(canvas.ctx, this.btnText, ttx, tty, '#000');
+    };
+
+    PopupMenuLeft.prototype.handleInput = function(action) {
+        if (action === 'up') {
+            this.selIndex = (this.selIndex - 1 + this.items.length) % this.items.length;
+        } else if (action === 'down') {
+            this.selIndex = (this.selIndex + 1) % this.items.length;
+        } else if (action === 'ok') {
+            if (this.onSelect) this.onSelect(this.selIndex);
+        } else if (action === 'esc' || action === 'back') {
+            if (this.onClose) this.onClose();
+        }
+    };
+
     return {
         drawStatusBar:  drawStatusBar,
         drawMenuList:   drawMenuList,
@@ -160,6 +233,7 @@ var UI = (function() {
         MiddleButton:   MiddleButton,
         LeftButton:     LeftButton,
         RightButton:    RightButton,
+        PopupMenuLeft:  PopupMenuLeft,
         STATUS_BAR_H:   STATUS_BAR_H,
         ITEM_H:         ITEM_H,
         PAD_LEFT:       PAD_LEFT
