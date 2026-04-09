@@ -114,8 +114,8 @@ var UI = (function() {
     // Button flush with bottom of screen. Rendering is in canvas.drawMiddleButton.
     function _makeButton(drawMethod) {
         return {
-            render:  function(canvas) { canvas[drawMethod](this.text, this.x, this.w, this.pressed); },
-            press:   function() { this.pressed = true; },
+            render:  function(canvas) { canvas[drawMethod](this.text, this.x, this.w, this.pressed, this.disabled); },
+            press:   function() { if (!this.disabled) this.pressed = true; },
             release: function() { this.pressed = false; }
         };
     }
@@ -126,6 +126,7 @@ var UI = (function() {
         this.x       = index * (w + gap);
         this.w       = w;
         this.pressed = false;
+        this.disabled = false;
         this.action  = action  || null;
         this.onPress = onPress || null;
     }
@@ -137,6 +138,7 @@ var UI = (function() {
         this.x       = 0;
         this.w       = w;
         this.pressed = false;
+        this.disabled = false;
         this.action  = action  || null;
         this.onPress = onPress || null;
     }
@@ -148,6 +150,7 @@ var UI = (function() {
         this.x       = (screenW || 256) - w;
         this.w       = w;
         this.pressed = false;
+        this.disabled = false;
         this.action  = action  || null;
         this.onPress = onPress || null;
     }
@@ -171,6 +174,7 @@ var UI = (function() {
         this.tabW = tabW;
         this.btnText = btnText;  // fixed button text for the tab
         this.selIndex = 0;
+        this.pressedIndex = -1;  // Track which item is pressed
         this.onSelect = onSelect || null;
         this.onClose = onClose || null;
 
@@ -180,7 +184,9 @@ var UI = (function() {
             var w = HaxrcorpFont16.textWidth(items[i]);
             if (w > maxItemWidth) maxItemWidth = w;
         }
-        this.bodyW = maxItemWidth + 7 + 7;  // 7px left + 7px right padding
+        var contentWidth = maxItemWidth + 7 + 7;  // 7px left + 7px right padding
+        var minWidth = tabW + 5;  // button width + 5px padding
+        this.bodyW = Math.max(contentWidth, minWidth);
 
         // Calculate body height: items + top/bottom padding
         this.bodyH = items.length * POPUP_ITEM_H + 2 * POPUP_PAD;
@@ -198,13 +204,19 @@ var UI = (function() {
         for (var i = 0; i < this.items.length; i++) {
             var iy = this.y + POPUP_PAD + i * POPUP_ITEM_H;
 
-            // Draw selection highlight
-            if (i === this.selIndex) {
+            // Draw selection highlight (not when pressed)
+            if (i === this.selIndex && i !== this.pressedIndex) {
                 canvas.drawRoundFrame(this.x + POPUP_PAD, iy, this.bodyW - 2 * POPUP_PAD, POPUP_ITEM_H, 2, '#000');
             }
 
+            // Draw pressed highlight (inverted - black background with white text)
+            if (i === this.pressedIndex) {
+                canvas.drawRoundRect(this.x + POPUP_PAD, iy, this.bodyW - 2 * POPUP_PAD, POPUP_ITEM_H, 2, '#000');
+            }
+
             // Draw item text (4px + 3px padding from left edge)
-            HaxrcorpFont16.draw(canvas.ctx, this.items[i], this.x + 7, iy + 1, '#000');
+            var textColor = (i === this.pressedIndex) ? '#fff' : '#000';
+            HaxrcorpFont16.draw(canvas.ctx, this.items[i], this.x + 7, iy + 1, textColor);
         }
 
         // Draw tab label (button text — centered in tab)
@@ -215,12 +227,19 @@ var UI = (function() {
     };
 
     PopupMenuLeft.prototype.handleInput = function(action) {
+        var self = this;
         if (action === 'up') {
             this.selIndex = (this.selIndex - 1 + this.items.length) % this.items.length;
         } else if (action === 'down') {
             this.selIndex = (this.selIndex + 1) % this.items.length;
         } else if (action === 'ok') {
-            if (this.onSelect) this.onSelect(this.selIndex);
+            // Show pressed feedback
+            this.pressedIndex = this.selIndex;
+            // Call onSelect after feedback delay
+            setTimeout(function() {
+                if (self.onSelect) self.onSelect(self.selIndex);
+                self.pressedIndex = -1;
+            }, 150);
         } else if (action === 'esc' || action === 'back') {
             if (this.onClose) this.onClose();
         }
@@ -341,6 +360,85 @@ var UI = (function() {
         canvas.drawInputField(this.x, this.y, this.w, this.h, 3, '#fff', '#000');
     };
 
+    // ── DeleteConfirmDialog ────────────────────────────────────────────────────
+    // Modal dialog for confirming profile deletion or reset
+    function DeleteConfirmDialog(profileName, onConfirm, onCancel, action) {
+        this.profileName = profileName;
+        this.onConfirm = onConfirm || null;
+        this.onCancel = onCancel || null;
+        this.action = action || 'Delete';  // 'Delete' or 'Reset to default'
+    }
+
+    DeleteConfirmDialog.prototype.render = function(canvas) {
+        // Draw semi-transparent overlay
+        canvas.ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
+        canvas.ctx.fillRect(0, 0, canvas.w, canvas.h);
+
+        // Draw modal box
+        var boxW = 200;
+        var boxH = 40;
+        var boxX = Math.floor((canvas.w - boxW) / 2);
+        var boxY = Math.floor((canvas.h - boxH) / 2);
+
+        // White background
+        canvas.drawRoundRect(boxX, boxY, boxW, boxH, 3, '#fff');
+        // Black border
+        canvas.drawRoundFrame(boxX, boxY, boxW, boxH, 3, '#000');
+
+        // Draw text (centered)
+        var messageText = this.action + ' "' + this.profileName + '"?';
+        var messageWidth = HaxrcorpFont16.textWidth(messageText);
+        var messageX = boxX + Math.floor((boxW - messageWidth) / 2);
+        var messageY = boxY + Math.floor((boxH - 11) / 2);
+        HaxrcorpFont16.draw(canvas.ctx, messageText, messageX, messageY, '#000');
+    };
+
+    DeleteConfirmDialog.prototype.handleInput = function(action) {
+        // Handled by app-defined buttons (esc and run)
+        if (action === 'esc') {
+            if (this.onCancel) this.onCancel();
+        } else if (action === 'run') {
+            if (this.onConfirm) this.onConfirm();
+        }
+    };
+
+    // ─── Scrollbar ───────────────────────────────────────────────────────────────
+    function Scrollbar(totalItems, visibleItems, currentIndex) {
+        this.totalItems = totalItems || 0;
+        this.visibleItems = visibleItems || 1;
+        this.currentIndex = currentIndex || 0;
+    }
+
+    Scrollbar.prototype.shouldShow = function() {
+        return this.totalItems > this.visibleItems;
+    };
+
+    Scrollbar.prototype.render = function(canvas, x, y, height) {
+        if (!this.shouldShow()) return;
+
+        // x is the position for the dotted line
+        // Draw dotted base line (1 pixel wide, dotted pattern: 1px black, 1px transparent)
+        for (var i = 0; i < height; i += 2) {
+            canvas.drawPixel(x, y + i, '#000');
+        }
+
+        // Calculate thumb size and position
+        var thumbHeight = Math.max(5, Math.round(height * this.visibleItems / this.totalItems));
+        var maxScroll = this.totalItems - this.visibleItems;
+        var scrollRatio = maxScroll > 0 ? this.currentIndex / maxScroll : 0;
+        var thumbY = y + Math.round((height - thumbHeight) * scrollRatio);
+
+        // Draw thumb (3 pixels wide) centered on the dotted line
+        // 1 pixel left of line (x-1), line itself (x), 1 pixel right of line (x+1)
+        canvas.drawRect(x - 1, thumbY, 3, thumbHeight, '#000');
+    };
+
+    Scrollbar.prototype.update = function(totalItems, visibleItems, currentIndex) {
+        this.totalItems = totalItems;
+        this.visibleItems = visibleItems;
+        this.currentIndex = currentIndex;
+    };
+
     return {
         drawStatusBar:  drawStatusBar,
         drawMenuList:   drawMenuList,
@@ -353,6 +451,8 @@ var UI = (function() {
         TabHeader:      TabHeader,
         TextInputBox:   TextInputBox,
         InputField:     InputField,
+        DeleteConfirmDialog: DeleteConfirmDialog,
+        Scrollbar:      Scrollbar,
         STATUS_BAR_H:   STATUS_BAR_H,
         ITEM_H:         ITEM_H,
         PAD_LEFT:       PAD_LEFT

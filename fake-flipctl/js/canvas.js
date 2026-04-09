@@ -55,9 +55,9 @@ var FlipCanvas = (function() {
     }
 
     // Middle button — both top corners rounded
-    FlipCanvas.prototype.drawMiddleButton = function(text, x, w, pressed) {
+    FlipCanvas.prototype.drawMiddleButton = function(text, x, w, pressed, disabled) {
         var y = this.h - BTN_H;
-        var c = _btnColors(pressed);
+        var c = disabled ? { bg: '#CCC', fg: '#999' } : _btnColors(pressed);
         this.ctx.fillStyle = c.bg;
         this.ctx.fillRect(x + BTN_R, y,          w - BTN_R * 2, BTN_H);
         this.ctx.fillRect(x,         y + BTN_R,  BTN_R,         BTN_H - BTN_R);
@@ -68,9 +68,9 @@ var FlipCanvas = (function() {
     };
 
     // Left button — flush with left screen edge, only top-right corner rounded
-    FlipCanvas.prototype.drawLeftButton = function(text, x, w, pressed) {
+    FlipCanvas.prototype.drawLeftButton = function(text, x, w, pressed, disabled) {
         var y = this.h - BTN_H;
-        var c = _btnColors(pressed);
+        var c = disabled ? { bg: '#CCC', fg: '#999' } : _btnColors(pressed);
         this.ctx.fillStyle = c.bg;
         this.ctx.fillRect(x,             y,         w - BTN_R, BTN_H);
         this.ctx.fillRect(x + w - BTN_R, y + BTN_R, BTN_R,    BTN_H - BTN_R);
@@ -79,9 +79,9 @@ var FlipCanvas = (function() {
     };
 
     // Right button — flush with right screen edge, only top-left corner rounded
-    FlipCanvas.prototype.drawRightButton = function(text, x, w, pressed) {
+    FlipCanvas.prototype.drawRightButton = function(text, x, w, pressed, disabled) {
         var y = this.h - BTN_H;
-        var c = _btnColors(pressed);
+        var c = disabled ? { bg: '#CCC', fg: '#999' } : _btnColors(pressed);
         this.ctx.fillStyle = c.bg;
         this.ctx.fillRect(x + BTN_R, y,        w - BTN_R, BTN_H);
         this.ctx.fillRect(x,         y + BTN_R, BTN_R,    BTN_H - BTN_R);
