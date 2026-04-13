@@ -502,6 +502,69 @@ MyComponent.prototype.release = function() {
 - **InputField**: Bordered box for text input with optional error message
 - **Features**: Blinking cursor, real-time validation, error display
 
+#### MessageBox
+Dialog box component with rounded corners, dynamic sizing, and fixed tail indicator.
+
+**Features:**
+- Dynamic width/height based on text content (max 25 characters per line)
+- Rounded corners (4px radius) with pixel-perfect rendering
+- Fixed tail indicator on left side (completely independent of frame position)
+- Text wrapping and newline support (`\n` for explicit line breaks)
+- Screen boundary clamping (no overflow)
+
+**Constructor:**
+```javascript
+var messageBox = new MessageBox({
+    text: "Your message here\nWith multiple lines",
+    tailX: 113,        // Horizontal position of tail (left edge)
+    tailY: 82,         // Vertical position of tail
+    bottomY: 86        // Fixed bottom edge position (frame aligns to this)
+});
+```
+
+**Properties:**
+- `padding`: 6px (internal spacing)
+- `radius`: 4px (corner radius)
+- `maxLineLength`: 25 characters per line
+- `textRightPadding`: 12px from right edge of screen
+
+**Methods:**
+- `render(canvas)` — Draw the component
+- `setText(newText)` — Update text content and recalculate layout
+- `setTailPosition(x, y)` — Move tail independently
+
+**Rendering Details:**
+- **White background** with black 1px border
+- **Tail indicator** (fixed position, independent of frame):
+  - Black horizontal strip (10px wide, 1px high)
+  - Black staircase pattern (8×8) ascending left to right above the strip
+  - White vertical line (1px wide, 8px high) covering the border junction
+- **Text rendering** uses HaxrcorpFont16 with automatic word wrapping
+
+**Key Behavior:**
+- Frame attaches to tail (positioned at `tailX + tailStripWidth`)
+- Frame width/height adjust based on text content
+- Frame position clamps to screen boundaries (6px padding from right edge)
+- Tail remains completely fixed at specified position regardless of frame size
+- Text max width is 25 characters; longer lines wrap to next line
+
+**Example Usage:**
+```javascript
+// In DesktopScene constructor:
+this.messageBox = new MessageBox({
+    text: "Hello, I'm totally Fake",
+    tailX: 113,
+    tailY: 82,
+    bottomY: 86
+});
+
+// In render method:
+this.messageBox.render(canvas);
+
+// Update text dynamically:
+this.messageBox.setText("New message here");
+```
+
 ### Component Composition Pattern
 ```javascript
 function MenuScene() {

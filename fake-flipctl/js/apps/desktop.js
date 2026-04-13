@@ -21,6 +21,22 @@ var DesktopScene = (function() {
             var btn = this.app_defined_buttons[i];
             if (btn && btn.action) this.btnActionMap[btn.action] = btn;
         }
+
+        // Phrases dictionary for the message box
+        var phrases = [
+            "Hello, I'm totally Fake",
+            "Never gonna give you up\nNever gonna let you down!",
+            "Sorry, I'm busy right now.\nI need to check every pixel\nbuilded by JS."
+        ];
+
+        // Pick a random phrase and create message box
+        var phrase = phrases[Math.floor(Math.random() * phrases.length)];
+        this.messageBox = new MessageBox({
+            text: phrase,
+            tailX: 113,
+            tailY: 82,
+            bottomY: 86
+        });
     }
 
     DesktopScene.prototype.enter = function() {};
@@ -49,6 +65,9 @@ var DesktopScene = (function() {
         var dolphinX = -28;  // 28px off-screen to the left
         var dolphinY = canvas.h - Dolphins.sprite.h;  // Bottom edge (30px from top)
         canvas.drawSprite(Dolphins.sprite, dolphinX, dolphinY, '#000');
+
+        // Render message box component
+        this.messageBox.render(canvas);
 
         // Status bar (overlays on top of dolphin)
         UI.drawStatusBar(canvas, 'FLIPPER ONE');
