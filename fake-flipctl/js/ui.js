@@ -6,6 +6,8 @@ var UI = (function() {
 
     var batteryLevel = -1;
     var batteryCharging = false;
+    var signalQuality = -1;  // 0-100 or -1 for unknown
+    var accessTech = '--';  // Technology: 5G, LTE, 3G, etc.
 
     function pollBattery() {
         var xhr = new XMLHttpRequest();
@@ -23,9 +25,55 @@ var UI = (function() {
         xhr.send();
     }
 
+    function formatTech(techs) {
+        if (!techs || !techs.length) return '--';
+        var labels = [];
+        for (var i = 0; i < techs.length; i++) {
+            var t = techs[i].toLowerCase().replace(/[\s-]/g, '');
+            if (t === '5gnr') labels.push('5G');
+            else if (t === 'lte') labels.push('LTE');
+            else if (t === 'umts' || t === 'hspa' || t === 'hsdpa' || t === 'hsupa') labels.push('3G');
+            else if (t === 'gsm' || t === 'gprs' || t === 'edge') labels.push('2G');
+            else labels.push(t.toUpperCase());
+        }
+        return labels.join('+');
+    }
+
+    function pollSignal() {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', '/api/modem', true);
+        xhr.timeout = 3000;
+        xhr.onload = function() {
+            if (xhr.status === 200) {
+                var data = JSON.parse(xhr.responseText);
+                if (data.available && data.signalQuality !== null) {
+                    signalQuality = data.signalQuality;
+                }
+                if (data.available && data.accessTech) {
+                    accessTech = formatTech(data.accessTech);
+                }
+            }
+        };
+        xhr.send();
+    }
+
     // Poll battery every 5 seconds
     pollBattery();
     setInterval(pollBattery, 5000);
+
+    // Poll signal quality every 1 second
+    pollSignal();
+    setInterval(pollSignal, 1000);
+
+    function formatDateTime() {
+        var now = new Date();
+        var hours = String(now.getHours()).padStart(2, '0');
+        var minutes = String(now.getMinutes()).padStart(2, '0');
+        var months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        var month = months[now.getMonth()];
+        var day = String(now.getDate()).padStart(2, '0');
+        return hours + ':' + minutes + ' ' + month + ' ' + day;
+    }
 
     function drawBattery(canvas, x, y, pct) {
         // Battery body: 9x5 outline
@@ -50,25 +98,68 @@ var UI = (function() {
         canvas.drawRect(x + 2, y + 5, 1, 2, '#000');
     }
 
+    function drawSignalBars(canvas, x, y, quality) {
+        // 5 signal bars: heights 3, 4, 5, 6, 7 from left to right
+        // Each bar 1px wide with 1px gap between
+        var heights = [3, 4, 5, 6, 7];
+        var barX = x;
+        var barBottom = y + STATUS_BAR_H;
+
+        // Calculate how many bars should be filled (black)
+        var filledBars = 0;
+        if (quality >= 0) {
+            filledBars = Math.ceil((quality / 100) * 5);
+        }
+
+        for (var i = 0; i < 5; i++) {
+            var h = heights[i];
+            var barY = barBottom - h;
+            var color = (i < filledBars) ? '#000' : '#ccc';
+            canvas.drawRect(barX, barY, 1, h, color);
+            barX += 2;  // 1px bar + 1px gap
+        }
+    }
+
     function drawStatusBar(canvas, title) {
         canvas.drawRect(0, 0, canvas.w, STATUS_BAR_H, '#fff');
         canvas.drawText(title, PAD_LEFT, 2, '#000');
 
-        // Battery icon + percentage + optional plug, right-aligned
+        // Draw 5G signal bars (left side with 2px padding, raised 2px up)
+        drawSignalBars(canvas, 2, -2, signalQuality);
+
+        // Draw technology label (5G, LTE, etc.) right of signal bars with 1px gap
+        HaxrcorpFont16.draw(canvas.ctx, accessTech, 12, 0, '#000');
+
+        // Draw time in center
+        var timeStr = formatDateTime();
+        var timeWidth = HaxrcorpFont16.textWidth(timeStr);
+        var timeX = (canvas.w - timeWidth) / 2;
+        HaxrcorpFont16.draw(canvas.ctx, timeStr, timeX, 0, '#000');
+
+        // Battery sprite (16x9) + percentage, right-aligned
         var pctStr = batteryLevel >= 0 ? batteryLevel + '%' : '--%';
-        var iconW = 10;
-        var iconX = canvas.w - 2 - iconW;
-        var textX = iconX - 2 - (pctStr.length * 6);
+        var batteryW = StatusBarBattery.sprite.w;
+        var batteryX = canvas.w - 2 - batteryW;
+        var textX = batteryX - 2 - (pctStr.length * 6);
 
         if (batteryCharging) {
             var plugX = textX - 7;
             drawPlugIcon(canvas, plugX, 2);
         }
 
-        canvas.drawText(pctStr, textX, 2, '#000');
-        drawBattery(canvas, iconX, 3, Math.max(0, batteryLevel));
+        HaxrcorpFont16.draw(canvas.ctx, pctStr, textX, 0, '#000');
+        canvas.drawSprite(StatusBarBattery.sprite, batteryX, 1, '#000');
 
-        canvas.drawHLine(0, STATUS_BAR_H, canvas.w, '#888');
+        // Draw battery level bar inside sprite
+        var barMaxWidth = 10;
+        var barHeight = 5;
+        var barX = 240;  // Fixed position - first pixel of battery level bar
+        var barY = 1 + 3 - 1;  // 3px top padding - 1px (moved up)
+        var barWidth = Math.round((barMaxWidth * Math.max(0, batteryLevel)) / 100);
+
+        if (barWidth > 0) {
+            canvas.drawRect(barX, barY, barWidth, barHeight, '#000');
+        }
     }
 
     function drawMenuList(canvas, items, selectedIndex, scrollOffset) {

@@ -143,6 +143,93 @@ fake-flipctl/
 
 ---
 
+## Status Bar
+
+### Layout
+- **Height**: 11px
+- **Background**: White (#fff)
+- **Left**: 5G signal bars (2px padding) + technology label (1px gap)
+- **Center**: Time and date (HH:MM MMM DD)
+- **Right**: Battery percentage + battery icon + plug icon (if charging)
+
+### 5G Signal Bars
+
+**Visual Indicator** (left side, 2px padding):
+- **5 vertical bars** with heights: 3, 4, 5, 6, 7px (left to right)
+- **Width**: 1px each
+- **Gap**: 1px between bars
+- **Total width**: 9px
+- **Position**: Y raised 2px above baseline
+
+**Coloring** (proportional to `signalQuality`):
+- **Black (#000)**: Filled bars = `ceil(quality / 100 * 5)`
+- **Gray (#ccc)**: Empty bars
+- **Example**: 60% quality → 3 black + 2 gray bars
+
+**Source**: Polled from `/api/modem` every 1 second
+
+### Technology Label
+
+**Display** (right of signal bars, 1px gap):
+- **Format**: Technology abbreviation (5G, LTE, 3G, 2G, or combinations like "5G+LTE")
+- **Default**: `--` (if unavailable)
+- **Font**: HaxrcorpFont16
+- **Color**: Black (#000)
+- **Position**: X = 12px, Y = 0
+
+**Mapping**:
+- `5gnr` → "5G"
+- `lte` → "LTE"
+- `umts/hspa/hsdpa/hsupa` → "3G"
+- `gsm/gprs/edge` → "2G"
+- Multiple techs joined with `+` (e.g., "5G+LTE")
+
+**Source**: Extracted from `/api/modem` accessTech array
+
+### Time & Date Display
+
+**Center of Status Bar**:
+- **Format**: `HH:MM MMM DD` (24-hour format, month day)
+- **Example**: `23:30 Apr 13`
+- **Font**: HaxrcorpFont16
+- **Color**: Black (#000)
+- **Position**: Centered horizontally
+- **Update**: Every frame (real-time)
+
+### Battery Icon (Status Bar)
+
+**Sprite Asset**:
+- **File**: `js/sprites.js` → `StatusBarBattery.sprite`
+- **Dimensions**: 16×9 pixels
+- **Format**: 6-bit grayscale (64 gray levels)
+- **Position**: Right-aligned, 2px from right edge, 1px from top
+
+**Battery Level Bar** (drawn inside sprite):
+- **Max dimensions**: 10px wide × 5px high (at 100% charge)
+- **Position inside sprite**: 6px from left, 3px from top
+- **Calculation**: `barWidth = Math.round((10 * batteryLevel) / 100)`
+- **Example**: At 69% → width = 7px (rounded from 6.9)
+- **Color**: Black (#000)
+
+**Example Rendering**:
+```javascript
+// In drawStatusBar():
+var batteryX = canvas.w - 2 - 16;  // 238px (right-aligned)
+canvas.drawSprite(StatusBarBattery.sprite, batteryX, 1, '#000');
+
+// Draw level bar on top
+var barWidth = Math.round((10 * batteryLevel) / 100);
+canvas.drawRect(batteryX + 6, 4, barWidth, 5, '#000');
+```
+
+### Battery State
+- **Default value**: -1 (unknown, shows "--%" until API responds)
+- **Source**: Polled from `/api/power` every 5 seconds
+- **Charging indicator**: Plug icon (7×7) if status === 'Charging' or 'Full'
+- **Position**: Right-aligned, 2px from right edge, 1px from top
+
+---
+
 ## Input Handling & Button Feedback
 
 ### Keyboard Mapping (input.js)

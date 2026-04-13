@@ -86,7 +86,7 @@ var MenuScene = (function() {
     };
 
     MenuScene.prototype.render = function(canvas) {
-        UI.drawStatusBar(canvas, 'FLIPPER ONE');
+        UI.drawStatusBar(canvas, '');
         UI.drawMenuList(canvas, items, this.selectedIndex, this.scrollOffset);
     };
 

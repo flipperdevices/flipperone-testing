@@ -70,7 +70,7 @@ var DesktopScene = (function() {
         this.messageBox.render(canvas);
 
         // Status bar (overlays on top of dolphin)
-        UI.drawStatusBar(canvas, 'FLIPPER ONE');
+        UI.drawStatusBar(canvas, '');
 
         // Render buttons
         for (var b = 0; b < this.app_defined_buttons.length; b++) {
