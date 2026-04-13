@@ -714,5 +714,94 @@ var FlipCanvas = (function() {
         }
     };
 
+    // drawSprite(sprite, x, y, color)
+    // Draws a large sprite with support for grayscale (from sprites.js)
+    // Binary sprite: {w: width, h: height, d: [hex values]}
+    // Grayscale sprite: {w: width, h: height, bitsPerPixel: 6, grayscale: true, d: [...]}
+    FlipCanvas.prototype.drawSprite = function(sprite, x, y, color) {
+        if (!sprite || !sprite.d) return;
+
+        var ctx = this.ctx;
+
+        if (sprite.grayscale && sprite.bitsPerPixel === 6) {
+            // 6-bit grayscale sprite (64 levels)
+            this._drawGrayscaleSprite(sprite, x, y, color);
+        } else {
+            // Binary (1-bit) sprite
+            this._drawBinarySprite(sprite, x, y, color);
+        }
+    };
+
+    FlipCanvas.prototype._drawBinarySprite = function(sprite, x, y, color) {
+        var ctx = this.ctx;
+        ctx.fillStyle = color || '#000';
+
+        var bytesPerRow = Math.ceil(sprite.w / 8);
+
+        for (var row = 0; row < sprite.h; row++) {
+            var dataIndex = row * bytesPerRow;
+            var bitPos = 0;
+
+            for (var byteIdx = 0; byteIdx < bytesPerRow && bitPos < sprite.w; byteIdx++) {
+                var hexValue = sprite.d[dataIndex + byteIdx];
+                if (hexValue === undefined) break;
+
+                for (var bit = 7; bit >= 0 && bitPos < sprite.w; bit--) {
+                    var isBitSet = (hexValue >> bit) & 1;
+                    if (isBitSet === 1) {
+                        ctx.fillRect(x + bitPos, y + row, 1, 1);
+                    }
+                    bitPos++;
+                }
+            }
+        }
+    };
+
+    FlipCanvas.prototype._drawGrayscaleSprite = function(sprite, x, y, color) {
+        var ctx = this.ctx;
+
+        // Unpack 6-bit grayscale values (4 pixels per 3 bytes)
+        var bytesPerRow = Math.ceil((sprite.w * 6) / 8);
+        var dataIndex = 0;
+
+        for (var row = 0; row < sprite.h; row++) {
+            for (var col = 0; col < sprite.w; col += 4) {
+                // Get 3 bytes for 4 pixels
+                var byte0 = sprite.d[dataIndex] || 0;
+                var byte1 = sprite.d[dataIndex + 1] || 0;
+                var byte2 = sprite.d[dataIndex + 2] || 0;
+                dataIndex += 3;
+
+                // Unpack 4 pixels (6 bits each)
+                // byte0: pixel0[5:0] | pixel1[5:4]
+                // byte1: pixel1[3:0] | pixel2[5:2]
+                // byte2: pixel2[1:0] | pixel3[5:0]
+
+                var pixel0 = (byte0 >> 2) & 0x3F;
+                var pixel1 = (((byte0 & 0x03) << 4) | ((byte1 >> 4) & 0x0F)) & 0x3F;
+                var pixel2 = (((byte1 & 0x0F) << 2) | ((byte2 >> 6) & 0x03)) & 0x3F;
+                var pixel3 = byte2 & 0x3F;
+
+                var pixels = [pixel0, pixel1, pixel2, pixel3];
+
+                // Draw pixels
+                for (var i = 0; i < 4 && col + i < sprite.w; i++) {
+                    var grayValue = pixels[i];
+                    // grayValue: 0=black, 63=white
+                    // opacity: 0=white (transparent), 1=black (opaque)
+                    var opacity = (63 - grayValue) / 63;
+
+                    if (opacity > 0.01) {  // Skip nearly transparent pixels
+                        ctx.globalAlpha = opacity;
+                        ctx.fillStyle = '#000';
+                        ctx.fillRect(x + col + i, y + row, 1, 1);
+                        ctx.globalAlpha = 1.0;
+                    }
+                }
+            }
+        }
+    };
+
+
     return FlipCanvas;
 })();

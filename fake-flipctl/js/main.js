@@ -9,7 +9,7 @@
     var lastRenderTs = 0;
     var IDLE_REDRAW_MS = 250;
 
-    scenes.push(new MenuScene(scenes));
+    scenes.push(new DesktopScene(scenes));
 
     function loop(ts) {
         var keys = input.processQueue();

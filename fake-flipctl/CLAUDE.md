@@ -118,22 +118,157 @@ fake-flipctl/
 ├── css/style.css          # Layout, canvas scaling
 ├── js/
 │   ├── main.js            # Bootstrap + render loop (requestAnimationFrame)
-│   ├── canvas.js          # Drawing primitives
+│   ├── canvas.js          # Drawing primitives (includes drawSprite for large bitmaps)
 │   ├── font.js            # 5x7 bitmap font data
 │   ├── input.js           # Keyboard handler
 │   ├── scene.js           # Scene stack manager
 │   ├── ui.js              # UI components (status bar with battery, menu, scrollbar)
+│   ├── sprites.js         # Large sprite assets (dolphin, etc.)
 │   └── apps/
-│       ├── menu.js        # Main menu (9 items, 3 wired to scenes)
+│       ├── desktop.js     # Desktop startup scene with Menu button
+│       ├── menu.js        # Main menu (3 categories: Network, Testing, System)
+│       ├── submenu.js     # Generic submenu handler (Routing, Ethernet, Screen, Sound, etc.)
 │       ├── modem5g.js     # 5G Modem info via /api/modem (polls every 500ms)
 │       ├── diskspace.js   # Disk space via /api/disk
-│       └── power.js       # Battery info via /api/power (polls every 2s)
+│       ├── power.js       # Battery info via /api/power (polls every 2s)
+│       ├── screentest.js  # Display test pattern scene
+│       ├── boot_menu_ui_demo.js # Complex UI demo with profiles, cloning, rename
+│       └── [other scenes]
 ├── systemd/
 │   ├── fake-flipctl-node-server.service   # Node.js HTTP server (port 8899)
 │   ├── fake-flipctl-wayland-cage.service  # cage + cog kiosk on tty1
 │   └── fake-flipctl.target                # Groups server + UI
 └── assets/                # (reserved for future icons/sprites)
 ```
+
+---
+
+## Input Handling & Button Feedback
+
+### Keyboard Mapping (input.js)
+```
+ArrowUp/i → 'up'      | ArrowDown/m → 'down'
+ArrowLeft/j → 'left'  | ArrowRight/l → 'right'
+Enter/k → 'ok'        | Escape/Backspace/n → 'back'
+z → 'esc'             | x → 'edit'
+c → 'power'           | v → 'view'
+a → 'ptt'             | b → 'run'
+h → 'appsw'
+```
+
+### Button Press/Release Cycle
+```javascript
+// When action maps to a button (via btnActionMap):
+btn.press();                    // Set state to 'pressed' (visual feedback)
+if (btn.onPress) btn.onPress(); // Execute callback (e.g., open new scene)
+setTimeout(function() { 
+    btn.release();              // Reset state after 50ms
+}, 50);
+```
+
+Button feedback timing: **50ms** (visual press animation before state change)
+
+### Button Bar Layout
+- **5 button slots** (48px each, 2px gap): `5 × 48 + 4 × 2 = 256px` exactly
+- **Position 0**: Left button (flush left, optional)
+- **Positions 1-3**: Middle buttons (center area, optional)
+- **Position 4**: Right button (flush right, optional)
+
+Example from Desktop scene:
+```javascript
+this.app_defined_buttons = [
+    null,  // Slot 0 (left) - unused
+    new UI.MiddleButton('Menu', 1, 48, 2, 'edit', callback),  // Slot 1
+    null,  // Slot 2
+    null,  // Slot 3
+    null   // Slot 4 (right) - unused
+];
+```
+
+## Sprite System (Large Bitmap Assets)
+
+### Overview
+For large images (>16×16), use the sprite system instead of icons:
+- **sprites.js** — sprite asset definitions
+- **canvas.drawSprite()** — render sprites of any size
+- Data format: bitmap array with multiple hex values per row
+
+### Creating Sprites
+1. **Convert image** to monochrome (black/white) PNG, exact dimensions
+2. **Generate bitmap data**:
+   - Python script to convert PNG → hex array
+   - Example: 150×114 needs 19 bytes/row (150 ÷ 8 rounded up)
+3. **Generate with converter**:
+```bash
+python3 png-to-bitmap.py dolphin.png Dolphins > sprites.js
+```
+
+The converter properly handles semi-transparent pixels:
+- Alpha blending with white background (50% alpha → 50% gray)
+- Threshold at brightness 128 (< 128 → black, >= 128 → white)
+- No dithering (preserves clean edges)
+
+4. **Use in sprites.js**:
+```javascript
+var Dolphins = (function() {
+    var sprite = {
+        w: 150,
+        h: 114,
+        d: [
+            0xff, 0xff, ..., // row 0 (19 bytes)
+            0xff, 0xff, ..., // row 1 (19 bytes)
+            // ... 114 rows total (6516 hex values)
+        ]
+    };
+    return { sprite: sprite };
+})();
+```
+
+### Drawing Sprites
+```javascript
+var spriteX = Math.floor((256 - Dolphins.sprite.w) / 2);  // center
+var spriteY = 0;  // top of screen
+canvas.drawSprite(Dolphins.sprite, spriteX, spriteY, '#000');
+```
+
+### 6-bit Grayscale Sprite System
+
+For images with semi-transparent pixels, use **6-bit grayscale** (64 gray levels):
+
+**Converter:** `png-to-bitmap.py`
+```bash
+python3 png-to-bitmap.py image.png VariableName > sprites.js
+```
+
+**How it works:**
+1. Blend RGBA pixels with white background (semi-transparent → gray)
+2. Map brightness (0-255) to 6-bit value (0-63)
+3. Pack 4 pixels → 3 bytes
+4. Render with variable opacity: `opacity = (63 - grayValue) / 63`
+
+**Result:** 64 gray levels, semi-transparent pixels become visible gray tones
+
+**Sprite object:**
+```javascript
+var VariableName = (function() {
+    var sprite = {
+        w: 150, h: 114,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [0xff, 0x8a, 0x14, ...]  // Packed 6-bit data
+    };
+    return { sprite: sprite };
+})();
+```
+
+**Rendering in canvas.js:** Uses `_drawGrayscaleSprite()` method with alpha blending
+
+### Example: Dolphin Sprite
+- **Source**: `/Users/vladpetrenko/Library/CloudStorage/Dropbox/Work/Flipper/flipperone_ui/fake-flip-ctl/images/dolphin_open.png`
+- **Size**: 150×114 pixels
+- **Format**: 6-bit grayscale (64 levels)
+- **Features**: Semi-transparent edges preserved as gray tones
+- **Render**: Desktop scene, top center
 
 ---
 
