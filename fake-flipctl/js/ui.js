@@ -193,7 +193,7 @@ var UI = (function() {
 
         // Position: left-aligned with button, 4px above bottom (where tab sits)
         this.x = btnX;
-        this.y = 144 - 17 - this.bodyH - 4;  // 144px screen height, 17px tab, 4px gap
+        this.y = 144 - 14 - this.bodyH - 4;  // 144px screen height, 14px tab, 4px gap
     }
 
     PopupMenuLeft.prototype.render = function(canvas) {

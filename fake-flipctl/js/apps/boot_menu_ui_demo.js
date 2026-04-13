@@ -225,7 +225,7 @@ var UIDemoScene = (function() {
                                     // Adjust viewport to keep selected item visible
                                     var itemHeight = self.items[0] ? self.items[0].h + ITEM_SPACING : 19;
                                     var startY = 20;
-                                    var scrollableHeight = (144 - 17) - startY;
+                                    var scrollableHeight = (144 - 14) - startY;
                                     var visibleItems = Math.floor(scrollableHeight / itemHeight);
 
                                     if (self.selectedIndex < self.viewportStartIndex) {
@@ -558,7 +558,7 @@ var UIDemoScene = (function() {
             // Adjust viewport to keep selected item visible
             var itemHeight = this.items[0].h + ITEM_SPACING;
             var startY = 20;  // Must match render method's startY
-            var scrollableHeight = (144 - 17) - startY;  // Canvas height - button bar - header space
+            var scrollableHeight = (144 - 14) - startY;  // Canvas height - button bar - header space
             var visibleItems = Math.floor(scrollableHeight / itemHeight);
 
             if (this.selectedIndex < this.viewportStartIndex) {
@@ -590,7 +590,7 @@ var UIDemoScene = (function() {
         var startX = Math.floor((canvas.w - this.items[0].w) / 2);
         var startY = 20;  // Leave space for header (moved up to fit all 5 items)
         var itemHeight = this.items[0].h + ITEM_SPACING;
-        var scrollableHeight = (canvas.h - 17) - startY;  // Available space before button bar
+        var scrollableHeight = (canvas.h - 14) - startY;  // Available space before button bar
         var visibleItems = Math.floor(scrollableHeight / itemHeight);
 
         // Render only visible items (within viewport)

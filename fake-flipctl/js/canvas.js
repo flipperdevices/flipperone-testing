@@ -41,8 +41,8 @@ var FlipCanvas = (function() {
     };
 
     // Shared button constants
-    var BTN_H = 17;
-    var BTN_R = 2;
+    var BTN_H = 14;
+    var BTN_R = 4;
 
     function _btnColors(pressed) {
         return { bg: pressed ? '#000' : '#EAEAEA', fg: pressed ? '#fff' : '#000' };
@@ -50,7 +50,7 @@ var FlipCanvas = (function() {
     function _btnText(ctx, text, x, w, y, fg) {
         var tw = HaxrcorpFont16.textWidth(text);
         var tx = x + Math.floor((w - tw) / 2);
-        var ty = y + Math.floor((BTN_H - 11) / 2);
+        var ty = y + 2;  // 2px top padding
         HaxrcorpFont16.draw(ctx, text, tx, ty, fg);
     }
 
@@ -59,11 +59,28 @@ var FlipCanvas = (function() {
         var y = this.h - BTN_H;
         var c = disabled ? { bg: '#CCC', fg: '#999' } : _btnColors(pressed);
         this.ctx.fillStyle = c.bg;
-        this.ctx.fillRect(x + BTN_R, y,          w - BTN_R * 2, BTN_H);
-        this.ctx.fillRect(x,         y + BTN_R,  BTN_R,         BTN_H - BTN_R);
-        this.ctx.fillRect(x + w - BTN_R, y + BTN_R, BTN_R,     BTN_H - BTN_R);
-        this.ctx.fillRect(x + 1,     y + 1, 1, 1);  // top-left
-        this.ctx.fillRect(x + w - 2, y + 1, 1, 1);  // top-right
+        // Fill main areas (4px radius)
+        this.ctx.fillRect(x + 3, y,      w - 6, 1);         // Row 0: 4px from edges
+        this.ctx.fillRect(x + 2, y + 1,  w - 4, 1);         // Row 1: 3px from edges
+        this.ctx.fillRect(x + 1, y + 2,  w - 2, 1);         // Row 2: 2px from edges
+        this.ctx.fillRect(x,     y + 3,  w,     1);         // Row 3: 1px from edges
+        this.ctx.fillRect(x,     y + 4,  w,     BTN_H - 4); // Rows 4+: full width
+
+        // Draw 1px border pixels on top of fill (always black)
+        this.ctx.fillStyle = '#000';
+        // Top border (full width)
+        this.ctx.fillRect(x + 3, y, w - 6, 1);
+        // Left border corner pixels
+        this.ctx.fillRect(x + 2, y + 1, 1, 1);
+        this.ctx.fillRect(x + 1, y + 2, 1, 1);
+        // Left border straight
+        this.ctx.fillRect(x, y + 3, 1, BTN_H - 3);
+        // Right border corner pixels
+        this.ctx.fillRect(x + w - 3, y + 1, 1, 1);
+        this.ctx.fillRect(x + w - 2, y + 2, 1, 1);
+        // Right border straight
+        this.ctx.fillRect(x + w - 1, y + 3, 1, BTN_H - 3);
+
         _btnText(this.ctx, text, x, w, y, c.fg);
     };
 
@@ -72,9 +89,23 @@ var FlipCanvas = (function() {
         var y = this.h - BTN_H;
         var c = disabled ? { bg: '#CCC', fg: '#999' } : _btnColors(pressed);
         this.ctx.fillStyle = c.bg;
-        this.ctx.fillRect(x,             y,         w - BTN_R, BTN_H);
-        this.ctx.fillRect(x + w - BTN_R, y + BTN_R, BTN_R,    BTN_H - BTN_R);
-        this.ctx.fillRect(x + w - 2,     y + 1, 1, 1);  // top-right corner pixel
+        // Fill main areas (4px right radius)
+        this.ctx.fillRect(x,     y,      w - 3, 1);         // Row 0: 4px from right
+        this.ctx.fillRect(x,     y + 1,  w - 2, 1);         // Row 1: 3px from right
+        this.ctx.fillRect(x,     y + 2,  w - 1, 1);         // Row 2: 2px from right
+        this.ctx.fillRect(x,     y + 3,  w,     1);         // Row 3: 1px from right
+        this.ctx.fillRect(x,     y + 4,  w,     BTN_H - 4); // Rows 4+: full width
+
+        // Draw 1px border (no left border, always black)
+        this.ctx.fillStyle = '#000';
+        // Top border (no left corner)
+        this.ctx.fillRect(x, y, w - 3, 1);
+        // Right border corner pixels
+        this.ctx.fillRect(x + w - 3, y + 1, 1, 1);
+        this.ctx.fillRect(x + w - 2, y + 2, 1, 1);
+        // Right border straight
+        this.ctx.fillRect(x + w - 1, y + 3, 1, BTN_H - 3);
+
         _btnText(this.ctx, text, x, w, y, c.fg);
     };
 
@@ -83,9 +114,23 @@ var FlipCanvas = (function() {
         var y = this.h - BTN_H;
         var c = disabled ? { bg: '#CCC', fg: '#999' } : _btnColors(pressed);
         this.ctx.fillStyle = c.bg;
-        this.ctx.fillRect(x + BTN_R, y,        w - BTN_R, BTN_H);
-        this.ctx.fillRect(x,         y + BTN_R, BTN_R,    BTN_H - BTN_R);
-        this.ctx.fillRect(x + 1,     y + 1, 1, 1);  // top-left corner pixel
+        // Fill main areas (4px left radius)
+        this.ctx.fillRect(x + 3, y,      w - 3, 1);         // Row 0: 4px from left
+        this.ctx.fillRect(x + 2, y + 1,  w - 2, 1);         // Row 1: 3px from left
+        this.ctx.fillRect(x + 1, y + 2,  w - 1, 1);         // Row 2: 2px from left
+        this.ctx.fillRect(x,     y + 3,  w,     1);         // Row 3: 1px from left
+        this.ctx.fillRect(x,     y + 4,  w,     BTN_H - 4); // Rows 4+: full width
+
+        // Draw 1px border (no right border, always black)
+        this.ctx.fillStyle = '#000';
+        // Top border (no right corner)
+        this.ctx.fillRect(x + 3, y, w - 3, 1);
+        // Left border corner pixels
+        this.ctx.fillRect(x + 2, y + 1, 1, 1);
+        this.ctx.fillRect(x + 1, y + 2, 1, 1);
+        // Left border straight
+        this.ctx.fillRect(x, y + 3, 1, BTN_H - 3);
+
         _btnText(this.ctx, text, x, w, y, c.fg);
     };
 
