@@ -45,7 +45,7 @@ var FlipCanvas = (function() {
     var BTN_R = 4;
 
     function _btnColors(pressed) {
-        return { bg: pressed ? '#000' : '#EAEAEA', fg: pressed ? '#fff' : '#000' };
+        return { bg: pressed ? '#000' : '#ffffff', fg: pressed ? '#fff' : '#000' };
     }
     function _btnText(ctx, text, x, w, y, fg) {
         var tw = HaxrcorpFont16.textWidth(text);
@@ -759,6 +759,7 @@ var FlipCanvas = (function() {
 
     FlipCanvas.prototype._drawGrayscaleSprite = function(sprite, x, y, color) {
         var ctx = this.ctx;
+        color = color || '#000';
 
         // Unpack 6-bit grayscale values (4 pixels per 3 bytes)
         var bytesPerRow = Math.ceil((sprite.w * 6) / 8);
@@ -793,7 +794,7 @@ var FlipCanvas = (function() {
 
                     if (opacity > 0.01) {  // Skip nearly transparent pixels
                         ctx.globalAlpha = opacity;
-                        ctx.fillStyle = '#000';
+                        ctx.fillStyle = color;
                         ctx.fillRect(x + col + i, y + row, 1, 1);
                         ctx.globalAlpha = 1.0;
                     }

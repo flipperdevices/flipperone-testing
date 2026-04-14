@@ -133,7 +133,7 @@ var UI = (function() {
         // Draw time in center
         var timeStr = formatDateTime();
         var timeWidth = HaxrcorpFont16.textWidth(timeStr);
-        var timeX = (canvas.w - timeWidth) / 2;
+        var timeX = Math.floor((canvas.w - timeWidth) / 2);
         HaxrcorpFont16.draw(canvas.ctx, timeStr, timeX, 0, '#000');
 
         // Battery sprite (16x9) + percentage, right-aligned

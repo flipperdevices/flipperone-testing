@@ -857,3 +857,343 @@ SceneManager.push(menuScene);
 - **Input latency**: Respond within 1 frame (~16ms)
 
 Profile with: `performance.now()` before/after `scene.render(canvas)`
+
+---
+
+# Icon System (6-bit Grayscale)
+
+## Overview
+
+The icon system uses **6-bit grayscale format** (64 gray levels) to preserve smooth anti-aliased edges from PNG source files. This is identical to the sprite system used for large assets like the Dolphins.
+
+**Key Features**:
+- 6 bits per pixel = 64 gray levels (0=white, 63=black)
+- 4 pixels packed into 3 bytes (24 bits total)
+- Smooth transparency and semi-transparent anti-aliased edges
+- Perfect for small UI icons (14×14, 16×16, etc.)
+
+## Why 6-bit Grayscale?
+
+PNG icons are typically designed with anti-aliasing for smooth appearance:
+- Edges have semi-transparent pixels (alpha 50-200) 
+- Creates smooth transitions instead of hard edges
+- Simple binary (black/white) conversion **loses** these edges
+
+**Solution**: 6-bit grayscale preserves the full range:
+- Semi-transparent pixels → gray values → smooth edges ✨
+- Multiple opacity levels rendered with `globalAlpha`
+- Supports colors in pressed/highlighted states
+
+## Icon Files
+
+### Main Menu Icons
+
+Located in: `/fake-flip-ctl/icons/main_menu/`
+
+**PNG Source Files** (14×14 pixels):
+- `14_px_network.png` — Network/connectivity symbol (antenna/wifi)
+- `14_px_system.png` — System/settings icon (gear-like)
+- `14_px_testing.png` — Testing/tools icon (wrench-like)
+
+All PNG files:
+- RGBA color mode with transparent background
+- Anti-aliased edges (semi-transparent pixels)
+- Black foreground color
+
+### JavaScript Icon Definitions
+
+Located in: `js/icons.js` 
+
+**Format**:
+```javascript
+var network = {
+    w: 14,
+    h: 14,
+    bitsPerPixel: 6,        // ← 6 bits per pixel
+    grayscale: true,        // ← Grayscale mode
+    d: [
+        0xff, 0xff, 0xff, ...,  // Packed hex bytes
+        0xf0  // row N
+    ]
+};
+```
+
+**Properties**:
+- `w`, `h` — Icon dimensions in pixels
+- `bitsPerPixel: 6` — 6-bit grayscale format
+- `grayscale: true` — Enables grayscale rendering
+- `d` — Data array of packed hex bytes
+
+## Converting Icons
+
+### Using the Grayscale Converter
+
+Location: `/fake-flip-ctl/png-to-bitmap.py`
+
+**Basic usage**:
+```bash
+cd /fake-flipctl/icons
+python3 /path/to/png-to-bitmap.py image.png variable_name
+```
+
+**Example**:
+```bash
+python3 /Users/vladpetrenko/flipper/flipperone-testing/fake-flipctl/png-to-bitmap.py main_menu/14_px_network.png network_grayscale
+```
+
+**Output**:
+```javascript
+var network_grayscale = (function() {
+    var sprite = {
+        w: 14,
+        h: 14,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0xff, 0xff, ..., 0xf0
+        ]
+    };
+    return { sprite: sprite };
+})();
+```
+
+### Converter Algorithm
+
+1. **Load PNG as RGBA** — Preserves alpha channel
+2. **Blend with white background** — For each pixel: `color * alpha + white * (1 - alpha)`
+3. **Convert to 6-bit** — Brightness (0-255) → 6-bit value (0-63): `brightness >> 2`
+4. **Pack 4 pixels** — 4 × 6-bit values → 3 bytes
+
+**Packing format**:
+```
+Byte 0: [pixel0: 6 bits][pixel1: 2 MSBs]
+Byte 1: [pixel1: 4 LSBs][pixel2: 4 MSBs]
+Byte 2: [pixel2: 2 LSBs][pixel3: 6 bits]
+```
+
+### Creating New Icons
+
+**Step 1: Design the icon**
+- Create 14×14 or 16×16 PNG
+- Use RGBA with transparent background
+- Apply anti-aliasing for smooth edges
+- Use black (#000) for the icon shape
+
+**Step 2: Convert**
+```bash
+python3 png-to-bitmap.py my_icon.png my_icon_name
+```
+
+**Step 3: Add to icons.js**
+```javascript
+var myIcon = {
+    w: 14,
+    h: 14,
+    bitsPerPixel: 6,
+    grayscale: true,
+    d: [ ... ]  // From converter output
+};
+
+return {
+    network: network,
+    myIcon: myIcon,  // ← Add here
+    // ...
+};
+```
+
+**Step 4: Use in scenes**
+```javascript
+// In MenuItem creation
+new MenuItem('My Item', false, Icons.myIcon)
+
+// In custom rendering
+canvas.drawSprite(Icons.myIcon, x, y, '#000');  // Black
+canvas.drawSprite(Icons.myIcon, x, y, '#fff');  // White (for pressed state)
+```
+
+## Rendering Icons
+
+### In Menu Items
+
+**File**: `js/apps/menu.js`
+
+Icons are automatically rendered with menu items:
+
+```javascript
+MenuItem.prototype.render = function(canvas, x, y) {
+    if (this.icon) {
+        var iconX = x + PAD_X;
+        var iconY = y + Math.floor((this.h - this.icon.h) / 2);
+        
+        // Use drawSprite for grayscale, drawIcon for binary
+        if (this.icon.grayscale) {
+            canvas.drawSprite(this.icon, iconX, iconY, iconColor);
+        } else {
+            canvas.drawIcon(this.icon, iconX, iconY, iconColor);
+        }
+    }
+};
+```
+
+**Icon positions in menu**:
+- X offset: `6px` from left edge (PAD_X)
+- Y offset: Vertically centered in menu item
+- Size: 14×14 pixels
+- Text starts at: `6 + 14 + 4 = 24px` from left
+
+### In Custom Scenes
+
+**Using icons directly**:
+
+```javascript
+// Black icon (default)
+canvas.drawSprite(Icons.network, 10, 50, '#000');
+
+// White icon (for pressed/highlighted states)
+canvas.drawSprite(Icons.network, 10, 50, '#fff');
+
+// Any hex color (though icons are optimized for black/white)
+canvas.drawSprite(Icons.network, 10, 50, '#ccc');
+```
+
+### Canvas Drawing Implementation
+
+**File**: `js/canvas.js`
+
+**drawSprite method**:
+```javascript
+FlipCanvas.prototype.drawSprite = function(sprite, x, y, color) {
+    if (!sprite || !sprite.d) return;
+    
+    if (sprite.grayscale && sprite.bitsPerPixel === 6) {
+        this._drawGrayscaleSprite(sprite, x, y, color);
+    } else {
+        this._drawBinarySprite(sprite, x, y, color);
+    }
+};
+```
+
+**_drawGrayscaleSprite method** (simplified):
+```javascript
+FlipCanvas.prototype._drawGrayscaleSprite = function(sprite, x, y, color) {
+    var ctx = this.ctx;
+    color = color || '#000';
+    
+    // Unpack 6-bit values and draw with opacity
+    for (var row = 0; row < sprite.h; row++) {
+        for (var col = 0; col < sprite.w; col++) {
+            var grayValue = ... // Extract 6-bit value
+            var opacity = (63 - grayValue) / 63;  // 0=white, 1=black
+            
+            if (opacity > 0.01) {
+                ctx.globalAlpha = opacity;
+                ctx.fillStyle = color;
+                ctx.fillRect(x + col, y + row, 1, 1);
+            }
+        }
+    }
+};
+```
+
+**Key behavior**:
+- Grayscale value 0 = white (transparent) → opacity 0
+- Grayscale value 63 = black (opaque) → opacity 1
+- Colors are applied with proper alpha blending
+- Works with any HTML color (#000, #fff, #f00, etc.)
+
+## Examples
+
+### Main Menu with Icons
+
+```javascript
+function MenuScene() {
+    var items = [
+        new MenuItem('Network', false, Icons.network),
+        new MenuItem('Testing', false, Icons.testing),
+        new MenuItem('System', true, Icons.system)  // Last item (no divider)
+    ];
+}
+```
+
+**Result**:
+- Row 1: [Network icon] Network (divider line)
+- Row 2: [Testing icon] Testing (divider line)
+- Row 3: [System icon] System (no divider)
+
+### Dynamic Icon Color in Pressed State
+
+```javascript
+MenuItem.prototype.render = function(canvas, x, y) {
+    var textColor = '#000';
+    var iconColor = '#000';
+
+    if (this.state === 'pressed') {
+        // Black background, white icon and text
+        canvas.drawRoundRect(x, y - 1, this.w, this.h + 1, 2, '#000');
+        textColor = '#fff';
+        iconColor = '#fff';  // Icon becomes white
+    }
+
+    // Draw icon with state-based color
+    if (this.icon && this.icon.grayscale) {
+        canvas.drawSprite(this.icon, iconX, iconY, iconColor);
+    }
+};
+```
+
+## File Structure
+
+```
+fake-flipctl/
+├── js/
+│   ├── icons.js                    # Icon definitions (network, system, testing)
+│   ├── canvas.js                   # drawSprite() & _drawGrayscaleSprite()
+│   └── apps/
+│       └── menu.js                 # MenuItem rendering with icon support
+├── icons/
+│   ├── main_menu/
+│   │   ├── 14_px_network.png      # PNG source
+│   │   ├── 14_px_system.png       # PNG source
+│   │   ├── 14_px_testing.png      # PNG source
+│   │   └── [generated .js files]  # (Optional, for reference)
+│   ├── png-to-bitmap.py            # Grayscale converter tool
+│   └── README_CONVERTER.md         # Conversion guide
+└── CLAUDE.md                        # This documentation
+```
+
+## Troubleshooting
+
+### Icon looks blocky/pixelated
+- Check that PNG source uses anti-aliasing
+- Verify conversion used `png-to-bitmap.py` (grayscale)
+- Try re-converting the PNG
+
+### Icon doesn't show up
+- Verify icon is added to `Icons` object in `icons.js`
+- Check `bitsPerPixel: 6` and `grayscale: true` are set
+- Ensure canvas method uses `drawSprite()` not `drawIcon()`
+
+### Icon color not changing
+- Verify scene code passes the correct color parameter
+- Check that `fillStyle` is set before `fillRect()` in canvas
+- Ensure opacity is not being globally overridden elsewhere
+
+### Edges look jagged
+- PNG source may need better anti-aliasing
+- Try adjusting PNG export settings for smoother curves
+- Consider larger icon size (16×16) for finer detail
+
+## Performance Notes
+
+- **6-bit grayscale**: Minimal performance overhead vs. binary
+- **Rendering cost**: Same as sprites (per-pixel opacity blending)
+- **Memory**: 14×14 icon ≈ 42 bytes (4 pixels per 3 bytes × 14 rows)
+- **Recommendation**: Use for UI icons up to ~20×20 pixels
+
+For larger assets (>32×32), consider dedicated sprite assets with better compression.
+
+## References
+
+- **Grayscale sprite example**: Dolphins (`js/sprites.js`) — 150×114 at 6-bit grayscale
+- **Related components**: Canvas drawing primitives, MenuItem rendering
+- **Converter tools**: `png-to-bitmap.py` (grayscale), `png-to-bitmap-converter-v3.py` (binary, legacy)

@@ -22,5 +22,11 @@ var SceneManager = (function() {
         return this._stack[this._stack.length - 1] || null;
     };
 
+    SceneManager.prototype.popToRoot = function() {
+        while (this._stack.length > 1) {
+            this.pop();
+        }
+    };
+
     return SceneManager;
 })();

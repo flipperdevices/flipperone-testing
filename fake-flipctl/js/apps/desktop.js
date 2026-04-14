@@ -23,23 +23,30 @@ var DesktopScene = (function() {
         }
 
         // Phrases dictionary for the message box
-        var phrases = [
+        this.phrases = [
             "Hello, I'm totally Fake",
             "Never gonna give you up\nNever gonna let you down!",
-            "Sorry, I'm busy right now.\nI need to check every pixel\nbuilded by JS."
+            "Sorry, I'm busy right now.\nI need to check every pixel\nbuilded by JS.",
+            "67",
+            "The answer is: 42",
+            "Send nudes!",
+            "As my grandpa always said,\nclick-click-click."
         ];
 
-        // Pick a random phrase and create message box
-        var phrase = phrases[Math.floor(Math.random() * phrases.length)];
+        // Initialize message box (will be updated in enter())
+        this.messageBox = null;
+    }
+
+    DesktopScene.prototype.enter = function() {
+        // Pick a random phrase and create message box each time we enter
+        var phrase = this.phrases[Math.floor(Math.random() * this.phrases.length)];
         this.messageBox = new MessageBox({
             text: phrase,
             tailX: 113,
             tailY: 82,
             bottomY: 86
         });
-    }
-
-    DesktopScene.prototype.enter = function() {};
+    };
     DesktopScene.prototype.exit = function() {};
 
     DesktopScene.prototype._onMenu = function() {
