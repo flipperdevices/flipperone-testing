@@ -60,7 +60,7 @@ var DesktopScene = (function() {
             var self = this;
             btn.press();
             if (btn.onPress) btn.onPress();
-            setTimeout(function() { btn.release(); }, 50);
+            setTimeout(function() { btn.release(); }, 30);
             return;
         }
     };
@@ -78,6 +78,13 @@ var DesktopScene = (function() {
 
         // Status bar (overlays on top of dolphin)
         UI.drawStatusBar(canvas, '');
+
+        // Draw profile info: "Profile: Router" on the right, under status bar
+        var profileText = 'Profile: Router';
+        var profileY = 12;  // Under status bar, 4px higher
+        var profileWidth = HaxrcorpFont16.textWidth(profileText);
+        var profileX = canvas.w - profileWidth - 2;  // 2px margin from right edge
+        HaxrcorpFont16.draw(canvas.ctx, profileText, profileX, profileY, '#CCCCCC');
 
         // Render buttons
         for (var b = 0; b < this.app_defined_buttons.length; b++) {

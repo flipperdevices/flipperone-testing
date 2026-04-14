@@ -64,7 +64,7 @@ var MenuScene = (function() {
     ];
 
     function networkMenu(sm) {
-        return new SubMenuScene(sm, 'Network', [
+        var subMenu = new SubMenuScene(sm, 'Network', [
             'Routing info',
             '5G Modem',
             'Wi-Fi',
@@ -74,6 +74,21 @@ var MenuScene = (function() {
             '5G Modem': function() { return new Modem5gScene(); },
             'Ethernet': function() { return new EthernetScene(); }
         });
+
+        // Map icons to menu items
+        var iconMap = {
+            'Routing info': Icons.info_icon,
+            '5G Modem': Icons.modem_5g,
+            'Wi-Fi': Icons.wifi,
+            'Ethernet': Icons.ethernet
+        };
+
+        // Add icons to existing items
+        for (var i = 0; i < subMenu.items.length; i++) {
+            subMenu.items[i].icon = iconMap[subMenu.items[i].text];
+        }
+
+        return subMenu;
     }
 
     function testingMenu(sm) {
@@ -85,7 +100,7 @@ var MenuScene = (function() {
             'GPIO'
         ], {
             'Screen': function() { return new ScreenTestScene(); },
-            'Boot menu - UI demo': function() { return new UIDemoScene(); },
+            'Boot menu - UI demo': function() { return new UIDemoScene(sm); },
             'Sound': function() { return new SoundMenuScene(sm); }
         });
     }
@@ -136,6 +151,9 @@ var MenuScene = (function() {
             self.sceneManager.pop();
         });
 
+        // Create right button (open selected menu)
+        this.rightButton = new UI.RightButton('Open', BTN_W, null, null);  // No action, we'll handle it manually
+
         // Build button action map
         this.btnActionMap = {};
         if (this.leftButton && this.leftButton.action) {
@@ -153,7 +171,7 @@ var MenuScene = (function() {
             var self = this;
             btn.press();
             if (btn.onPress) btn.onPress();
-            setTimeout(function() { btn.release(); }, 150);
+            setTimeout(function() { btn.release(); }, 30);
             return;
         }
 
@@ -169,11 +187,18 @@ var MenuScene = (function() {
                 this.selectedIndex--;
                 this.items[this.selectedIndex].state = STATE_SELECTED;
             }
-        } else if (action === 'ok') {
-            var factory = subMenus[menuItems[this.selectedIndex]];
-            if (factory) {
-                this.sceneManager.push(factory(this.sceneManager));
-            }
+        } else if (action === 'ok' || action === 'run') {
+            // Show button feedback
+            var self = this;
+            this.rightButton.press();
+            setTimeout(function() {
+                self.rightButton.release();
+                // Open the submenu after button feedback
+                var factory = subMenus[menuItems[self.selectedIndex]];
+                if (factory) {
+                    self.sceneManager.push(factory(self.sceneManager));
+                }
+            }, 30);
         } else if (action === 'back' || action === 'esc') {
             return 'pop';
         }
@@ -202,8 +227,9 @@ var MenuScene = (function() {
             this.items[i].render(canvas, 8, y);
         }
 
-        // Render left button
+        // Render buttons
         this.leftButton.render(canvas);
+        this.rightButton.render(canvas);
     };
 
     return MenuScene;

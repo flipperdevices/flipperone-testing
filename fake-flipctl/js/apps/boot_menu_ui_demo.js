@@ -75,7 +75,8 @@ var UIDemoScene = (function() {
     var BTN_W   = 48;
     var BTN_GAP = 2;  // 5 × 48 + 4 × 4 = 256px exactly
 
-    function UIDemoScene() {
+    function UIDemoScene(sceneManager) {
+        this.sceneManager = sceneManager;
         this.items = [
             new MenuItem('Router', false, Icons.router, false),
             new MenuItem('TV Media Box', false, Icons.media, false),
@@ -144,7 +145,11 @@ var UIDemoScene = (function() {
     }
 
     // ── Button handlers ───────────────────────────────────────────────────────
-    UIDemoScene.prototype._onEsc   = function() { /* TODO */ };
+    UIDemoScene.prototype._onEsc   = function() {
+        if (this.sceneManager) {
+            this.sceneManager.popToRoot();
+        }
+    };
     UIDemoScene.prototype._onSave  = function() {
         if (this.keyboard && this.inputText) {
             // Don't save if there's an error
@@ -485,7 +490,7 @@ var UIDemoScene = (function() {
                 setTimeout(function() {
                     self._closeBtn.release();
                     self.keyboardClosing = false;
-                }, 150);
+                }, 30);
             } else if (action === 'run') {
                 // Save button (B) — show feedback and save profile (if not disabled)
                 if (!this._saveBtn.disabled) {
@@ -494,7 +499,7 @@ var UIDemoScene = (function() {
                     setTimeout(function() {
                         self._onSave();
                         self._saveBtn.release();
-                    }, 150);
+                    }, 30);
                 }
             } else {
                 // Let keyboard handle all other inputs (ok prints letter, navigation, etc)
@@ -514,7 +519,7 @@ var UIDemoScene = (function() {
                 setTimeout(function() {
                     self._closeBtn.release();
                     self.clonePopupClosing = false;
-                }, 150);
+                }, 30);
             } else {
                 this.clonePopup.handleInput(action);
             }
@@ -532,7 +537,7 @@ var UIDemoScene = (function() {
                 setTimeout(function() {
                     self._closeBtn.release();
                     self.popupClosing = false;
-                }, 150);
+                }, 30);
             } else {
                 this.popup.handleInput(action);
             }
@@ -545,7 +550,7 @@ var UIDemoScene = (function() {
             var self = this;
             btn.press();
             if (btn.onPress) btn.onPress();
-            setTimeout(function() { btn.release(); }, 150);
+            setTimeout(function() { btn.release(); }, 30);
             return;
         }
 

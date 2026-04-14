@@ -41,7 +41,12 @@ var SubMenuScene = (function() {
         if (this.icon) {
             var iconX = x + PAD_X;
             var iconY = y + Math.floor((this.h - this.icon.h) / 2);
-            canvas.drawIcon(this.icon, iconX, iconY, iconColor);
+            // Use drawSprite for grayscale icons, drawIcon for binary icons
+            if (this.icon.grayscale) {
+                canvas.drawSprite(this.icon, iconX, iconY, iconColor);
+            } else {
+                canvas.drawIcon(this.icon, iconX, iconY, iconColor);
+            }
         }
 
         var textX = this.icon ? x + PAD_X + 14 + 4 : x + PAD_X;
@@ -71,6 +76,9 @@ var SubMenuScene = (function() {
             self.sceneManager.popToRoot();
         });
 
+        // Create right button (open selected item)
+        this.rightButton = new UI.RightButton('Open', BTN_W, null, null);  // No action, we'll handle it manually
+
         // Build button action map
         this.btnActionMap = {};
         if (this.leftButton && this.leftButton.action) {
@@ -88,7 +96,7 @@ var SubMenuScene = (function() {
             var self = this;
             btn.press();
             if (btn.onPress) btn.onPress();
-            setTimeout(function() { btn.release(); }, 150);
+            setTimeout(function() { btn.release(); }, 30);
             return;
         }
 
@@ -104,11 +112,18 @@ var SubMenuScene = (function() {
                 this.selectedIndex--;
                 this.items[this.selectedIndex].state = STATE_SELECTED;
             }
-        } else if (action === 'ok') {
-            var factory = this.appScenes[this.itemNames[this.selectedIndex]];
-            if (factory) {
-                this.sceneManager.push(factory());
-            }
+        } else if (action === 'ok' || action === 'run') {
+            // Show button feedback
+            var self = this;
+            this.rightButton.press();
+            setTimeout(function() {
+                self.rightButton.release();
+                // Open the item after button feedback
+                var factory = self.appScenes[self.itemNames[self.selectedIndex]];
+                if (factory) {
+                    self.sceneManager.push(factory());
+                }
+            }, 30);
         } else if (action === 'back') {
             return 'pop';
         }
@@ -136,8 +151,9 @@ var SubMenuScene = (function() {
             this.items[i].render(canvas, 8, y);
         }
 
-        // Render left button
+        // Render buttons
         this.leftButton.render(canvas);
+        this.rightButton.render(canvas);
     };
 
     return SubMenuScene;
