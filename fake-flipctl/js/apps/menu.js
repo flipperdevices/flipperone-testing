@@ -41,12 +41,20 @@ var MenuScene = (function() {
             'System info',
             'Battery info',
             'Disk info',
-            'Update'
+            'Update',
+            'Switch to fake-flipctl2'
         ], {
             'System info': function() { return new SysInfoScene(); },
             'Battery info': function() { return new PowerScene(); },
             'Disk info': function() { return new DiskSpaceScene(); },
-            'Update': function() { return new UpdateScene(); }
+            'Update': function() { return new UpdateScene(); },
+            'Switch to fake-flipctl2': function() {
+                var xhr = new XMLHttpRequest();
+                xhr.open('POST', '/api/switch/flipctl2', true);
+                xhr.timeout = 10000;
+                xhr.send();
+                return null;
+            }
         });
     }
 

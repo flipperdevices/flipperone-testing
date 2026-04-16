@@ -1,0 +1,87 @@
+Cog Browser Direct DRM Research — 2026-03-23
+=============================================
+
+GOAL: Run Cog browser directly on the 256x144 LCD without KDE desktop environment.
+Currently KDE runs on the LCD and Cog opens as a window sized by kwin rules.
+We want to eliminate KDE entirely for a kiosk-like setup.
+
+HARDWARE SETUP:
+- Flipper One prototype, ARM RK3576 (Rockchip)
+- 256x144 LCD connected via SPI (panel-mipi-dbi-spi driver)
+- HDMI output also available (dwhdmiqp-rockchip)
+- System runs Debian 13
+
+DRM DEVICES:
+  /dev/dri/card0  — SPI LCD panel (256x144, connector: card0-SPI-1, connector_id=38, status=connected)
+  /dev/dri/card1  — exists but no connectors visible in sysfs
+  /dev/dri/card2  — Rockchip GPU/HDMI (card2-DP-1: disconnected, card2-HDMI-A-1: disconnected)
+  /dev/dri/renderD128 — render node
+
+COG PLUGINS INSTALLED:
+  /usr/lib/aarch64-linux-gnu/cog/modules/
+    libcogplatform-drm.so
+    libcogplatform-headless.so
+    libcogplatform-wl.so
+
+SESSION CONTEXT:
+- KDE/sddm stopped: sudo systemctl stop sddm
+- Controlling device via SSH (192.168.3.217) and UART console (ttyS0)
+- No physical keyboard/mouse attached to the device
+- Server runs: sudo node /home/user/fake-flipctl/server.js (port 8899)
+
+ATTEMPT 1: cog -P drm (as user)
+  Result: "Failed to initialize DRM" — permissions issue (/dev/dri/* owned by root:video)
+
+ATTEMPT 2: sudo cog -P drm ./test-screen.html (no HDMI connected)
+  Result: "Failed to initialize DRM" — defaults to HDMI connector which is disconnected
+
+ATTEMPT 3: sudo cog -P drm ./test-screen.html (with HDMI monitor plugged in)
+  Result: WORKS on external HDMI monitor!
+  Warnings:
+    - "Renderer 'modeset' does not support rotation 0 (0 degrees)"
+    - HDMI i2c read errors from dwhdmiqp-rockchip
+    - Loaded test-screen.html successfully
+  Then HDMI unplugged → segfault
+  After that, "Failed to initialize DRM" again (HDMI gone)
+
+  Key insight: Cog DRM plugin picks the HDMI connector (card2) by default,
+  ignoring the SPI LCD panel on card0.
+
+ATTEMPT 4: sudo cog -P drm -O drm-device=/dev/dri/card0 ./test-screen.html
+  Result: "Invalid parameter 'drm-device'" — not a valid Cog option
+
+NOT YET TRIED:
+  - Environment variables:
+      sudo WPE_DRM_DEVICE=/dev/dri/card0 cog -P drm ./test-screen.html
+      sudo COG_PLATFORM_DRM_DEVICE=/dev/dri/card0 cog -P drm ./test-screen.html
+  - Check Cog help for DRM options:
+      cog --help-drm
+      cog -P drm --help
+  - cage compositor (minimal Wayland kiosk compositor):
+      sudo apt install cage
+      sudo cage -- cog http://127.0.0.1:8899/test-screen.html
+    cage runs one app fullscreen on the available display, Cog uses -P wl through it
+  - weston in kiosk mode as alternative compositor
+
+POTENTIAL ISSUE:
+  The SPI LCD panel (card0) might not support the GPU-accelerated KMS operations
+  that Cog's DRM plugin expects (page flipping, dumb buffers, etc.). SPI panels
+  typically use a simple framebuffer driver (panel-mipi-dbi-spi). Cog may only
+  work with GPU-backed DRM devices (card2), which is why it ignores card0.
+
+  If that's the case, the viable path is:
+  1. Use a minimal Wayland compositor (cage) that CAN render to the SPI panel
+     (compositors often have better fallback support for non-GPU displays)
+  2. Run Cog with -P wl inside that compositor
+
+CURRENT KDE SETUP (working, for reference):
+  - sddm starts KDE Plasma on the LCD
+  - /etc/xdg/kwinrulesrc forces Cog window to 256x144 at position 0,0
+  - User manually runs: cog http://127.0.0.1:8899
+  - Works but KDE panels/notifications interfere with the UI
+
+NEXT STEPS:
+  1. Try the env vars for card0
+  2. Check cog --help for DRM-specific options
+  3. Install and try cage compositor
+  4. If cage works, create a systemd service to auto-start cage+cog without KDE

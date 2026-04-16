@@ -1,0 +1,13 @@
+[Unit]
+Description=fake-flipctl Node.js HTTP server (port 8899, serves web UI and JSON APIs)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/node /flipperone-testing/fake-flipctl2/server.js
+WorkingDirectory=/flipperone-testing/fake-flipctl2
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

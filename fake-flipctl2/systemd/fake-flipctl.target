@@ -1,0 +1,8 @@
+[Unit]
+Description=fake-flipctl kiosk (groups node server + wayland cage)
+Requires=fake-flipctl2-node-server.service
+After=fake-flipctl2-node-server.service
+Wants=fake-flipctl-wayland-cage.service
+
+[Install]
+WantedBy=multi-user.target

@@ -1,5 +1,8 @@
-# exclude test results 
+# exclude test results
 results/*
 
 # but keep the results folder
-!results/.gitkeep 
+!results/.gitkeep
+
+# macOS
+.DS_Store

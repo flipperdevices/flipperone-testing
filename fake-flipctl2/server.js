@@ -10,9 +10,9 @@ var exec = require('child_process').exec;
 var PORT = 8899;
 var BIND = '0.0.0.0';
 
-// Must run as root
-if (process.getuid() !== 0) {
-    console.error('Error: server must be run as root');
+// On Linux (Flipper), root is required for sysfs access
+if (process.platform === 'linux' && process.getuid() !== 0) {
+    console.error('Error: server must be run as root on Linux');
     process.exit(1);
 }
 
@@ -37,299 +37,6 @@ var bwPrev = { rx: 0, tx: 0, ts: 0, iface: null };
 function readSysInt(p) {
     try { return parseInt(fs.readFileSync(p, 'utf8').trim(), 10); }
     catch (e) { return null; }
-}
-
-var os = require('os');
-
-function getSysInfo() {
-    var result = {
-        hostname: os.hostname(),
-        kernel: os.release(),
-        uptime: Math.floor(os.uptime())
-    };
-
-    // Parse build info from /etc/os-release
-    try {
-        var osRelease = fs.readFileSync('/etc/os-release', 'utf8');
-        var match;
-
-        match = osRelease.match(/^BUILD_ID=(.*)$/m);
-        if (match) result.buildId = match[1].replace(/^"|"$/g, '');
-
-        match = osRelease.match(/^BUILD_GIT=(.*)$/m);
-        if (match) result.buildGit = match[1].replace(/^"|"$/g, '');
-
-        match = osRelease.match(/^PRETTY_NAME=(.*)$/m);
-        if (match) result.distro = match[1].replace(/^"|"$/g, '');
-    } catch (e) {}
-
-    return result;
-}
-
-var WIFI_IFACE = 'wlxb06b1167374c';
-
-function getWifiStatus() {
-    var result = { mode: 'unknown', ssid: null, clients: null, password: null, connectedTo: null };
-
-    // Check interface type via iw
-    try {
-        var iwOut = execSync('iw dev ' + WIFI_IFACE + ' info 2>/dev/null',
-            { encoding: 'utf8', timeout: 2000 });
-        var typeMatch = iwOut.match(/type\s+(\S+)/);
-        if (typeMatch) {
-            var iwType = typeMatch[1];
-            if (iwType === 'AP') {
-                result.mode = 'ap';
-
-                // Get SSID from iw
-                var ssidMatch = iwOut.match(/ssid\s+(.+)/);
-                if (ssidMatch) result.ssid = ssidMatch[1].trim();
-
-                // Get client count
-                try {
-                    var staDump = execSync('iw dev ' + WIFI_IFACE + ' station dump 2>/dev/null',
-                        { encoding: 'utf8', timeout: 2000 });
-                    var stations = staDump.match(/^Station /gm);
-                    result.clients = stations ? stations.length : 0;
-                } catch (e) {
-                    result.clients = 0;
-                }
-
-                // Get password from active NM connection
-                try {
-                    var nmActive = execSync('nmcli -t -f NAME,DEVICE connection show --active 2>/dev/null',
-                        { encoding: 'utf8', timeout: 2000 });
-                    var lines = nmActive.trim().split('\n');
-                    for (var i = 0; i < lines.length; i++) {
-                        var parts = lines[i].split(':');
-                        if (parts[1] === WIFI_IFACE) {
-                            var pskOut = execSync('nmcli -s -t -f 802-11-wireless-security.psk connection show "' +
-                                parts[0] + '" 2>/dev/null', { encoding: 'utf8', timeout: 2000 });
-                            var pskMatch = pskOut.match(/psk:(.+)/);
-                            if (pskMatch) result.password = pskMatch[1];
-                            break;
-                        }
-                    }
-                } catch (e) {}
-            } else if (iwType === 'managed') {
-                // STA mode — check if connected
-                try {
-                    var linkOut = execSync('iw dev ' + WIFI_IFACE + ' link 2>/dev/null',
-                        { encoding: 'utf8', timeout: 2000 });
-                    if (linkOut.indexOf('Not connected') !== -1) {
-                        result.mode = 'disconnected';
-                    } else {
-                        result.mode = 'sta';
-                        var ssidSta = linkOut.match(/SSID:\s+(.+)/);
-                        if (ssidSta) result.connectedTo = ssidSta[1].trim();
-                    }
-                } catch (e) {
-                    result.mode = 'disconnected';
-                }
-            }
-        }
-    } catch (e) {
-        result.mode = 'no-device';
-    }
-
-    return result;
-}
-
-function wifiScan() {
-    var result = { networks: [] };
-    try {
-        // Trigger rescan
-        execSync('nmcli device wifi rescan ifname ' + WIFI_IFACE + ' 2>/dev/null',
-            { encoding: 'utf8', timeout: 5000 });
-    } catch (e) {
-        // rescan may fail in AP mode, still try listing cached results
-    }
-    try {
-        var out = execSync('nmcli -t -f SSID,SIGNAL,SECURITY device wifi list ifname ' + WIFI_IFACE + ' 2>/dev/null',
-            { encoding: 'utf8', timeout: 5000 });
-        var lines = out.trim().split('\n');
-        var seen = {};
-        for (var i = 0; i < lines.length; i++) {
-            var parts = lines[i].split(':');
-            if (parts.length < 3) continue;
-            var ssid = parts[0];
-            if (!ssid || seen[ssid]) continue;
-            seen[ssid] = true;
-            result.networks.push({
-                ssid: ssid,
-                signal: parseInt(parts[1], 10) || 0,
-                security: parts.slice(2).join(':')
-            });
-        }
-    } catch (e) {
-        result.error = 'Scan failed (WiFi may be in AP mode)';
-    }
-    return result;
-}
-
-function activateAp(connName) {
-    // Validate connection name to prevent injection
-    if (!/^[\w-]+$/.test(connName)) {
-        return { success: false, error: 'Invalid connection name' };
-    }
-
-    try {
-        execSync('nmcli connection up "' + connName + '" 2>&1',
-            { encoding: 'utf8', timeout: 15000 });
-    } catch (e) {
-        return { success: false, error: (e.stderr || e.stdout || e.message || 'Unknown error').trim() };
-    }
-
-    // Read back AP info
-    var status = getWifiStatus();
-    return {
-        success: true,
-        ssid: status.ssid,
-        password: status.password,
-        clients: status.clients
-    };
-}
-
-function getUsbEthInfo() {
-    var IFACE = 'flipusb0';
-    var SERVICE = 'usb-ncm-gadget.service';
-    var netPath = '/sys/class/net/' + IFACE;
-
-    var result = {
-        service: 'unknown',
-        operstate: 'unknown',
-        mac: null,
-        ip4: [],
-        ip6: [],
-        rxBytes: null,
-        txBytes: null
-    };
-
-    // Service status
-    try {
-        var st = execSync('systemctl is-active ' + SERVICE + ' 2>/dev/null',
-            { encoding: 'utf8', timeout: 2000 }).trim();
-        result.service = st;
-    } catch (e) {
-        result.service = 'inactive';
-    }
-
-    // Check if interface exists
-    if (!fs.existsSync(netPath)) return result;
-
-    result.operstate = readStr(path.join(netPath, 'operstate')) || 'unknown';
-    result.mac = readStr(path.join(netPath, 'address'));
-    result.rxBytes = readSysInt(path.join(netPath, 'statistics/rx_bytes'));
-    result.txBytes = readSysInt(path.join(netPath, 'statistics/tx_bytes'));
-
-    // IP addresses
-    try {
-        var out = execSync('ip -4 addr show ' + IFACE + ' 2>/dev/null',
-            { encoding: 'utf8', timeout: 2000 });
-        var m4 = out.match(/inet\s+(\S+)/g);
-        if (m4) {
-            for (var i = 0; i < m4.length; i++) {
-                result.ip4.push(m4[i].replace('inet ', ''));
-            }
-        }
-    } catch (e) {}
-
-    try {
-        var out6 = execSync('ip -6 addr show ' + IFACE + ' scope global 2>/dev/null',
-            { encoding: 'utf8', timeout: 2000 });
-        var m6 = out6.match(/inet6\s+(\S+)/g);
-        if (m6) {
-            for (var j = 0; j < m6.length; j++) {
-                result.ip6.push(m6[j].replace('inet6 ', ''));
-            }
-        }
-    } catch (e) {}
-
-    return result;
-}
-
-function getMonitorsInfo() {
-    var DRM = '/sys/class/drm';
-    var monitors = [];
-
-    try {
-        var entries = fs.readdirSync(DRM);
-    } catch (e) {
-        return { monitors: [] };
-    }
-
-    // Filter to connector dirs (e.g. card2-HDMI-A-1, card0-SPI-1)
-    var connDirs = entries.filter(function(e) {
-        return /^card\d+-/.test(e) && fs.statSync(path.join(DRM, e)).isDirectory();
-    });
-
-    connDirs.forEach(function(dir) {
-        var connPath = path.join(DRM, dir);
-        var status = readStr(path.join(connPath, 'status')) || 'unknown';
-
-        // Parse connector name (card2-HDMI-A-1 -> HDMI-A-1)
-        var connector = dir.replace(/^card\d+-/, '');
-
-        // Find driver for the parent card
-        var cardName = dir.split('-')[0];
-        var driver = 'unknown';
-        try {
-            var drvLink = fs.readlinkSync(path.join(DRM, cardName, 'device', 'driver'));
-            driver = path.basename(drvLink);
-        } catch (e) {}
-
-        var mon = {
-            connector: connector,
-            driver: driver,
-            status: status
-        };
-
-        if (status === 'connected') {
-            // Modes
-            try {
-                var modes = fs.readFileSync(path.join(connPath, 'modes'), 'utf8').trim();
-                if (modes) {
-                    var modeList = modes.split('\n');
-                    mon.mode = modeList[0];
-                    mon.modes = modeList.length;
-                }
-            } catch (e) {}
-
-            // EDID monitor name
-            try {
-                var edid = fs.readFileSync(path.join(connPath, 'edid'));
-                if (edid.length >= 128) {
-                    // Manufacturer from bytes 8-9
-                    var val = (edid[8] << 8) | edid[9];
-                    var mfr = String.fromCharCode(
-                        ((val >> 10) & 0x1F) + 64,
-                        ((val >> 5) & 0x1F) + 64,
-                        (val & 0x1F) + 64
-                    );
-                    // Find monitor name descriptor (tag 0xFC)
-                    var name = '';
-                    for (var i = 54; i < 126; i += 18) {
-                        if (edid[i] === 0 && edid[i+1] === 0 && edid[i+2] === 0 && edid[i+3] === 0xFC) {
-                            var nameBytes = edid.slice(i + 5, i + 18);
-                            var nlIdx = nameBytes.indexOf(0x0A);
-                            if (nlIdx >= 0) nameBytes = nameBytes.slice(0, nlIdx);
-                            name = nameBytes.toString('ascii').trim();
-                            break;
-                        }
-                    }
-                    mon.monitor = name ? name + ' (' + mfr + ')' : mfr;
-                }
-            } catch (e) {}
-
-            // DPMS and enabled
-            mon.dpms = readStr(path.join(connPath, 'dpms'));
-            mon.enabled = readStr(path.join(connPath, 'enabled'));
-        }
-
-        monitors.push(mon);
-    });
-
-    return { monitors: monitors };
 }
 
 function getBandwidth(iface) {
@@ -882,49 +589,6 @@ var server = http.createServer(function(req, res) {
         res.end(JSON.stringify(eth));
         return;
     }
-    if (req.url === '/api/wifi/status') {
-        var wifiSt = getWifiStatus();
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(wifiSt));
-        return;
-    }
-    if (req.url === '/api/wifi/scan' && req.method === 'POST') {
-        var scanResult = wifiScan();
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(scanResult));
-        return;
-    }
-    if (req.url === '/api/wifi/activate-ap' && req.method === 'POST') {
-        readJsonBody(req, function(err, data) {
-            if (err || !data || !data.connection) {
-                res.writeHead(400, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ success: false, error: 'Invalid request' }));
-                return;
-            }
-            var apResult = activateAp(data.connection);
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify(apResult));
-        });
-        return;
-    }
-    if (req.url === '/api/sysinfo') {
-        var sysinfo = getSysInfo();
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(sysinfo));
-        return;
-    }
-    if (req.url === '/api/usbeth') {
-        var usbeth = getUsbEthInfo();
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(usbeth));
-        return;
-    }
-    if (req.url === '/api/monitors') {
-        var mons = getMonitorsInfo();
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(mons));
-        return;
-    }
     if (req.url === '/api/disk') {
         var info = getDiskInfo();
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1000,13 +664,13 @@ var server = http.createServer(function(req, res) {
         res.end(JSON.stringify(driverResult));
         return;
     }
-    if (req.url === '/api/switch/flipctl2' && req.method === 'POST') {
+    if (req.url === '/api/switch/flipctl' && req.method === 'POST') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true }));
 
         // Trigger systemd service to run the switch script independently
         var spawn = require('child_process').spawn;
-        spawn('systemctl', ['start', 'switch-flipctl2.service'], {
+        spawn('systemctl', ['start', 'switch-flipctl.service'], {
             detached: true,
             stdio: 'ignore'
         }).unref();

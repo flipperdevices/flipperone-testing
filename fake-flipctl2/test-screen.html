@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Screen Test</title>
+    <style>
+        * { margin: 0; padding: 0; }
+        body { background: #fff; overflow: hidden; }
+        canvas { display: block; background: #fff; }
+    </style>
+</head>
+<body>
+    <canvas id="c" width="256" height="144"></canvas>
+    <script src="js/font.js"></script>
+    <script>
+        var c = document.getElementById('c');
+        var ctx = c.getContext('2d');
+
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 1;
+
+        // border
+        ctx.strokeRect(0.5, 0.5, 255, 143);
+
+        // diagonal cross
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(256, 144);
+        ctx.moveTo(256, 0);
+        ctx.lineTo(0, 144);
+        ctx.stroke();
+
+        // center crosshair
+        ctx.beginPath();
+        ctx.moveTo(128, 0);
+        ctx.lineTo(128, 144);
+        ctx.moveTo(0, 72);
+        ctx.lineTo(256, 72);
+        ctx.stroke();
+
+        // corner labels (pixel-perfect bitmap font)
+        BitmapFont.draw(ctx, '0,0', 2, 2, '#000');
+        BitmapFont.draw(ctx, '255,0', 222, 2, '#000');
+        BitmapFont.draw(ctx, '0,143', 2, 136, '#000');
+        BitmapFont.draw(ctx, '255,143', 210, 136, '#000');
+        BitmapFont.draw(ctx, '256x144', 107, 68, '#000');
+    </script>
+</body>
+</html>
