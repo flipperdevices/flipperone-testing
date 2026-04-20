@@ -11,6 +11,27 @@
 
     scenes.push(new MenuScene(scenes));
 
+    // Poll the server version every 2s. The first successful response
+    // is the baseline; any later change means the server was restarted
+    // (e.g., variant switch) and we reload the page to pick up the new
+    // code. fetch() errors while the server is restarting are ignored.
+    (function startVersionWatcher() {
+        var baseline = null;
+        setInterval(function() {
+            fetch('/api/version', { cache: 'no-store' })
+                .then(function(r) { return r.ok ? r.json() : null; })
+                .then(function(v) {
+                    if (!v) return;
+                    if (baseline === null) {
+                        baseline = v.id;
+                    } else if (v.id !== baseline) {
+                        location.reload();
+                    }
+                })
+                .catch(function() { /* server restarting; ignore */ });
+        }, 2000);
+    })();
+
     function loop(ts) {
         var keys = input.processQueue();
         var scene = scenes.current();
