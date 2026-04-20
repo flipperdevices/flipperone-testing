@@ -106,7 +106,7 @@ active-flipctl -> fake-flipctl     # default (checked in)
 active-flipctl -> fake-flipctl2    # after Testing → Switch to fake-flipctl2
 ```
 
-The node service's `WorkingDirectory` is the symlink, so `ExecStart=/usr/bin/node server.js` loads whichever variant it currently points at. Switching requires no systemd-unit edits and no `daemon-reload`.
+The node service's `WorkingDirectory` is the symlink, so `ExecStart=/usr/bin/node server.js` loads whichever variant it currently points at. Switching requires no systemd-unit edits. `daemon-reload` is run defensively in the switch pipeline so an OTA update that changed `fake-flipctl-node-server.service` on disk doesn't leave systemd stuck on the old unit.
 
 Both variants implement the same pair of endpoints and the same client-side version watcher, so switching is symmetric in both directions.
 
@@ -118,6 +118,7 @@ User presses **Testing → Switch to fake-flipctl2** in v1 (or **Testing → Swi
 2. Server spawns a `systemd-run --collect --no-block sh -c '…'` pipeline:
    ```bash
    ln -sfn /flipperone-testing/fake-flipctl2 /flipperone-testing/active-flipctl \
+     && systemctl daemon-reload \
      && systemctl restart fake-flipctl-node-server.service
    ```
    (Target path is `fake-flipctl` in the reverse direction.) `systemd-run` is mandatory here: the shell must run in a transient unit outside the node service's cgroup, otherwise systemd tears the pipeline down when it restarts the service, and the chain dies before completing.

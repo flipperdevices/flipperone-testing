@@ -575,10 +575,12 @@ var server = http.createServer(function(req, res) {
         if (upResult.success) {
             // Restart the node service only. The client's /api/version watcher
             // will detect the new SERVER_ID and reload the page inside the
-            // already-running cog — no cog restart needed.
+            // already-running cog — no cog restart needed. daemon-reload in
+            // case the pull updated the .service file on disk.
             var spawn = require('child_process').spawn;
-            spawn('systemd-run', ['--collect', '--no-block',
-                'systemctl', 'restart', 'fake-flipctl-node-server.service'], {
+            spawn('systemd-run', ['--collect', '--no-block', 'sh', '-c',
+                'systemctl daemon-reload' +
+                ' && systemctl restart fake-flipctl-node-server.service'], {
                 detached: true,
                 stdio: 'ignore'
             }).unref();
@@ -685,7 +687,11 @@ var server = http.createServer(function(req, res) {
         // polling /api/version and will reload the page when SERVER_ID changes
         // — so no cog restart is needed. systemd-run keeps the pipeline in
         // a transient unit outside our own cgroup, so it survives the restart.
+        // daemon-reload picks up any .service file change that landed via a
+        // prior OTA pull — otherwise systemd warns "changed on disk" and may
+        // keep running the old unit.
         var cmd = 'ln -sfn /flipperone-testing/fake-flipctl /flipperone-testing/active-flipctl' +
+                  ' && systemctl daemon-reload' +
                   ' && systemctl restart fake-flipctl-node-server.service';
         var spawn = require('child_process').spawn;
         spawn('systemd-run', ['--collect', '--no-block', 'sh', '-c', cmd], {
