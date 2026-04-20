@@ -573,13 +573,15 @@ var server = http.createServer(function(req, res) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(upResult));
         if (upResult.success) {
-            // Schedule restart via systemd-run so it survives our own restart
-            setTimeout(function() {
-                try {
-                    execSync('systemd-run --no-block bash -c "sleep 1 && systemctl restart fake-flipctl-node-server.service && sleep 2 && systemctl restart cog-seat1.service"',
-                        { encoding: 'utf8', timeout: 5000 });
-                } catch (e) {}
-            }, 500);
+            // Restart the node service only. The client's /api/version watcher
+            // will detect the new SERVER_ID and reload the page inside the
+            // already-running cog — no cog restart needed.
+            var spawn = require('child_process').spawn;
+            spawn('systemd-run', ['--collect', '--no-block',
+                'systemctl', 'restart', 'fake-flipctl-node-server.service'], {
+                detached: true,
+                stdio: 'ignore'
+            }).unref();
         }
         return;
     }
