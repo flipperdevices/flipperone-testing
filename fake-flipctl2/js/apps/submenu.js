@@ -89,9 +89,18 @@ var SubMenuScene = (function() {
         this.appScenes = appScenes || {};
         this.selectedIndex = 0;
         this.items = [];
+        this.scrollOffset = 0;
         this.toggleState = {
             'Fake-FlipCTL_2': true  // true = ON, false = OFF
         };
+
+        // Viewport dimensions for scrolling
+        this.viewportY = 26;  // Below breadcrumbs (12px) + padding (2px)
+        this.viewportH = 144 - 26 - 18;  // Screen height - breadcrumbs - button area
+        this.visibleItems = Math.floor(this.viewportH / ITEM_H_REGULAR);
+
+        // Create scrollbar
+        this.scrollbar = new UI.Scrollbar(items.length, this.visibleItems, this.scrollOffset);
 
         // Create menu items
         for (var i = 0; i < items.length; i++) {
@@ -148,12 +157,20 @@ var SubMenuScene = (function() {
                 this.items[this.selectedIndex].state = STATE_DEFAULT;
                 this.selectedIndex++;
                 this.items[this.selectedIndex].state = STATE_SELECTED;
+                // Scroll to keep selected item visible
+                if (this.selectedIndex >= this.scrollOffset + this.visibleItems) {
+                    this.scrollOffset = this.selectedIndex - this.visibleItems + 1;
+                }
             }
         } else if (action === 'up') {
             if (this.selectedIndex > 0) {
                 this.items[this.selectedIndex].state = STATE_DEFAULT;
                 this.selectedIndex--;
                 this.items[this.selectedIndex].state = STATE_SELECTED;
+                // Scroll to keep selected item visible
+                if (this.selectedIndex < this.scrollOffset) {
+                    this.scrollOffset = this.selectedIndex;
+                }
             }
         } else if (action === 'ok' || action === 'run') {
             // Show button feedback
@@ -190,12 +207,17 @@ var SubMenuScene = (function() {
         var breadcrumbTextY = breadcrumbsY + Math.floor((breadcrumbsH - 11) / 2);
         HaxrcorpFont16.draw(canvas.ctx, breadcrumbText, breadcrumbX, breadcrumbTextY, '#000');
 
-        var startY = breadcrumbsY + breadcrumbsH + 2;
+        var startY = this.viewportY;
 
-        for (var i = 0; i < this.items.length; i++) {
-            var y = startY + i * ITEM_H_REGULAR;
+        // Render only visible items
+        for (var i = this.scrollOffset; i < this.scrollOffset + this.visibleItems && i < this.items.length; i++) {
+            var y = startY + (i - this.scrollOffset) * ITEM_H_REGULAR;
             this.items[i].render(canvas, 8, y);
         }
+
+        // Update and render scrollbar
+        this.scrollbar.update(this.items.length, this.visibleItems, this.scrollOffset);
+        this.scrollbar.render(canvas, canvas.w - 2, this.viewportY, this.viewportH);
 
         // Render buttons
         this.leftButton.render(canvas);

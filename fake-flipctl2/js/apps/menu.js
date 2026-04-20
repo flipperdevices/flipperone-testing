@@ -125,11 +125,13 @@ var MenuScene = (function() {
             'Boot menu - UI demo',
             'Input',
             'Sound',
+            'Figma live preview',
             'GPIO'
         ], {
             'Screen': function() { return new ScreenTestScene(); },
             'Boot menu - UI demo': function() { return new UIDemoScene(sm); },
-            'Sound': function() { return new SoundMenuScene(sm); }
+            'Sound': function() { return new SoundMenuScene(sm); },
+            'Figma live preview': function() { return new FigmaLivePreviewScene(sm); }
         });
     }
 
