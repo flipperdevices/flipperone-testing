@@ -11,6 +11,37 @@
 
     scenes.push(new MenuScene(scenes));
 
+    // Poll the server every 2s and reload the page when the underlying
+    // server changes. The signature combines HTTP status with the body id
+    // so any of these triggers a reload:
+    //   - same variant, new process:    "200:A" -> "200:B"
+    //   - v1 -> v2 (v2 lacks endpoint): "200:A" -> "404"
+    //   - v2 -> v1:                     "404"   -> "200:B"
+    // fetch() rejections (server unreachable during the restart window)
+    // are ignored; the next poll will pick things up.
+    (function startVersionWatcher() {
+        var baseline = null;
+        setInterval(function() {
+            fetch('/api/version', { cache: 'no-store' })
+                .then(function(r) {
+                    if (r.ok) {
+                        return r.json().then(function(body) {
+                            return r.status + ':' + body.id;
+                        });
+                    }
+                    return String(r.status);
+                })
+                .then(function(sig) {
+                    if (baseline === null) {
+                        baseline = sig;
+                    } else if (sig !== baseline) {
+                        location.reload();
+                    }
+                })
+                .catch(function() { /* server unreachable; ignore */ });
+        }, 2000);
+    })();
+
     function loop(ts) {
         var keys = input.processQueue();
         var scene = scenes.current();

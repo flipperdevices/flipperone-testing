@@ -4,8 +4,8 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/node /flipperone-testing/fake-flipctl/server.js
-WorkingDirectory=/flipperone-testing/fake-flipctl
+ExecStart=/usr/bin/node server.js
+WorkingDirectory=/flipperone-testing/active-flipctl
 Restart=on-failure
 RestartSec=3
 

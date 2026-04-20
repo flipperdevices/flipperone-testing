@@ -85,3 +85,127 @@ NEXT STEPS:
   2. Check cog --help for DRM-specific options
   3. Install and try cage compositor
   4. If cage works, create a systemd service to auto-start cage+cog without KDE
+
+
+==============================================================================
+SDDM / KWin steal /dev/dri/card0 — 2026-04-20
+==============================================================================
+
+SYMPTOM
+-------
+cog-seat1.service crashes in a tight loop shortly after boot (or after any
+`systemctl stop cog-seat1 + start cog-seat1` cycle). systemd reports:
+
+    cog-seat1.service: Main process exited, code=killed, status=5/TRAP
+
+Captured cog stderr:
+
+    Cog-WARNING: Platform setup failed: Failed to initialize DRM
+    WebKitWebViewBackend* webkit_web_view_backend_new(...): 'backend' failed
+    Cog-ERROR: Could not instantiate any WPE backend.
+
+ROOT CAUSE
+----------
+`fuser -v /dev/dri/card0` showed kwin_wayland (under user `sddm`) holding
+card0. KWin running on seat0 had opened the SPI panel device node even
+though it's tagged for seat1. Typical trigger: HDMI is disconnected, so
+KWin can't use card2 (its intended seat0 GPU) and greedily falls back to
+card0 — which cog then can't grab.
+
+udev tagging was already correct:
+
+    $ udevadm info /dev/dri/card0 | grep -E 'ID_SEAT|TAGS'
+    E: ID_SEAT=seat1
+    E: TAGS=:seat:master-of-seat:seat1:uaccess:
+
+`loginctl seat-status seat0` correctly does NOT list card0. The tag is
+advisory though — KWin doesn't query logind for "which DRM devices belong
+to my seat"; it enumerates /dev/dri/* directly and opens whatever it can
+permission-wise. libseat gives cog a clean seat-1 session, but it does not
+prevent a process on seat0 from reaching across to a seat1 device.
+
+Once KWin grabs card0, cog's Restart=on-failure loop can never recover:
+the card stays taken, each cog restart fails with the same TRAP.
+
+FIX
+---
+Kernel-enforced denial of card0 access to SDDM's entire cgroup via a
+systemd drop-in for sddm.service:
+
+    # /etc/systemd/system/sddm.service.d/no-card0.conf
+    [Service]
+    InaccessiblePaths=/dev/dri/card0
+
+`InaccessiblePaths=` (implies PrivateMounts=yes) causes systemd to
+bind-mount an empty entry over the device node inside SDDM's mount
+namespace. Any process in the cgroup — SDDM itself, the greeter, the user
+session, KWin-wayland, etc. — sees the path, but `open()` returns EACCES.
+The kernel enforces it; no KWin config or env var needed.
+
+Apply:
+
+    sudo mkdir -p /etc/systemd/system/sddm.service.d
+    sudo tee /etc/systemd/system/sddm.service.d/no-card0.conf > /dev/null <<'EOF'
+    [Service]
+    InaccessiblePaths=/dev/dri/card0
+    EOF
+    sudo systemctl daemon-reload
+    sudo systemctl restart sddm.service
+
+VERIFY
+------
+After the restart, `fuser -v /dev/dri/card0` should list only cog + its
+WPE subprocesses. KWin should land on card2:
+
+    $ sudo fuser -v /dev/dri/card0
+    /dev/dri/card0: flipctl  7765 F.... cog
+                    flipctl  7798 F.... xdg-dbus-proxy
+                    flipctl  7808 F.... WPEWebProcess
+    $ sudo fuser -v /dev/dri/card2
+    /dev/dri/card2: root        1 F.... systemd
+                    root      443 F.... systemd-logind
+                    user     8409 F.... kwin_wayland
+
+TRADE-OFFS AND ALTERNATIVES CONSIDERED
+--------------------------------------
+
+1. KWIN_DRM_DEVICES=/dev/dri/card2 env var (rejected):
+   KWin-specific and bypassable. Any other compositor or tool in the
+   seat0 session can still grab card0. Also: has to be set in the right
+   session environment, not just SDDM's systemd env.
+
+2. Cgroup DevicePolicy=closed + DeviceAllow=... on sddm.service
+   (equivalent, more complex):
+   What cog-seat1.service does in reverse. Works but requires
+   enumerating every device SDDM's children legitimately need — input,
+   tty, vcs, card2, renderD129, sound, etc. Easier to get wrong.
+   InaccessiblePaths= achieves the same guarantee for card0 specifically
+   with one line.
+
+3. Udev rule edits to strip `uaccess`/`seat` from card0
+   (rejected, fragile):
+   KWin still runs in group `video`/`render` via plain file-mode
+   permissions, so stripping uaccess doesn't reliably deny it. Also
+   risks side-effects on other seat0 devices.
+
+4. Stopping SDDM entirely on this device (viable for dedicated kiosks):
+   `sudo systemctl disable --now sddm.service`. Simpler, but loses the
+   ability to also run a desktop on HDMI when someone plugs in a monitor.
+   The drop-in approach keeps both use cases working simultaneously.
+
+EDGE CASE: HDMI UNPLUGGED
+-------------------------
+With the drop-in in place, if HDMI is disconnected at SDDM startup, KWin
+has no display at all — card2 is unusable (no connected output) and
+card0 is hidden. SDDM restart-loops (Restart=always, RestartSec=1s).
+On a kiosk this is usually fine (no one sees it), but options to make
+SDDM skip cleanly instead of looping:
+
+  - Add `ConditionPathExists=/sys/class/drm/card2-HDMI-A-1/status` plus
+    a helper check that reads "connected" before starting; or
+  - Add `OnFailure=...` to mask SDDM after N failures; or
+  - Set `Restart=no` in the drop-in (simple, but then SDDM won't recover
+    when HDMI is plugged in post-boot without manual intervention).
+
+None of these affect cog/LCD operation.
+
