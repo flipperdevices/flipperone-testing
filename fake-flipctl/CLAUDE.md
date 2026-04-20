@@ -108,37 +108,33 @@ active-flipctl -> fake-flipctl2    # after Testing → Switch to fake-flipctl2
 
 The node service's `WorkingDirectory` is the symlink, so `ExecStart=/usr/bin/node server.js` loads whichever variant it currently points at. Switching requires no systemd-unit edits and no `daemon-reload`.
 
+Both variants implement the same pair of endpoints and the same client-side version watcher, so switching is symmetric in both directions.
+
 ### Switch flow
 
-User presses **Testing → Switch to fake-flipctl2** in the UI.
+User presses **Testing → Switch to fake-flipctl2** in v1 (or **Testing → Switch to fake-flipctl** in v2).
 
-1. Client does `POST /api/switch/flipctl2`. Server returns `200 {success:true}` immediately.
+1. Client does `POST /api/switch/flipctl2` (or `/api/switch/flipctl` in the reverse direction). Server returns `200 {success:true}` immediately.
 2. Server spawns a `systemd-run --collect --no-block sh -c '…'` pipeline:
    ```bash
    ln -sfn /flipperone-testing/fake-flipctl2 /flipperone-testing/active-flipctl \
      && systemctl restart fake-flipctl-node-server.service
    ```
-   `systemd-run` is mandatory here: the shell must run in a transient unit outside the node service's cgroup, otherwise systemd tears the pipeline down when it restarts the service, and the chain dies before completing.
+   (Target path is `fake-flipctl` in the reverse direction.) `systemd-run` is mandatory here: the shell must run in a transient unit outside the node service's cgroup, otherwise systemd tears the pipeline down when it restarts the service, and the chain dies before completing.
 3. Node dies and restarts; the new instance picks up the symlink's new target and generates a fresh `SERVER_ID`.
-4. Meanwhile, the client's version watcher keeps polling `/api/version`. During the ~1s node-restart window, fetches fail silently. As soon as node answers with a different `id`, the client calls `location.reload()`. The browser re-fetches HTML/JS/CSS from the already-running cog, which is reading from the new variant.
+4. Meanwhile, the client's version watcher keeps polling `/api/version`. During the ~1s node-restart window, fetches fail silently. As soon as node answers with a different signature (HTTP status + body id), the client calls `location.reload()`. The browser re-fetches HTML/JS/CSS from the already-running cog, which now serves the new variant.
 
 Cog is **not** restarted. This is deliberate: restarting cog would tear down the entire WebKit process tree, reacquire DRM, and flash the LCD. Reloading the page inside the running cog is near-instant and much cleaner.
+
+The watcher uses a combined status+id signature (rather than comparing `id` alone) so that it also handles the case where one variant might not implement `/api/version` — a 404 counts as a signature change and still triggers the reload. Today both variants do implement it, but the watcher is defensive against a future variant that doesn't.
 
 ### Adding a variant
 
 1. Point `active-flipctl` at the new variant dir: `ln -sfn foo /flipperone-testing/active-flipctl`.
-2. Restart the node service. The UI reloads itself via the version watcher.
+2. Restart the node service. The UI reloads itself via the version watcher (even if the new variant doesn't implement `/api/version`).
+3. For two-way switching, the new variant needs its own `/api/switch/<target>` endpoint and a matching menu entry, modeled on v1/v2.
 
 The node unit, the cog unit, and `/etc/systemd/system/` are untouched.
-
-### v2 parity (TODO)
-
-`fake-flipctl2/server.js` still has a legacy `/api/switch/flipctl` endpoint from the oneshot-service era. It needs a mirror of v1's `/api/switch/flipctl2` (swap symlink → `fake-flipctl`, restart node via `systemd-run`). Until then, switching back from v2 to v1 via the menu is broken; recover by hand with:
-
-```bash
-sudo ln -sfn /flipperone-testing/fake-flipctl /flipperone-testing/active-flipctl
-sudo systemctl restart fake-flipctl-node-server.service
-```
 
 ## Live development workflow
 

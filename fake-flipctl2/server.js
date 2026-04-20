@@ -4,11 +4,17 @@
 var http = require('http');
 var fs = require('fs');
 var path = require('path');
+var crypto = require('crypto');
 var execSync = require('child_process').execSync;
 var exec = require('child_process').exec;
 
 var PORT = 8899;
 var BIND = '0.0.0.0';
+
+// Regenerated on every process start. The browser polls /api/version
+// and triggers location.reload() when this value changes, so the UI
+// reloads itself after a variant switch without needing cog to restart.
+var SERVER_ID = crypto.randomBytes(8).toString('hex');
 
 // On Linux (Flipper), root is required for sysfs access
 if (process.platform === 'linux' && process.getuid() !== 0) {
@@ -664,17 +670,26 @@ var server = http.createServer(function(req, res) {
         res.end(JSON.stringify(driverResult));
         return;
     }
+    if (req.url === '/api/version' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ id: SERVER_ID }));
+        return;
+    }
     if (req.url === '/api/switch/flipctl' && req.method === 'POST') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true }));
 
-        // Trigger systemd service to run the switch script independently
+        // Swap the variant symlink and restart ourselves. Client-side JS is
+        // polling /api/version and will reload the page when SERVER_ID changes
+        // — so no cog restart is needed. systemd-run keeps the pipeline in
+        // a transient unit outside our own cgroup, so it survives the restart.
+        var cmd = 'ln -sfn /flipperone-testing/fake-flipctl /flipperone-testing/active-flipctl' +
+                  ' && systemctl restart fake-flipctl-node-server.service';
         var spawn = require('child_process').spawn;
-        spawn('systemctl', ['start', 'switch-flipctl.service'], {
+        spawn('systemd-run', ['--collect', '--no-block', 'sh', '-c', cmd], {
             detached: true,
             stdio: 'ignore'
         }).unref();
-
         return;
     }
     serveStatic(req, res);

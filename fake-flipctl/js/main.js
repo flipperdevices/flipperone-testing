@@ -15,8 +15,9 @@
     // server changes. The signature combines HTTP status with the body id
     // so any of these triggers a reload:
     //   - same variant, new process:    "200:A" -> "200:B"
-    //   - v1 -> v2 (v2 lacks endpoint): "200:A" -> "404"
-    //   - v2 -> v1:                     "404"   -> "200:B"
+    //   - swap to a variant that lacks
+    //     /api/version:                 "200:A" -> "404"
+    //   - swap from such a variant:     "404"   -> "200:B"
     // fetch() rejections (server unreachable during the restart window)
     // are ignored; the next poll will pick things up.
     (function startVersionWatcher() {

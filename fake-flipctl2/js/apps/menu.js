@@ -126,12 +126,17 @@ var MenuScene = (function() {
             'Input',
             'Sound',
             'Figma live preview',
-            'GPIO'
+            'GPIO',
+            'Switch to fake-flipctl'
         ], {
             'Screen': function() { return new ScreenTestScene(); },
             'Boot menu - UI demo': function() { return new UIDemoScene(sm); },
             'Sound': function() { return new SoundMenuScene(sm); },
-            'Figma live preview': function() { return new FigmaLivePreviewScene(sm); }
+            'Figma live preview': function() { return new FigmaLivePreviewScene(sm); },
+            'Switch to fake-flipctl': function() {
+                fetch('/api/switch/flipctl', { method: 'POST' });
+                return null;
+            }
         });
     }
 
@@ -140,15 +145,10 @@ var MenuScene = (function() {
             'System info',
             'Battery info',
             'Disk info',
-            'Switch to fake-flipctl',
             'Update'
         ], {
             'Battery info': function() { return new PowerScene(); },
             'Disk info': function() { return new DiskSpaceScene(); },
-            'Switch to fake-flipctl': function() {
-                fetch('/api/switch/flipctl', { method: 'POST' });
-                return null;
-            },
             'Update': function() { return new UpdateScene(); }
         });
     }
