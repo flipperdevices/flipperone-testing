@@ -11,24 +11,34 @@
 
     scenes.push(new MenuScene(scenes));
 
-    // Poll the server version every 2s. The first successful response
-    // is the baseline; any later change means the server was restarted
-    // (e.g., variant switch) and we reload the page to pick up the new
-    // code. fetch() errors while the server is restarting are ignored.
+    // Poll the server every 2s and reload the page when the underlying
+    // server changes. The signature combines HTTP status with the body id
+    // so any of these triggers a reload:
+    //   - same variant, new process:    "200:A" -> "200:B"
+    //   - v1 -> v2 (v2 lacks endpoint): "200:A" -> "404"
+    //   - v2 -> v1:                     "404"   -> "200:B"
+    // fetch() rejections (server unreachable during the restart window)
+    // are ignored; the next poll will pick things up.
     (function startVersionWatcher() {
         var baseline = null;
         setInterval(function() {
             fetch('/api/version', { cache: 'no-store' })
-                .then(function(r) { return r.ok ? r.json() : null; })
-                .then(function(v) {
-                    if (!v) return;
+                .then(function(r) {
+                    if (r.ok) {
+                        return r.json().then(function(body) {
+                            return r.status + ':' + body.id;
+                        });
+                    }
+                    return String(r.status);
+                })
+                .then(function(sig) {
                     if (baseline === null) {
-                        baseline = v.id;
-                    } else if (v.id !== baseline) {
+                        baseline = sig;
+                    } else if (sig !== baseline) {
                         location.reload();
                     }
                 })
-                .catch(function() { /* server restarting; ignore */ });
+                .catch(function() { /* server unreachable; ignore */ });
         }, 2000);
     })();
 
