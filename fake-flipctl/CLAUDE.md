@@ -9,7 +9,7 @@ A web application that simulates the Flipper One LCD screen user interface. It r
 - **Vanilla JS + CSS** — no frameworks, no bundlers, no client-side dependencies
 - **Node.js server** (`server.js`) — static file server + JSON API endpoints, requires root
 - **HTML5 Canvas** — pixel-perfect 256x144 rendering
-- **Cog browser** — minimal WebKit-based browser (Wayland)
+- **Cog browser** — minimal WebKit-based kiosk browser, DRM plugin (`-P drm`) drives the SPI LCD directly; Wayland plugin also available for desktop dev
 
 ## Architecture
 
@@ -18,6 +18,8 @@ A web application that simulates the Flipper One LCD screen user interface. It r
 - **`/api/modem`** — aggregates `mmcli -m 0 -J`, `qmicli --nas-get-serving-system`, `--nas-get-cell-location-info`, `--nas-get-signal-strength` for RM530N-GL modem via `/dev/cdc-wdm0`; also reads sysfs byte counters on the modem net interface for live bandwidth
 - **`/api/disk`** — reads `df` for `/dev/mmcblk0p2` usage (eMMC)
 - **`/api/power`** — reads sysfs `/sys/class/power_supply/bq28z610-0` (voltage, current, capacity, charge, temp, time estimates)
+- **`/api/version`** — returns `{id: <hex>}`, where `id` is a random 8-byte value generated at process start. Changes on every restart. The client polls this to detect that the server has been replaced (e.g., variant switch) and reloads itself.
+- **`/api/switch/flipctl2`** — swaps the `active-flipctl` symlink to point at `fake-flipctl2` and restarts `fake-flipctl-node-server.service`. See **Variant switching** below.
 - Systemd unit: `fake-flipctl-node-server.service`
 
 ### Client
@@ -27,6 +29,7 @@ A web application that simulates the Flipper One LCD screen user interface. It r
 - **Scene manager** (`js/scene.js`) — stack-based push/pop scene navigation
 - **UI components** (`js/ui.js`) — status bar (with battery icon + percentage, polls `/api/power` every 5s), menu list with highlight, scrollbar
 - **App scenes** (`js/apps/`) — each screen is a scene with `render()` and `handleInput()`, returns `'pop'` from `handleInput` to go back
+- **Version watcher** (`js/main.js`) — polls `/api/version` every 2s. First response is the baseline; a subsequent change in `id` triggers `location.reload()`. Enables variant switching without restarting cog.
 
 ## Display
 
@@ -69,46 +72,101 @@ count=1
 rules=499e477a-c004-4eac-ba76-430ec6419c46
 ```
 
-### Kiosk mode (cage + cog, no KDE)
+### Kiosk mode
 
-The goal is to run Cog directly on the 256x144 SPI LCD without KDE. Cog's DRM plugin (`-P drm`) only works with GPU-backed connectors (HDMI on card2), not the SPI panel on card0. The solution is **cage** — a minimal Wayland kiosk compositor that handles non-GPU displays and runs one app fullscreen.
+Cog runs on the 256x144 SPI LCD (`/dev/dri/card0`). Cog's DRM plugin drives this panel directly — no Wayland compositor needed on this board.
 
-Systemd units (in `systemd/`):
-- **`fake-flipctl-node-server.service`** — Node.js HTTP server (port 8899, web UI + JSON APIs), requires root for sysfs
-- **`fake-flipctl-wayland-cage.service`** — cage compositor + Cog browser on tty1, replaces getty, runs as `root` (required for `LIBSEAT_BACKEND=builtin` — libseat's builtin backend needs root to manage DRM/TTY directly, avoiding the need for seatd or a logind session)
-- **`fake-flipctl.target`** — groups both services; enabled on `multi-user.target`
+Systemd units:
+- **`fake-flipctl-node-server.service`** (in this repo, `systemd/`) — Node.js HTTP server on port 8899. `WorkingDirectory=/flipperone-testing/active-flipctl` (symlink, see below), `ExecStart=/usr/bin/node server.js`. Requires root for sysfs.
+- **`cog-seat1.service`** (ships with the device image, not this repo) — launches `/usr/bin/cog -P drm -O renderer=gles http://localhost:8899` on a dedicated logind seat, under user `flipctl`.
 
-Install:
+Install (on the device):
 ```bash
-sudo cp systemd/*.service systemd/*.target /etc/systemd/system/
+# Deploy this repo to /flipperone-testing/ (rsync, etc.).
+# The active-flipctl symlink must exist — it is tracked in the repo,
+# so a fresh checkout brings it. Do NOT strip symlinks when deploying.
+sudo ln -sf /flipperone-testing/fake-flipctl/systemd/fake-flipctl-node-server.service \
+    /etc/systemd/system/fake-flipctl-node-server.service
 sudo systemctl daemon-reload
-sudo systemctl enable fake-flipctl.target fake-flipctl-wayland-cage.service fake-flipctl-node-server.service
-sudo reboot
+sudo systemctl enable --now fake-flipctl-node-server.service
 ```
+
+`cog-seat1.service` is already enabled and running on the device image; it launches on `multi-user.target` and reaches `http://localhost:8899` after the node server comes up.
 
 DRM devices:
 - `/dev/dri/card0` — SPI LCD panel (256x144, panel-mipi-dbi-spi)
 - `/dev/dri/card2` — Rockchip GPU/HDMI (only used when external monitor connected)
 
+## Variant switching (fake-flipctl ↔ fake-flipctl2)
+
+Two UI variants coexist in the same repo: `fake-flipctl/` (v1) and `fake-flipctl2/` (v2). Only one runs at a time. Selection is driven by a single tracked symlink at the repo root:
+
+```
+active-flipctl -> fake-flipctl     # default (checked in)
+active-flipctl -> fake-flipctl2    # after Testing → Switch to fake-flipctl2
+```
+
+The node service's `WorkingDirectory` is the symlink, so `ExecStart=/usr/bin/node server.js` loads whichever variant it currently points at. Switching requires no systemd-unit edits and no `daemon-reload`.
+
+Both variants implement the same pair of endpoints and the same client-side version watcher, so switching is symmetric in both directions.
+
+### Switch flow
+
+User presses **Testing → Switch to fake-flipctl2** in v1 (or **Testing → Switch to fake-flipctl** in v2).
+
+1. Client does `POST /api/switch/flipctl2` (or `/api/switch/flipctl` in the reverse direction). Server returns `200 {success:true}` immediately.
+2. Server spawns a `systemd-run --collect --no-block sh -c '…'` pipeline:
+   ```bash
+   ln -sfn /flipperone-testing/fake-flipctl2 /flipperone-testing/active-flipctl \
+     && systemctl restart fake-flipctl-node-server.service
+   ```
+   (Target path is `fake-flipctl` in the reverse direction.) `systemd-run` is mandatory here: the shell must run in a transient unit outside the node service's cgroup, otherwise systemd tears the pipeline down when it restarts the service, and the chain dies before completing.
+3. Node dies and restarts; the new instance picks up the symlink's new target and generates a fresh `SERVER_ID`.
+4. Meanwhile, the client's version watcher keeps polling `/api/version`. During the ~1s node-restart window, fetches fail silently. As soon as node answers with a different signature (HTTP status + body id), the client calls `location.reload()`. The browser re-fetches HTML/JS/CSS from the already-running cog, which now serves the new variant.
+
+Cog is **not** restarted. This is deliberate: restarting cog would tear down the entire WebKit process tree, reacquire DRM, and flash the LCD. Reloading the page inside the running cog is near-instant and much cleaner.
+
+The watcher uses a combined status+id signature (rather than comparing `id` alone) so that it also handles the case where one variant might not implement `/api/version` — a 404 counts as a signature change and still triggers the reload. Today both variants do implement it, but the watcher is defensive against a future variant that doesn't.
+
+### Adding a variant
+
+1. Point `active-flipctl` at the new variant dir: `ln -sfn foo /flipperone-testing/active-flipctl`.
+2. Restart the node service. The UI reloads itself via the version watcher (even if the new variant doesn't implement `/api/version`).
+3. For two-way switching, the new variant needs its own `/api/switch/<target>` endpoint and a matching menu entry, modeled on v1/v2.
+
+The node unit, the cog unit, and `/etc/systemd/system/` are untouched.
+
 ## Live development workflow
 
-Two copies of this project exist on the device:
-- **`/flipperone-testing/fake-flipctl/`** — the live copy served by the Node.js server. Edit here during development.
-- **`/home/user/f1/flipperone-testing/fake-flipctl/`** — mutagen-synced copy. Copy changes here when ready and commit only from this path.
-
-Both directories have `.git`, but **commits must only be made in `/home/user/f1/flipperone-testing/fake-flipctl/`**.
+- Repo checkout (with `.git`) lives at **`/home/user/f1/flipperone-testing/`** on the device. Commits happen here.
+- Deployed copy (no `.git`) lives at **`/flipperone-testing/`**. This is what the node service reads.
+- Sync from Mac → `/home/user/f1/flipperone-testing/` and from `/home/user/f1/flipperone-testing/` → `/flipperone-testing/` via rsync. The rsync that feeds `/flipperone-testing/` must preserve symlinks (`-l` / `-a`) so `active-flipctl` survives.
 
 ### Edit & reload cycle
 
-1. Edit files in `/flipperone-testing/fake-flipctl/`
-2. Reload the UI: `sudo systemctl restart cog-seat1.service`
-3. When ready, copy changes to `/home/user/f1/flipperone-testing/fake-flipctl/` and commit there
+1. Edit files on Mac; let rsync push them to `/home/user/f1/flipperone-testing/` and then on to `/flipperone-testing/`.
+2. Restart the node service to pick up server-side changes: `sudo systemctl restart fake-flipctl-node-server.service`. The version watcher in the running page will reload the UI on its own within ~2s.
+3. For client-only edits (JS/CSS/HTML with no server.js change), the watcher won't trigger (SERVER_ID hasn't changed) — force a reload by restarting node anyway, or press F5 in cog during development.
+4. Commit from `/home/user/f1/flipperone-testing/`.
+
+Cog is a kiosk browser with no devtools UI. Debug by reading `journalctl -u fake-flipctl-node-server.service` and, for client-side issues, by reading `sudo journalctl -u cog-seat1.service` (stdout from WebKit appears here).
 
 ## File: test-screen.html
 
 Test pattern page for verifying LCD display alignment — draws 1px border, diagonal cross, center crosshair, and corner coordinate labels at native 256x144.
 
 ## Project Structure
+
+Repo root (one level up from this file) owns the `active-flipctl` symlink that selects which variant directory the node service runs from:
+
+```
+<repo root>/
+├── active-flipctl -> fake-flipctl     # tracked symlink; see "Variant switching"
+├── fake-flipctl/                      # this dir (v1 UI)
+└── fake-flipctl2/                     # v2 UI
+```
+
+Within `fake-flipctl/`:
 
 ```
 fake-flipctl/
@@ -117,20 +175,19 @@ fake-flipctl/
 ├── test-screen.html       # Display test pattern
 ├── css/style.css          # Layout, canvas scaling
 ├── js/
-│   ├── main.js            # Bootstrap + render loop (requestAnimationFrame)
+│   ├── main.js            # Bootstrap, render loop, /api/version watcher (auto-reload on id change)
 │   ├── canvas.js          # Drawing primitives
 │   ├── font.js            # 5x7 bitmap font data
 │   ├── input.js           # Keyboard handler
 │   ├── scene.js           # Scene stack manager
 │   ├── ui.js              # UI components (status bar with battery, menu, scrollbar)
 │   └── apps/
-│       ├── menu.js        # Main menu (9 items, 3 wired to scenes)
+│       ├── menu.js        # Main menu; Testing submenu has "Switch to fake-flipctl2"
+│       ├── submenu.js     # Generic submenu scene (null-safe factory dispatch)
 │       ├── modem5g.js     # 5G Modem info via /api/modem (polls every 500ms)
 │       ├── diskspace.js   # Disk space via /api/disk
 │       └── power.js       # Battery info via /api/power (polls every 2s)
 ├── systemd/
-│   ├── fake-flipctl-node-server.service   # Node.js HTTP server (port 8899)
-│   ├── fake-flipctl-wayland-cage.service  # cage + cog kiosk on tty1
-│   └── fake-flipctl.target                # Groups server + UI
+│   └── fake-flipctl-node-server.service   # Node.js HTTP server; WorkingDirectory=<repo root>/active-flipctl
 └── assets/                # (reserved for future icons/sprites)
 ```

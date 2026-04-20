@@ -27,12 +27,20 @@ var MenuScene = (function() {
             'Connected Monitors',
             'Buttons Test',
             'Sound',
-            'GPIO'
+            'GPIO',
+            'Switch to fake-flipctl2'
         ], {
             'LCD Screen': function() { return new ScreenTestScene(); },
             'Connected Monitors': function() { return new MonitorsScene(); },
             'Buttons Test': function() { return new ButtonsTestScene(); },
-            'Sound': function() { return new SoundMenuScene(sm); }
+            'Sound': function() { return new SoundMenuScene(sm); },
+            'Switch to fake-flipctl2': function() {
+                var xhr = new XMLHttpRequest();
+                xhr.open('POST', '/api/switch/flipctl2', true);
+                xhr.timeout = 10000;
+                xhr.send();
+                return null;
+            }
         });
     }
 

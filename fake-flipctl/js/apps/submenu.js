@@ -31,7 +31,10 @@ var SubMenuScene = (function() {
         } else if (action === 'ok') {
             var factory = this.appScenes[this.items[this.selectedIndex]];
             if (factory) {
-                this.sceneManager.push(factory());
+                var result = factory();
+                if (result && typeof result.render === 'function') {
+                    this.sceneManager.push(result);
+                }
             }
         } else if (action === 'back') {
             return 'pop';

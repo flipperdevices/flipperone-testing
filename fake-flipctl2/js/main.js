@@ -9,7 +9,7 @@
     var lastRenderTs = 0;
     var IDLE_REDRAW_MS = 250;
 
-    scenes.push(new MenuScene(scenes));
+    scenes.push(new DesktopScene(scenes));
 
     // Poll the server every 2s and reload the page when the underlying
     // server changes. The signature combines HTTP status with the body id
@@ -53,9 +53,7 @@
 
         for (var i = 0; i < keys.length; i++) {
             if (scene && scene.handleInput) {
-                var action = keys[i].action || keys[i];
-                var rawKey = keys[i].key || null;
-                if (scene.handleInput(action, rawKey) === 'pop') {
+                if (scene.handleInput(keys[i]) === 'pop') {
                     scenes.pop();
                     scene = scenes.current();
                     needsRender = true;
