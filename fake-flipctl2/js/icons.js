@@ -335,7 +335,120 @@ var Icons = (function() {
         ]
     };
 
+    // App switcher button glyph (10x7, 6-bit grayscale)
+    var appSwitcher = {
+        w: 10,
+        h: 7,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0xf0,  // row 0
+            0x00, 0x03, 0xff, 0xff, 0xff, 0xff, 0xff, 0x03,  // row 1
+            0xf0, 0x00, 0x03, 0xf0, 0x00, 0x00, 0x00, 0x00,  // row 2
+            0x00, 0x00, 0x00, 0x03, 0xf0, 0x3f, 0xff, 0xff,  // row 3
+            0xff, 0xfc, 0x00, 0x00, 0x03, 0xf0, 0x3f, 0xff,  // row 4
+            0xff, 0xff, 0xfc, 0x00, 0x00, 0x00, 0x00, 0x3f,  // row 5
+            0xff, 0xff, 0xff, 0xfc, 0x00, 0x00, 0xff, 0xf0,  // row 6
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+        ]
+    };
+
+    // wifi_100 icon (auto-generated from PNG)
+    var wifi_100 = {
+        w: 7,
+        h: 7,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0x00,            0x00,            0x00,            0xff,            0xff,            0xc0,  // row 0
+            0xff,            0xff,            0xff,            0x03,            0xff,            0xc0,  // row 1
+            0x00,            0x00,            0x3f,            0xfc,            0x0f,            0xc0,  // row 2
+            0xff,            0xff,            0xc0,            0xff,            0xf0,            0x00,  // row 3
+            0x00,            0x0f,            0xff,            0x03,            0xf0,            0x00,  // row 4
+            0xff,            0xf0,            0x3f,            0x03,            0xf0,            0x00,  // row 5
+            0x03,            0xf0,            0x3f,            0x03,            0xf0,            0x00   // row 6
+
+        ]
+    };
+
+    // wifi_75 icon (auto-generated from PNG)
+    var wifi_75 = {
+        w: 7,
+        h: 7,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0xcf,            0x3c,            0xf3,            0xff,            0xff,            0xc0,  // row 0
+            0xff,            0xff,            0xff,            0xcf,            0xff,            0xc0,  // row 1
+            0x00,            0x00,            0x3f,            0xff,            0x3f,            0xc0,  // row 2
+            0xff,            0xff,            0xc0,            0xff,            0xfc,            0xc0,  // row 3
+            0x00,            0x0f,            0xff,            0x03,            0xfc,            0xc0,  // row 4
+            0xff,            0xf0,            0x3f,            0x03,            0xfc,            0xc0,  // row 5
+            0x03,            0xf0,            0x3f,            0x03,            0xfc,            0xc0   // row 6
+
+        ]
+    };
+
+    // wifi_50 icon (auto-generated from PNG)
+    var wifi_50 = {
+        w: 7,
+        h: 7,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0xcf,            0x3c,            0xf3,            0xff,            0xff,            0xc0,  // row 0
+            0xff,            0xff,            0xff,            0xcf,            0xff,            0xc0,  // row 1
+            0xcf,            0x3c,            0xff,            0xff,            0x3f,            0xc0,  // row 2
+            0xff,            0xff,            0xf3,            0xff,            0xfc,            0xc0,  // row 3
+            0x00,            0x0f,            0xff,            0xcf,            0xfc,            0xc0,  // row 4
+            0xff,            0xf0,            0x3f,            0xcf,            0xfc,            0xc0,  // row 5
+            0x03,            0xf0,            0x3f,            0xcf,            0xfc,            0xc0   // row 6
+
+        ]
+    };
+
+    // wifi_25 icon (auto-generated from PNG)
+    var wifi_25 = {
+        w: 7,
+        h: 7,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0xcf,            0x3c,            0xf3,            0xff,            0xff,            0xc0,  // row 0
+            0xff,            0xff,            0xff,            0xcf,            0xff,            0xc0,  // row 1
+            0xcf,            0x3c,            0xff,            0xff,            0x3f,            0xc0,  // row 2
+            0xff,            0xff,            0xf3,            0xff,            0xfc,            0xc0,  // row 3
+            0xcf,            0x3f,            0xff,            0xcf,            0xfc,            0xc0,  // row 4
+            0xff,            0xfc,            0xff,            0xcf,            0xfc,            0xc0,  // row 5
+            0x03,            0xfc,            0xff,            0xcf,            0xfc,            0xc0   // row 6
+
+        ]
+    };
+
+    // wifi_0 icon (auto-generated from PNG)
+    var wifi_0 = {
+        w: 7,
+        h: 7,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0xcf,            0x3c,            0xf3,            0xff,            0xff,            0xc0,  // row 0
+            0xff,            0xff,            0xff,            0xcf,            0xff,            0xc0,  // row 1
+            0xcf,            0x3c,            0xff,            0xff,            0x3f,            0xc0,  // row 2
+            0xff,            0xff,            0xf3,            0xff,            0xfc,            0xc0,  // row 3
+            0x03,            0xf0,            0x3f,            0xcf,            0xfc,            0xc0,  // row 4
+            0xfc,            0x0f,            0xff,            0xcf,            0xfc,            0xc0,  // row 5
+            0x03,            0xf0,            0x3f,            0xcf,            0xfc,            0xc0   // row 6
+
+        ]
+    };
+
     return {
+        wifi_0: wifi_0,
+        wifi_25: wifi_25,
+        wifi_50: wifi_50,
+        wifi_75: wifi_75,
+        wifi_100: wifi_100,
         back: back,
         router: router,
         media: media,
@@ -350,6 +463,7 @@ var Icons = (function() {
         modem_5g: modem_5g,
         ethernet: ethernet,
         airplane_mode: airplane_mode,
-        info_icon: info_icon
+        info_icon: info_icon,
+        appSwitcher: appSwitcher
     };
 })();

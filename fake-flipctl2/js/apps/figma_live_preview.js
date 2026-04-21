@@ -34,6 +34,49 @@ var FigmaLivePreviewScene = (function() {
         this.iframe.allowFullscreen = true;
 
         this.container.appendChild(this.iframe);
+
+        // Hint overlay: "x2 to exit" rendered in the project's HaxrcorpFont16
+        // pixel font on a small canvas, centered along the bottom at 20% opacity.
+        // pointer-events: none so it doesn't steal focus from the iframe.
+        var hintText = 'x2 to exit';
+        var hintW = HaxrcorpFont16.textWidth(hintText);
+        var hintH = 11;  // glyph data is 11 rows tall
+        var hintCanvas = document.createElement('canvas');
+        hintCanvas.width = hintW;
+        hintCanvas.height = hintH;
+        hintCanvas.style.position = 'absolute';
+        hintCanvas.style.top = '0';
+        hintCanvas.style.right = '40px';
+        hintCanvas.style.pointerEvents = 'none';
+        hintCanvas.style.imageRendering = 'pixelated';
+        // mix-blend-mode: difference with white glyphs inverts whatever is
+        // behind — dark backdrops render white text, light backdrops render
+        // black text. opacity attenuates the inversion so the hint reads as
+        // subtle rather than full-contrast.
+        hintCanvas.style.mixBlendMode = 'difference';
+        hintCanvas.style.opacity = '0.2';
+        var hctx = hintCanvas.getContext('2d');
+        hctx.imageSmoothingEnabled = false;
+        HaxrcorpFont16.draw(hctx, hintText, 0, 0, '#fff');
+        this.container.appendChild(hintCanvas);
+
+        // App-switcher icon, 2px to the left of the hint text. Same blend
+        // mode / opacity so it tracks the text's contrast behavior.
+        var iconSprite = Icons.appSwitcher;
+        var iconCanvas = document.createElement('canvas');
+        iconCanvas.width = iconSprite.w;
+        iconCanvas.height = iconSprite.h;
+        iconCanvas.style.position = 'absolute';
+        iconCanvas.style.top = '2px';
+        iconCanvas.style.right = (40 + hintW + 2) + 'px';
+        iconCanvas.style.pointerEvents = 'none';
+        iconCanvas.style.imageRendering = 'pixelated';
+        iconCanvas.style.mixBlendMode = 'difference';
+        iconCanvas.style.opacity = '0.2';
+        var iconFlip = new FlipCanvas(iconCanvas);
+        iconFlip.drawSprite(iconSprite, 0, 0, '#fff');
+        this.container.appendChild(iconCanvas);
+
         document.body.appendChild(this.container);
 
         // Hide canvas

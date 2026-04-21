@@ -550,7 +550,31 @@ function serveStatic(req, res) {
     });
 }
 
+// Parses `nmcli -t -f IN-USE,SIGNAL dev wifi` — the row marked with `*` is the
+// active connection. SIGNAL is already a 0-100 quality value.
+function getWifiInfo() {
+    try {
+        var raw = execSync('nmcli -t -f IN-USE,SIGNAL dev wifi', { encoding: 'utf8', timeout: 2000 });
+        var lines = raw.split('\n');
+        for (var i = 0; i < lines.length; i++) {
+            var line = lines[i];
+            if (!line || line[0] !== '*') continue;
+            var signal = parseInt(line.split(':')[1], 10);
+            if (isNaN(signal)) continue;
+            var quality = Math.max(0, Math.min(100, signal));
+            return { connected: true, quality: quality };
+        }
+    } catch (e) { /* nmcli missing or failed */ }
+    return { connected: false, quality: 0 };
+}
+
 var server = http.createServer(function(req, res) {
+    if (req.url === '/api/wifi') {
+        var wifi = getWifiInfo();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(wifi));
+        return;
+    }
     if (req.url === '/api/power') {
         var power = getPowerInfo();
         res.writeHead(200, { 'Content-Type': 'application/json' });

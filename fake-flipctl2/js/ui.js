@@ -8,6 +8,8 @@ var UI = (function() {
     var batteryCharging = false;
     var signalQuality = -1;  // 0-100 or -1 for unknown
     var accessTech = '--';  // Technology: 5G, LTE, 3G, etc.
+    var wifiConnected = false;
+    var wifiQuality = 0;     // 0-100
 
     function pollBattery() {
         var xhr = new XMLHttpRequest();
@@ -57,6 +59,29 @@ var UI = (function() {
         xhr.send();
     }
 
+    function pollWifi() {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', '/api/wifi', true);
+        xhr.timeout = 3000;
+        xhr.onload = function() {
+            if (xhr.status !== 200) return;
+            var data;
+            try { data = JSON.parse(xhr.responseText); } catch (e) { return; }
+            wifiConnected = !!data.connected;
+            wifiQuality = typeof data.quality === 'number' ? data.quality : 0;
+        };
+        xhr.send();
+    }
+
+    function wifiIcon(quality) {
+        // Map quality (0-100) to the five icon variants.
+        if (quality >= 80) return Icons.wifi_100;
+        if (quality >= 60) return Icons.wifi_75;
+        if (quality >= 40) return Icons.wifi_50;
+        if (quality >= 20) return Icons.wifi_25;
+        return Icons.wifi_0;
+    }
+
     // Poll battery every 5 seconds
     pollBattery();
     setInterval(pollBattery, 5000);
@@ -64,6 +89,10 @@ var UI = (function() {
     // Poll signal quality every 1 second
     pollSignal();
     setInterval(pollSignal, 1000);
+
+    // Poll wifi every 2 seconds
+    pollWifi();
+    setInterval(pollWifi, 2000);
 
     function formatDateTime() {
         var now = new Date();
@@ -129,6 +158,13 @@ var UI = (function() {
 
         // Draw technology label (5G, LTE, etc.) right of signal bars with 1px gap
         HaxrcorpFont16.draw(canvas.ctx, accessTech, 12, 0, '#000');
+
+        // Wifi icon (7x7) right of accessTech label, only when connected.
+        // Vertically centered in the 11px bar — (11-7)/2 = 2.
+        if (wifiConnected) {
+            var wifiX = 12 + HaxrcorpFont16.textWidth(accessTech) + 2;
+            canvas.drawSprite(wifiIcon(wifiQuality), wifiX, 2, '#000');
+        }
 
         // Draw time in center
         var timeStr = formatDateTime();
