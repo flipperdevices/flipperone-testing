@@ -3,6 +3,7 @@
 
 var http = require('http');
 var fs = require('fs');
+var os = require('os');
 var path = require('path');
 var crypto = require('crypto');
 var execSync = require('child_process').execSync;
@@ -672,6 +673,11 @@ var server = http.createServer(function(req, res) {
         var driverResult = restartAudioDriver();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(driverResult));
+        return;
+    }
+    if (req.url === '/api/hostname' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ hostname: os.hostname() }));
         return;
     }
     if (req.url === '/api/version' && req.method === 'GET') {

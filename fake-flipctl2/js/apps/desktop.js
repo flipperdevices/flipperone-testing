@@ -35,7 +35,38 @@ var DesktopScene = (function() {
 
         // Initialize message box (will be updated in enter())
         this.messageBox = null;
+
+        // Hostname lines — populated asynchronously via /api/hostname
+        this.hostnameLine1 = '';
+        this.hostnameLine2 = '';
     }
+
+    DesktopScene.prototype._fetchHostname = function() {
+        var self = this;
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', '/api/hostname', true);
+        xhr.timeout = 3000;
+        xhr.onload = function() {
+            if (xhr.status !== 200) return;
+            var data;
+            try { data = JSON.parse(xhr.responseText); } catch (e) { return; }
+            self._setHostname(data.hostname || '');
+        };
+        xhr.send();
+    };
+
+    DesktopScene.prototype._setHostname = function(raw) {
+        // Expected format: flipperone-<id>-build-<rest>
+        // e.g. flipperone-3c6d04-build-1049-test-dp-exp
+        var m = raw.match(/^flipperone-([^-]+)-build-(.+)$/i);
+        if (m) {
+            this.hostnameLine1 = 'Flipper One ' + m[1];
+            this.hostnameLine2 = 'Build ' + m[2];
+        } else {
+            this.hostnameLine1 = raw;
+            this.hostnameLine2 = '';
+        }
+    };
 
     DesktopScene.prototype.enter = function() {
         // Pick a random phrase and create message box each time we enter
@@ -46,6 +77,8 @@ var DesktopScene = (function() {
             tailY: 82,
             bottomY: 86
         });
+
+        this._fetchHostname();
     };
     DesktopScene.prototype.exit = function() {};
 
@@ -85,6 +118,19 @@ var DesktopScene = (function() {
         var profileWidth = HaxrcorpFont16.textWidth(profileText);
         var profileX = canvas.w - profileWidth - 2;  // 2px margin from right edge
         HaxrcorpFont16.draw(canvas.ctx, profileText, profileX, profileY, '#CCCCCC');
+
+        // Hostname, right-aligned. Bottom line sits 25px from the bottom;
+        // glyphs are 7px tall, so a 5px gap between lines means 12px between tops.
+        var hostLine2Y = canvas.h - 35;
+        var hostLine1Y = hostLine2Y - 12;
+        if (this.hostnameLine1) {
+            var hx1 = canvas.w - HaxrcorpFont16.textWidth(this.hostnameLine1) - 2;
+            HaxrcorpFont16.draw(canvas.ctx, this.hostnameLine1, hx1, hostLine1Y, '#CCCCCC');
+        }
+        if (this.hostnameLine2) {
+            var hx2 = canvas.w - HaxrcorpFont16.textWidth(this.hostnameLine2) - 2;
+            HaxrcorpFont16.draw(canvas.ctx, this.hostnameLine2, hx2, hostLine2Y, '#CCCCCC');
+        }
 
         // Render buttons
         for (var b = 0; b < this.app_defined_buttons.length; b++) {
