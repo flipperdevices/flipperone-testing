@@ -156,6 +156,74 @@ Cog is a kiosk browser with no devtools UI. Debug by reading `journalctl -u fake
 
 Test pattern page for verifying LCD display alignment — draws 1px border, diagonal cross, center crosshair, and corner coordinate labels at native 256x144.
 
+## File: benchmark.html — browser CPU benchmark
+
+A self-contained page that isolates individual browser-side activities (rAF, timers, canvas paint, CSS animation, DOM mutation, WebGL, WebSocket push) so we can measure which of them drives Cog / WPE CPU on the RK3576 panel. Used to answer questions like "why does the main UI idle at ~15% CPU?" — enable one bench at a time, watch the WebProcess and compositor thread in `top -H`, compare.
+
+### Running it
+
+```bash
+sudo systemctl start cog-benchmark-page.service    # show benchmark.html
+sudo systemctl start cog-seat1.service             # back to the normal UI
+```
+
+Both services drive `/dev/dri/card0` and are declared `Conflicts=` with each other, so starting one auto-stops the other.
+
+The benchmark relies on **`ws-counter.service`** being up for the "Websocket redraw" test; that unit is already enabled at boot.
+
+### Input mapping
+
+The 5 buttons at the bottom of the page correspond 1-to-1 with Flipper One's hardware buttons. Each button sends a single ASCII key that the page consumes:
+
+| Button | Key | Action |
+|---|---|---|
+| reset | `z` | Turn all tests off |
+| help  | `x` | Open help overlay describing the currently-selected test |
+| (empty) | — | — |
+| (empty) | — | — |
+| run   | `b` | Toggle the currently-selected test |
+
+Keyboard equivalents for development: Backspace/Escape = reset, Enter/Space = toggle, ↑/↓ = cursor.
+
+### The 10 tests
+
+1. **rAF empty** — empty `requestAnimationFrame` loop; pure 60 Hz JS wakeup with no per-frame work.
+2. **rAF + 1 fillRect** — adds one canvas fill per frame; shows the minimal paint cost over empty rAF.
+3. **rAF + many rects** — heavy canvas paint; mimics bitmap-font rendering as used in the main UI.
+4. **setInterval 16ms / 100ms / 1000ms** — JS timer at three rates, no work per tick. Compare against rAF empty to see timer cost without vsync alignment; compare the three rates to see per-wakeup fixed cost.
+5. **CSS animation** — 2D `@keyframes rotate`; pure GPU compositor path with no JS per frame.
+6. **DOM mutate 100ms** — `textContent` writes at 10 Hz on a visible node. Exercises DOM mutation + style recalc + layout + paint.
+7. **Websocket redraw** — opens a `WebSocket` to `ws://localhost:8898/`, updates a status bar node each time the server pushes. No polling, no rAF — the browser wakes only when the server sends. Pairs with `ws-counter-server.js`.
+8. **WebGL spin cube** — full GLES pipeline: vertex + fragment shaders, per-face grayscale, depth-tested triangles, driven by rAF. The heaviest GPU path.
+
+### Design for zero idle CPU
+
+This is a benchmark, so the page must itself add no CPU when no test is enabled — otherwise numbers are contaminated. Three design choices enforce this:
+
+- **Hidden-by-default visual targets.** `#cvs`, `#glCvs`, `#domTarget`, `#cssAnim`, `#wsStatus` are `display:none` in CSS. A small `updateTargets()` reveals each one only while the bench that owns it is running. The CSS `@keyframes spin` on `#cssAnim` is declared at all times but does nothing while the element is `display:none` — WebKit does not tick animations on non-rendered elements.
+- **No global render loop.** The menu's row list is built once from DOM elements; cursor-move flips two class names (`.sel` on and off) rather than rebuilding `innerHTML`. Keypress handling runs only from `keydown`.
+- **Conditional tick refresh.** Per-test tick counters in the menu rows are updated by a 1 Hz interval that is *started* when any bench turns on and *stopped* when the last one turns off.
+
+With all tests off: the page keeps no timers, no rAF, and no animations running; WebProcess CPU is effectively zero.
+
+### Shared-canvas mutex
+
+Some tests share visual targets (the two rAF-paint tests share `#cvs`; the cube and any other GL test would share `#glCvs`). `toggle()` turns off any bench that owns the same target before starting a new one, so two tests can never race on the same canvas.
+
+### Pixel-perfect text
+
+Browser-rendered text at 8–12 px is normally antialiased and looks soft on the 256×144 panel. The page avoids this by:
+
+- Loading **Zpix** at its native 12 px via `@font-face` (`fonts/zpix.woff2`, ~950 KB, `font-display: block` so the page stays blank until the font is ready).
+- Setting `-webkit-font-smoothing: none` and `font-smooth: never`.
+- Setting `image-rendering: pixelated` on the root so the compositor uses nearest-neighbor for any scaled canvas/GL output.
+
+### WebSocket counter server
+
+`ws-counter-server.js` — ~70-line zero-dep Node.js server. Implements the RFC 6455 upgrade handshake (SHA-1 + base64) and text-frame encoding inline; does not pull the `ws` package. Broadcasts `{"counter": N, "ts": <ms>}` to every connected socket once per second. Listens on `127.0.0.1:8898`, so only the local cog can reach it. Runs under `ws-counter.service`.
+
+The "Websocket redraw" bench is the cheapest way to drive a 1 Hz UI update on this stack: no `setInterval`, no `fetch()`, no rAF — only a single socket read → JS handler → one `textContent` write per second. Useful as a lower bound when comparing against the `setInterval 1000ms` bench.
+
 ## Project Structure
 
 Repo root (one level up from this file) owns the `active-flipctl` symlink that selects which variant directory the node service runs from:
@@ -174,6 +242,10 @@ fake-flipctl/
 ├── server.js              # Node.js HTTP server + API endpoints
 ├── index.html             # Main app entry point
 ├── test-screen.html       # Display test pattern
+├── benchmark.html         # Browser CPU benchmark page (see section above)
+├── ws-counter-server.js   # Zero-dep WebSocket counter for the Websocket redraw bench
+├── fonts/
+│   └── zpix.woff2         # Zpix pixel font at native 12px, used by benchmark.html
 ├── css/style.css          # Layout, canvas scaling
 ├── js/
 │   ├── main.js            # Bootstrap, render loop, /api/version watcher (auto-reload on id change)
@@ -189,6 +261,8 @@ fake-flipctl/
 │       ├── diskspace.js   # Disk space via /api/disk
 │       └── power.js       # Battery info via /api/power (polls every 2s)
 ├── systemd/
-│   └── fake-flipctl-node-server.service   # Node.js HTTP server; WorkingDirectory=<repo root>/active-flipctl
+│   ├── fake-flipctl-node-server.service   # Node.js HTTP server; WorkingDirectory=<repo root>/active-flipctl
+│   ├── cog-benchmark-page.service         # Runs cog on seat1 against benchmark.html
+│   └── ws-counter.service                 # Runs ws-counter-server.js
 └── assets/                # (reserved for future icons/sprites)
 ```

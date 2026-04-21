@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>CPU benchmark</title>
+    <style>
+        /* Zpix is a 12px pixel font (11px glyph + 1px padding). Render at
+         * font-size:12px for pixel-perfect results. Any other size forces
+         * the rasterizer to scale and smooth. font-display:block keeps the
+         * page blank until the font loads — prevents a flash of blurred
+         * monospace fallback. */
+        @font-face {
+            font-family: 'Zpix';
+            src: url('fonts/zpix.woff2') format('woff2');
+            font-display: block;
+        }
+        html, body {
+            margin: 0; padding: 0;
+            background: #000; color: #fff;
+            font: 12px/12px 'Zpix', monospace;
+            -webkit-font-smoothing: none;
+            font-smooth: never;
+            /* Force nearest-neighbor scaling for any image/canvas output the
+             * compositor needs to upscale. Both keywords for older/newer
+             * WebKit — browsers ignore the one they don't know. */
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+            width: 256px; height: 144px;
+            overflow: hidden;
+        }
+        #title {
+            background: #fff; color: #000;
+            padding: 0 2px;
+            height: 12px;
+        }
+        #wsStatus {
+            position: absolute;
+            top: 0; right: 2px;
+            height: 12px;
+            color: #000;
+            display: none;
+        }
+        #wsStatus.on { display: block; }
+        #list { padding: 0 2px; }
+        .row { white-space: pre; color: #777; height: 12px; }
+        .row.on  { color: #9f9; }
+        .row.sel { background: #444; color: #fff; }
+        .ck { display: inline-block; }
+        .nm { display: inline-block; }
+        .tk { display: inline-block; }
+        /* Flipper-style 5-slot button bar at the bottom, 12px tall. */
+        #buttons {
+            position: absolute;
+            bottom: 0; left: 0; right: 0;
+            height: 12px;
+            display: flex;
+        }
+        .btn {
+            flex: 1;
+            text-align: center;
+            background: #fff;
+            color: #000;
+            border-right: 1px solid #000;
+            line-height: 12px;
+        }
+        .btn:last-child { border-right: none; }
+        .btn.empty { background: #222; color: transparent; }
+        /* Full-screen help overlay that covers the list area (title and
+         * button bar remain visible). Any key dismisses it. */
+        #helpOverlay {
+            position: absolute;
+            left: 0; right: 0;
+            top: 12px; bottom: 12px;
+            background: #000;
+            border-top: 1px solid #666;
+            padding: 2px 3px;
+            display: none;
+            z-index: 10;
+        }
+        #helpOverlay.on { display: block; }
+        .helpTitle {
+            background: #444; color: #fff;
+            padding: 0 2px;
+            margin-bottom: 2px;
+        }
+        .helpBody { color: #ddd; }
+        .helpHint {
+            position: absolute;
+            left: 3px; bottom: 1px;
+            color: #888;
+        }
+        /* Targets used by individual benchmarks.
+         * Hidden by default — each bench's start() adds .on to the target so
+         * idle benches leave no visible placeholder. */
+        #cvs {
+            position: absolute;
+            right: 0; top: 12px;
+            width: 64px; height: 32px;
+            background: #111;
+            display: none;
+        }
+        #glCvs {
+            position: absolute;
+            right: 0; top: 46px;
+            width: 64px; height: 32px;
+            display: none;
+        }
+        #domTarget {
+            position: absolute;
+            right: 0; top: 80px;
+            width: 64px; height: 12px;
+            color: #9cf; text-align: right;
+            padding-right: 2px;
+            display: none;
+        }
+        #cssAnim {
+            position: absolute;
+            right: 4px; top: 100px;
+            width: 16px; height: 16px;
+            background: #fff;
+            transform-origin: 8px 8px;
+            display: none;
+            animation: spin 1s linear infinite;   /* runs only while visible */
+        }
+        #cvs.on, #glCvs.on, #domTarget.on { display: block; }
+        #cssAnim.on { display: inline-block; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <div id="title">CPU benchmark</div>
+    <div id="wsStatus"></div>
+    <div id="list"></div>
+    <canvas id="cvs" width="64" height="32"></canvas>
+    <canvas id="glCvs" width="64" height="32"></canvas>
+    <div id="domTarget"></div>
+    <span id="cssAnim"></span>
+    <div id="buttons">
+        <div class="btn" data-key="z">reset</div>
+        <div class="btn" data-key="x">help</div>
+        <div class="btn empty"></div>
+        <div class="btn empty"></div>
+        <div class="btn" data-key="b">run</div>
+    </div>
+    <div id="helpOverlay">
+        <div class="helpTitle" id="helpTitle"></div>
+        <div class="helpBody" id="helpBody"></div>
+        <div class="helpHint">press any key</div>
+    </div>
+
+    <script>
+    (function () {
+        var ctx = document.getElementById('cvs').getContext('2d');
+        var glCvs = document.getElementById('glCvs');
+        var domTarget = document.getElementById('domTarget');
+        var cssAnimEl = document.getElementById('cssAnim');
+        var benches = [];
+
+        // Lazy-init WebGL once and cache state — context creation is expensive.
+        var glState = null;
+        function getGL() {
+            if (glState) return glState;
+            var gl = glCvs.getContext('webgl', { antialias: false }) ||
+                     glCvs.getContext('experimental-webgl', { antialias: false });
+            if (!gl) return null;
+            function compile(type, src) {
+                var sh = gl.createShader(type);
+                gl.shaderSource(sh, src); gl.compileShader(sh);
+                return sh;
+            }
+
+            // Shared shader: rotates each vertex around X + Y axes (driven by
+            // uniform t), pushes it away from the camera, and applies a
+            // hand-rolled perspective projection. f=4 makes the output ~2x
+            // larger than a camera-default. Aspect 2:1 because the canvas is
+            // 64x32 physical pixels. Color is per-vertex grayscale passed in
+            // as a single float and expanded in the fragment shader.
+            var vs =
+                'attribute vec3 p;' +
+                'attribute float shade;' +
+                'uniform float t;' +
+                'varying float vShade;' +
+                'void main(){' +
+                ' float ca=cos(t), sa=sin(t);' +
+                ' float cb=cos(t*0.7), sb=sin(t*0.7);' +
+                ' float y1=cb*p.y - sb*p.z;' +
+                ' float z1=sb*p.y + cb*p.z;' +
+                ' float x2=ca*p.x + sa*z1;' +
+                ' float z2=-sa*p.x + ca*z1;' +
+                ' float z=z2 - 3.0;' +
+                ' float f=4.0, n=1.0, fa=10.0, aspect=2.0;' +
+                ' gl_Position=vec4(f*x2/aspect, f*y1,' +
+                '   -(fa+n)/(fa-n)*z - 2.0*fa*n/(fa-n), -z);' +
+                ' vShade=shade;' +
+                '}';
+            var fs =
+                'precision mediump float;' +
+                'varying float vShade;' +
+                'void main(){ gl_FragColor=vec4(vShade, vShade, vShade, 1.0); }';
+
+            var prog = gl.createProgram();
+            gl.attachShader(prog, compile(gl.VERTEX_SHADER, vs));
+            gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, fs));
+            gl.linkProgram(prog);
+            gl.useProgram(prog);
+            var pLoc = gl.getAttribLocation(prog, 'p');
+            var sLoc = gl.getAttribLocation(prog, 'shade');
+
+            function makeGeom(positions, shades, indices) {
+                var posBuf = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+                gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+                var shBuf = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, shBuf);
+                gl.bufferData(gl.ARRAY_BUFFER, shades, gl.STATIC_DRAW);
+                var idxBuf = gl.createBuffer();
+                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf);
+                gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+                return { pos: posBuf, shade: shBuf, idx: idxBuf, n: indices.length };
+            }
+
+            function bindGeom(g) {
+                gl.bindBuffer(gl.ARRAY_BUFFER, g.pos);
+                gl.vertexAttribPointer(pLoc, 3, gl.FLOAT, false, 0, 0);
+                gl.enableVertexAttribArray(pLoc);
+                gl.bindBuffer(gl.ARRAY_BUFFER, g.shade);
+                gl.vertexAttribPointer(sLoc, 1, gl.FLOAT, false, 0, 0);
+                gl.enableVertexAttribArray(sLoc);
+                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, g.idx);
+            }
+
+            // ----- Cube: 6 faces × 4 unique vertices, 36 triangle indices.
+            // Per-face shade so rotation is visible despite no color.
+            var cubePos = new Float32Array([
+                -0.5,-0.5,-0.5,  0.5,-0.5,-0.5,  0.5, 0.5,-0.5, -0.5, 0.5,-0.5, // back
+                -0.5,-0.5, 0.5,  0.5,-0.5, 0.5,  0.5, 0.5, 0.5, -0.5, 0.5, 0.5, // front
+                -0.5, 0.5,-0.5,  0.5, 0.5,-0.5,  0.5, 0.5, 0.5, -0.5, 0.5, 0.5, // top
+                -0.5,-0.5,-0.5,  0.5,-0.5,-0.5,  0.5,-0.5, 0.5, -0.5,-0.5, 0.5, // bottom
+                 0.5,-0.5,-0.5,  0.5, 0.5,-0.5,  0.5, 0.5, 0.5,  0.5,-0.5, 0.5, // right
+                -0.5,-0.5,-0.5, -0.5, 0.5,-0.5, -0.5, 0.5, 0.5, -0.5,-0.5, 0.5  // left
+            ]);
+            var faceShades = [0.2, 1.0, 0.7, 0.4, 0.9, 0.5];  // back, front, top, bot, right, left
+            var shArr = [];
+            for (var fi = 0; fi < 6; fi++) {
+                for (var vi = 0; vi < 4; vi++) shArr.push(faceShades[fi]);
+            }
+            var cubeShade = new Float32Array(shArr);
+            var cubeIdxArr = [];
+            for (var face = 0; face < 6; face++) {
+                var bi = face * 4;
+                cubeIdxArr.push(bi, bi+1, bi+2,  bi, bi+2, bi+3);
+            }
+            var cubeGeom = makeGeom(cubePos, cubeShade, new Uint16Array(cubeIdxArr));
+
+            // ----- Triangle: flat z=0, single all-white shade.
+            var triGeom = makeGeom(
+                new Float32Array([0, 0.5, 0,   -0.5,-0.3, 0,   0.5,-0.3, 0]),
+                new Float32Array([1, 1, 1]),
+                new Uint16Array([0, 1, 2])
+            );
+
+            gl.enable(gl.DEPTH_TEST);
+
+            glState = {
+                gl: gl,
+                tLoc: gl.getUniformLocation(prog, 't'),
+                bindGeom: bindGeom,
+                cube: cubeGeom,
+                tri: triGeom
+            };
+            return glState;
+        }
+
+        function add(name, desc, start, stop) {
+            benches.push({ name: name, desc: desc, on: false, ticks: 0, h: null, start: start, stop: stop });
+        }
+
+        // 1. requestAnimationFrame, no paint
+        add('rAF empty',
+            'Empty requestAnimationFrame loop. Pure 60Hz JS wakeup with no work per frame. Baseline for all rAF-based tests.',
+            function (b) {
+            function f() { b.ticks++; b.h = requestAnimationFrame(f); }
+            b.h = requestAnimationFrame(f);
+        }, function (b) { cancelAnimationFrame(b.h); });
+
+        // 2. rAF + single small fillRect (alternating color)
+        add('rAF + 1 fillRect',
+            'rAF plus one full-area fillRect per frame. Shows the minimal canvas paint overhead above an empty rAF.',
+            function (b) {
+            function f() {
+                b.ticks++;
+                ctx.fillStyle = (b.ticks & 1) ? '#fff' : '#000';
+                ctx.fillRect(0, 0, 64, 32);
+                b.h = requestAnimationFrame(f);
+            }
+            b.h = requestAnimationFrame(f);
+        }, function (b) { cancelAnimationFrame(b.h); });
+
+        // 3. rAF + heavy paint (clearRect + lots of small fillRects)
+        //    Mimics what fake-flipctl's render loop does (font is many fillRects).
+        add('rAF + many rects',
+            'rAF with heavy canvas paint: hundreds of small fillRects per frame. Mimics bitmap-font rendering like fake-flipctl uses.',
+            function (b) {
+            function f() {
+                b.ticks++;
+                ctx.clearRect(0, 0, 64, 32);
+                for (var x = 0; x < 64; x += 2) {
+                    for (var y = 0; y < 32; y += 2) {
+                        ctx.fillStyle = ((x + y + b.ticks) & 1) ? '#fff' : '#000';
+                        ctx.fillRect(x, y, 2, 2);
+                    }
+                }
+                b.h = requestAnimationFrame(f);
+            }
+            b.h = requestAnimationFrame(f);
+        }, function (b) { cancelAnimationFrame(b.h); });
+
+        // 4. setInterval 16 ms (~60 Hz) — JS timer at rAF rate
+        add('setInterval 16ms',
+            'setInterval at 16ms (~60Hz), no work. Compare vs rAF empty to see JS-timer cost without vsync alignment.',
+            function (b) {
+            b.h = setInterval(function () { b.ticks++; }, 16);
+        }, function (b) { clearInterval(b.h); });
+
+        // 5. setInterval 100 ms — moderate poll
+        add('setInterval 100ms',
+            'setInterval at 100ms (10Hz). Similar to /api/modem polling rate in fake-flipctl.',
+            function (b) {
+            b.h = setInterval(function () { b.ticks++; }, 100);
+        }, function (b) { clearInterval(b.h); });
+
+        // 6. setInterval 1000 ms — slow poll
+        add('setInterval 1000ms',
+            'setInterval at 1000ms (1Hz). Minimal periodic wakeup, like /api/disk polling.',
+            function (b) {
+            b.h = setInterval(function () { b.ticks++; }, 1000);
+        }, function (b) { clearInterval(b.h); });
+
+        // 7. CSS @keyframes animation (GPU compositor path, no JS)
+        //    Element visibility is managed by updateTargets() — we only
+        //    attach/detach the iteration listener here.
+        add('CSS animation',
+            '2D @keyframes rotate. Runs on the GPU compositor with no JS per frame. Compare cost vs rAF-driven repaints.',
+            function (b) {
+            b.h = function () { b.ticks++; };
+            cssAnimEl.addEventListener('animationiteration', b.h);
+        }, function (b) {
+            cssAnimEl.removeEventListener('animationiteration', b.h);
+        });
+
+        // 8. DOM textContent mutation every 100 ms
+        add('DOM mutate 100ms',
+            'textContent update every 100ms. Measures the DOM mutation + style recalc + layout + paint cost.',
+            function (b) {
+            b.h = setInterval(function () {
+                b.ticks++;
+                domTarget.textContent = String(b.ticks);
+            }, 100);
+        }, function (b) {
+            clearInterval(b.h);
+            domTarget.textContent = '';
+        });
+
+        // 9. Websocket redraw — server pushes a counter once per second;
+        //    each message updates the #wsStatus DOM node. No polling on the
+        //    client, no rAF — the browser wakes only when the server sends.
+        add('Websocket redraw',
+            'Server pushes a 1Hz counter over WebSocket. Each message updates the status bar. Demonstrates server-driven push vs client polling.',
+            function (b) {
+            var wsEl = document.getElementById('wsStatus');
+            wsEl.textContent = 'WS: connecting';
+            var ws = new WebSocket('ws://localhost:8898/');
+            b.h = ws;
+            ws.onopen    = function () { wsEl.textContent = 'WS: waiting'; };
+            ws.onmessage = function (ev) {
+                b.ticks++;
+                try {
+                    var data = JSON.parse(ev.data);
+                    wsEl.textContent = 'WS: ' + data.counter;
+                } catch (e) {
+                    wsEl.textContent = 'WS: bad msg';
+                }
+            };
+            ws.onerror = function () { wsEl.textContent = 'WS: error'; };
+            ws.onclose = function () { wsEl.textContent = 'WS: closed'; };
+        }, function (b) {
+            if (b.h) {
+                try { b.h.close(); } catch (e) {}
+                b.h = null;
+            }
+            document.getElementById('wsStatus').textContent = '';
+        });
+
+        // 10. WebGL rotating cube — 6 faces, 36 triangles, depth-tested.
+        //     Per-face grayscale shade so rotation stays visible on B/W.
+        //     Own angle counter so it doesn't share state with the tri test.
+        add('WebGL spin cube',
+            'Full WebGL pipeline: vertex + fragment shaders, per-face grayscale, depth-tested triangles drawing a rotating cube via rAF. Heaviest GLES test.',
+            function (b) {
+            var s = getGL();
+            if (!s) { b.ticks = -1; return; }
+            var gl = s.gl;
+            b.angle = 0;
+            gl.viewport(0, 0, glCvs.width, glCvs.height);
+            s.bindGeom(s.cube);
+            function frame() {
+                b.ticks++;
+                b.angle += 0.03;
+                gl.uniform1f(s.tLoc, b.angle);
+                gl.clearColor(0, 0, 0, 1);
+                gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+                gl.drawElements(gl.TRIANGLES, s.cube.n, gl.UNSIGNED_SHORT, 0);
+                b.h = requestAnimationFrame(frame);
+            }
+            b.h = requestAnimationFrame(frame);
+        }, function (b) {
+            cancelAnimationFrame(b.h);
+            if (glState) {
+                glState.gl.clearColor(0, 0, 0, 1);
+                glState.gl.clear(glState.gl.COLOR_BUFFER_BIT | glState.gl.DEPTH_BUFFER_BIT);
+            }
+        });
+
+        // ---------- UI ----------
+        // Build the list once, then mutate only the necessary classes / text
+        // nodes on state change. Avoids innerHTML rebuilds on every keypress.
+        var cur = 0;
+        var listEl = document.getElementById('list');
+        var helpEl = document.getElementById('helpOverlay');
+        var helpTitleEl = document.getElementById('helpTitle');
+        var helpBodyEl  = document.getElementById('helpBody');
+        var helpOpen = false;
+        var refreshTimer = null;
+
+        function pad(s, n) { while (s.length < n) s += ' '; return s; }
+
+        // Map each bench to the visual target it owns. Targets start hidden
+        // (display:none) and are revealed by adding .on while a bench that
+        // owns them is running. Benches without a target draw nothing.
+        var TARGET_MAP = {
+            'rAF + 1 fillRect': 'cvs',
+            'rAF + many rects': 'cvs',
+            'CSS animation':    'cssAnim',
+            'DOM mutate 100ms': 'domTarget',
+            'Websocket redraw': 'wsStatus',
+            'WebGL spin cube':  'glCvs'
+        };
+        for (var _ti = 0; _ti < benches.length; _ti++) {
+            benches[_ti].target = TARGET_MAP[benches[_ti].name] || null;
+        }
+
+        function updateTargets() {
+            var active = {};
+            for (var i = 0; i < benches.length; i++) {
+                if (benches[i].on && benches[i].target) active[benches[i].target] = true;
+            }
+            ['cvs', 'glCvs', 'domTarget', 'cssAnim', 'wsStatus'].forEach(function (id) {
+                var el = document.getElementById(id);
+                if (el) el.classList.toggle('on', !!active[id]);
+            });
+        }
+
+        function buildList() {
+            for (var i = 0; i < benches.length; i++) {
+                var b = benches[i];
+                var row = document.createElement('div');
+                row.className = 'row';
+                var ck = document.createElement('span'); ck.className = 'ck'; ck.textContent = '[ ]';
+                var nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = pad(b.name, 18);
+                var tk = document.createElement('span'); tk.className = 'tk'; tk.textContent = '';
+                row.appendChild(ck); row.appendChild(document.createTextNode(' '));
+                row.appendChild(nm); row.appendChild(document.createTextNode(' '));
+                row.appendChild(tk);
+                listEl.appendChild(row);
+                b.el = row; b.ckEl = ck; b.tkEl = tk;
+            }
+            benches[cur].el.classList.add('sel');
+        }
+
+        function moveCursor(newCur) {
+            benches[cur].el.classList.remove('sel');
+            cur = newCur;
+            benches[cur].el.classList.add('sel');
+        }
+
+        function applyRowState(i) {
+            var b = benches[i];
+            b.el.classList.toggle('on', b.on);
+            b.ckEl.textContent = b.on ? '[X]' : '[ ]';
+            b.tkEl.textContent = b.on ? String(b.ticks) : '';
+        }
+
+        function refreshTicks() {
+            for (var i = 0; i < benches.length; i++) {
+                if (benches[i].on) benches[i].tkEl.textContent = String(benches[i].ticks);
+            }
+        }
+
+        function anyOn() {
+            for (var i = 0; i < benches.length; i++) if (benches[i].on) return true;
+            return false;
+        }
+
+        // Tick counts refresh at 1 Hz, but ONLY while ≥1 bench is on. Off when
+        // idle so the page itself adds zero CPU when nothing is enabled.
+        function maybeStartRefresh() {
+            if (refreshTimer || !anyOn()) return;
+            refreshTimer = setInterval(refreshTicks, 1000);
+        }
+        function maybeStopRefresh() {
+            if (refreshTimer && !anyOn()) {
+                clearInterval(refreshTimer);
+                refreshTimer = null;
+            }
+        }
+
+        function toggle(i) {
+            var b = benches[i];
+            if (b.on) {
+                b.stop(b); b.on = false; b.ticks = 0;
+            } else {
+                // Benches that share a visual target (the cube and tri both
+                // draw to #glCvs; the two rAF paint tests both draw to #cvs)
+                // can't run simultaneously without overwriting each other —
+                // turn off any peers on the same target before starting.
+                if (b.target) {
+                    for (var j = 0; j < benches.length; j++) {
+                        if (j !== i && benches[j].on && benches[j].target === b.target) {
+                            benches[j].stop(benches[j]);
+                            benches[j].on = false; benches[j].ticks = 0;
+                            applyRowState(j);
+                        }
+                    }
+                }
+                b.on = true; b.start(b);
+            }
+            applyRowState(i);
+            updateTargets();
+            maybeStartRefresh();
+            maybeStopRefresh();
+        }
+
+        function resetAll() {
+            for (var i = 0; i < benches.length; i++) {
+                if (benches[i].on) {
+                    benches[i].stop(benches[i]);
+                    benches[i].on = false; benches[i].ticks = 0;
+                    applyRowState(i);
+                }
+            }
+            updateTargets();
+            maybeStopRefresh();
+        }
+
+        function showHelp() {
+            var b = benches[cur];
+            helpTitleEl.textContent = b.name;
+            helpBodyEl.textContent = b.desc || '(no description)';
+            helpEl.classList.add('on');
+            helpOpen = true;
+        }
+        function hideHelp() {
+            helpEl.classList.remove('on');
+            helpOpen = false;
+        }
+
+        document.addEventListener('keydown', function (e) {
+            // While help overlay is open, any key dismisses it and nothing else.
+            if (helpOpen) { hideHelp(); e.preventDefault(); return; }
+
+            // Hardware Flipper-style buttons send z / x / b; keyboard dev
+            // shortcuts (arrows, Enter, Space, Backspace, Escape) stay as
+            // aliases for convenience.
+            var k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+            if      (k === 'ArrowUp')   { moveCursor((cur - 1 + benches.length) % benches.length); }
+            else if (k === 'ArrowDown') { moveCursor((cur + 1) % benches.length); }
+            else if (k === 'b' || k === 'Enter' || k === ' ')         { toggle(cur); }
+            else if (k === 'z' || k === 'Backspace' || k === 'Escape'){ resetAll(); }
+            else if (k === 'x')                                        { showHelp(); }
+            else { return; }
+            e.preventDefault();
+        });
+
+        buildList();
+    })();
+    </script>
+</body>
+</html>

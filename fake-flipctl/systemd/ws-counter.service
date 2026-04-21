@@ -1,0 +1,12 @@
+[Unit]
+Description=ws-counter — minimal WebSocket broadcaster (1Hz counter)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/node /flipperone-testing/fake-flipctl/ws-counter-server.js
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
