@@ -732,14 +732,48 @@ var FlipCanvas = (function() {
         }
     };
 
-    FlipCanvas.prototype._drawBinarySprite = function(sprite, x, y, color) {
+    // Draw a single frame of a vertically-stacked sprite strip. The strip
+    // describes frame count via `frames`; each frame occupies h/frames rows.
+    FlipCanvas.prototype.drawSpriteFrame = function(sprite, x, y, frameIndex, color) {
+        if (!sprite || !sprite.d) return;
+        var frames = sprite.frames || 1;
+        var frameH = Math.floor(sprite.h / frames);
+        if (frameIndex < 0) frameIndex = 0;
+        if (frameIndex >= frames) frameIndex = frames - 1;
+
+        // Grayscale rows are consumed 3 bytes per 4-pixel group by the
+        // renderer below, so each row occupies ceil(w/4)*3 bytes — not
+        // the packed-bits figure ceil(w*6/8), which is smaller when w
+        // isn't a multiple of 4 (e.g. w=14 gives 12 vs 11).
+        var bytesPerRow = (sprite.grayscale && sprite.bitsPerPixel === 6)
+            ? Math.ceil(sprite.w / 4) * 3
+            : Math.ceil(sprite.w / 8);
+
+        var offset = frameIndex * frameH * bytesPerRow;
+        var view = {
+            w: sprite.w,
+            h: frameH,
+            bitsPerPixel: sprite.bitsPerPixel,
+            grayscale: sprite.grayscale,
+            d: sprite.d
+        };
+
+        if (view.grayscale && view.bitsPerPixel === 6) {
+            this._drawGrayscaleSprite(view, x, y, color, offset);
+        } else {
+            this._drawBinarySprite(view, x, y, color, offset);
+        }
+    };
+
+    FlipCanvas.prototype._drawBinarySprite = function(sprite, x, y, color, dataOffset) {
         var ctx = this.ctx;
         ctx.fillStyle = color || '#000';
 
         var bytesPerRow = Math.ceil(sprite.w / 8);
+        var baseIndex = dataOffset || 0;
 
         for (var row = 0; row < sprite.h; row++) {
-            var dataIndex = row * bytesPerRow;
+            var dataIndex = baseIndex + row * bytesPerRow;
             var bitPos = 0;
 
             for (var byteIdx = 0; byteIdx < bytesPerRow && bitPos < sprite.w; byteIdx++) {
@@ -757,13 +791,13 @@ var FlipCanvas = (function() {
         }
     };
 
-    FlipCanvas.prototype._drawGrayscaleSprite = function(sprite, x, y, color) {
+    FlipCanvas.prototype._drawGrayscaleSprite = function(sprite, x, y, color, dataOffset) {
         var ctx = this.ctx;
         color = color || '#000';
 
         // Unpack 6-bit grayscale values (4 pixels per 3 bytes)
         var bytesPerRow = Math.ceil((sprite.w * 6) / 8);
-        var dataIndex = 0;
+        var dataIndex = dataOffset || 0;
 
         for (var row = 0; row < sprite.h; row++) {
             for (var col = 0; col < sprite.w; col += 4) {

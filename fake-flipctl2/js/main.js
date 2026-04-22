@@ -9,6 +9,10 @@
     var lastRenderTs = 0;
     var IDLE_REDRAW_MS = 250;
 
+    // Scenes can call this to force a redraw on the next loop tick (useful
+    // for time-driven animations that aren't triggered by input).
+    window.requestRender = function() { needsRender = true; };
+
     scenes.push(new DesktopScene(scenes));
 
     // Poll the server every 2s and reload the page when the underlying

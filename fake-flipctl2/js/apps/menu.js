@@ -17,9 +17,16 @@ var MenuScene = (function() {
         this.h = isLast ? ITEM_H_LAST : ITEM_H_REGULAR;
         this.state = STATE_DEFAULT;
         this.icon = icon || null;
+        // Optional vertical sprite strip that plays while the item is
+        // SELECTED. Expected shape: { w, h, frames, ... }. If absent, the
+        // static `icon` renders in all states.
+        this.iconAnimated = null;
         this.isLast = isLast || false;
         this.status = status || null;
     }
+
+    // 5 fps = 200 ms per frame.
+    var ANIMATED_ICON_FRAME_MS = 200;
 
     MenuItem.prototype.render = function(canvas, x, y) {
         var textColor = '#000';
@@ -40,15 +47,21 @@ var MenuScene = (function() {
         // Center text vertically
         var verticalPadding = Math.floor((this.h - FONT_H) / 2);
 
-        // Draw icon if available
-        if (this.icon) {
+        // Draw icon. When selected and an animated strip is available,
+        // play it; otherwise fall back to the static icon.
+        var activeAnim = (this.state === STATE_SELECTED && this.iconAnimated) ? this.iconAnimated : null;
+        var iconSource = activeAnim || this.icon;
+        if (iconSource) {
+            var frameH = activeAnim ? Math.floor(iconSource.h / (iconSource.frames || 1)) : iconSource.h;
             var iconX = x + PAD_X;
-            var iconY = y + Math.floor((this.h - this.icon.h) / 2);
-            // Use drawSprite for grayscale icons, drawIcon for binary icons
-            if (this.icon.grayscale) {
-                canvas.drawSprite(this.icon, iconX, iconY, iconColor);
+            var iconY = y + Math.floor((this.h - frameH) / 2);
+            if (activeAnim) {
+                var frameIndex = Math.floor(Date.now() / ANIMATED_ICON_FRAME_MS) % (activeAnim.frames || 1);
+                canvas.drawSpriteFrame(activeAnim, iconX, iconY, frameIndex, iconColor);
+            } else if (iconSource.grayscale) {
+                canvas.drawSprite(iconSource, iconX, iconY, iconColor);
             } else {
-                canvas.drawIcon(this.icon, iconX, iconY, iconColor);
+                canvas.drawIcon(iconSource, iconX, iconY, iconColor);
             }
         }
 
@@ -88,7 +101,7 @@ var MenuScene = (function() {
     var menuItems = [
         'Network',
         'Testing',
-        'System'
+        'Settings'
     ];
 
     function networkMenu(sm) {
@@ -140,8 +153,8 @@ var MenuScene = (function() {
         });
     }
 
-    function systemMenu(sm) {
-        return new SubMenuScene(sm, 'System', [
+    function settingsMenu(sm) {
+        return new SubMenuScene(sm, 'Settings', [
             'System info',
             'Battery info',
             'Disk info',
@@ -156,7 +169,7 @@ var MenuScene = (function() {
     var subMenus = {
         'Network': networkMenu,
         'Testing': testingMenu,
-        'System': systemMenu
+        'Settings': settingsMenu
     };
 
     function MenuScene(sceneManager) {
@@ -164,18 +177,24 @@ var MenuScene = (function() {
         this.selectedIndex = 0;
         this.items = [];
 
-        // Map menu items to icons
+        // Map menu items to icons. Animated entries take over on selection
+        // and fall back to the static icon otherwise.
         var iconMap = {
             'Network': Icons.network,
             'Testing': Icons.testing,
-            'System': Icons.system
+            'Settings': Icons.system
+        };
+        var animatedIconMap = {
+            'Settings': AnimatedIcons.settings_animated
         };
 
         // Create menu items
         for (var i = 0; i < menuItems.length; i++) {
             var isLast = (i === menuItems.length - 1);
             var icon = iconMap[menuItems[i]] || null;
-            this.items.push(new MenuItem(menuItems[i], isLast, icon));
+            var item = new MenuItem(menuItems[i], isLast, icon);
+            item.iconAnimated = animatedIconMap[menuItems[i]] || null;
+            this.items.push(item);
         }
 
         this.items[this.selectedIndex].state = STATE_SELECTED;
@@ -196,8 +215,21 @@ var MenuScene = (function() {
         }
     }
 
-    MenuScene.prototype.enter = function() {};
-    MenuScene.prototype.exit = function() {};
+    MenuScene.prototype.enter = function() {
+        // Tick at the animated-icon framerate so selection animations can
+        // advance even when there's no input. The render loop decides what
+        // to draw; we just nudge it.
+        if (this._animTimer) return;
+        this._animTimer = setInterval(function() {
+            if (window.requestRender) window.requestRender();
+        }, ANIMATED_ICON_FRAME_MS);
+    };
+    MenuScene.prototype.exit = function() {
+        if (this._animTimer) {
+            clearInterval(this._animTimer);
+            this._animTimer = null;
+        }
+    };
 
     MenuScene.prototype.handleInput = function(action) {
         // Check if action maps to a button
