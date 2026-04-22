@@ -26,7 +26,15 @@
             overflow: auto;
             font-family: -apple-system, BlinkMacSystemFont, 'Inter', sans-serif;
             color: var(--text);
+            height: auto;
+            min-height: 100vh;
         }
+        .screen-wrap,
+        .panel,
+        .header,
+        .card,
+        #componentList,
+        #componentDetail { flex-shrink: 0; }
 
         .header {
             width: 768px;
@@ -42,10 +50,7 @@
             color: var(--text-dim);
             margin: 0;
         }
-        .header .brand {
-            color: var(--accent);
-            font-weight: 700;
-        }
+        .header .brand { color: var(--accent); font-weight: 700; }
 
         .screen-wrap {
             position: relative;
@@ -56,8 +61,7 @@
             overflow: hidden;
         }
         #screen {
-            width: 100%;
-            height: 100%;
+            width: 100%; height: 100%;
             display: block;
             background-color: #e9eaee;
             background-image:
@@ -65,8 +69,7 @@
             background-size: 12px 12px;
         }
         .pixel-grid {
-            position: absolute;
-            inset: 0;
+            position: absolute; inset: 0;
             pointer-events: none;
             background-image:
                 linear-gradient(to right, rgba(0,0,0,0.2) 1px, transparent 1px),
@@ -74,6 +77,71 @@
             background-size: 3px 3px;
         }
         .pixel-grid.hidden { display: none; }
+
+        #componentList,
+        #componentDetail {
+            width: 768px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .hidden { display: none !important; }
+
+        .card-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+        .card {
+            background: var(--panel);
+            border: 1px solid var(--panel-border);
+            border-radius: 8px;
+            padding: 18px 20px;
+            cursor: pointer;
+            transition: border-color 0.15s ease, transform 0.05s ease;
+            text-align: left;
+            font-family: inherit;
+            color: inherit;
+        }
+        .card:hover { border-color: var(--accent); }
+        .card:active { transform: translateY(1px); }
+        .card .card-name {
+            font-size: 15px;
+            font-weight: 600;
+            color: var(--text);
+            margin-bottom: 6px;
+        }
+        .card .card-desc {
+            font-size: 12px;
+            color: var(--text-dim);
+            line-height: 1.4;
+        }
+
+        .detail-topbar {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            width: 768px;
+        }
+        .back-btn {
+            background: var(--panel);
+            border: 1px solid var(--panel-border);
+            color: var(--text);
+            border-radius: 6px;
+            padding: 8px 14px;
+            font-size: 13px;
+            font-family: inherit;
+            cursor: pointer;
+            transition: border-color 0.15s ease;
+        }
+        .back-btn:hover { border-color: var(--accent); }
+        .detail-name {
+            font-size: 13px;
+            font-weight: 600;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: var(--accent);
+        }
 
         .panel {
             width: 768px;
@@ -106,6 +174,7 @@
             font-size: 13px;
             flex-wrap: wrap;
         }
+        .toggles + .toggles { margin-top: 8px; }
         .toggles label {
             display: flex;
             gap: 8px;
@@ -116,8 +185,7 @@
         input[type="checkbox"],
         input[type="radio"] {
             accent-color: var(--accent);
-            width: 14px;
-            height: 14px;
+            width: 14px; height: 14px;
             cursor: pointer;
         }
         .radio-group {
@@ -133,18 +201,14 @@
             cursor: pointer;
             user-select: none;
         }
-        .grid-2 {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-        }
 
         .controls {
             display: grid;
-            grid-template-columns: 64px 1fr 48px;
+            grid-template-columns: 80px 1fr 48px;
             gap: 10px 14px;
             align-items: center;
         }
+        .controls + .controls { margin-top: 8px; }
         .controls label {
             font-size: 12px;
             color: var(--text-dim);
@@ -159,32 +223,25 @@
         }
 
         input[type="range"] {
-            -webkit-appearance: none;
-            appearance: none;
-            width: 100%;
-            height: 4px;
+            -webkit-appearance: none; appearance: none;
+            width: 100%; height: 4px;
             background: var(--track);
-            border-radius: 2px;
-            outline: none;
-            cursor: pointer;
+            border-radius: 2px; outline: none; cursor: pointer;
         }
         input[type="range"]::-webkit-slider-runnable-track { height: 4px; background: var(--track); border-radius: 2px; }
         input[type="range"]::-moz-range-track { height: 4px; background: var(--track); border-radius: 2px; }
         input[type="range"]::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            appearance: none;
+            -webkit-appearance: none; appearance: none;
             width: 16px; height: 16px;
             margin-top: -6px;
             border-radius: 50%;
-            background: var(--accent);
-            border: 0;
+            background: var(--accent); border: 0;
             transition: box-shadow 0.15s ease;
         }
         input[type="range"]::-moz-range-thumb {
             width: 16px; height: 16px;
             border-radius: 50%;
-            background: var(--accent);
-            border: 0;
+            background: var(--accent); border: 0;
         }
         input[type="range"]:hover::-webkit-slider-thumb,
         input[type="range"]:focus::-webkit-slider-thumb { box-shadow: 0 0 0 6px rgba(255,130,0,0.18); }
@@ -192,20 +249,15 @@
         input[type="range"]:focus::-moz-range-thumb { box-shadow: 0 0 0 6px rgba(255,130,0,0.18); }
 
         .color-row {
-            display: flex;
-            align-items: center;
-            gap: 12px;
+            display: flex; align-items: center; gap: 12px;
         }
+        .color-row + .color-row { margin-top: 8px; }
         input[type="color"] {
-            -webkit-appearance: none;
-            appearance: none;
-            width: 56px;
-            height: 28px;
+            -webkit-appearance: none; appearance: none;
+            width: 56px; height: 28px;
             background: transparent;
             border: 1px solid var(--panel-border);
-            border-radius: 4px;
-            cursor: pointer;
-            padding: 0;
+            border-radius: 4px; cursor: pointer; padding: 0;
         }
         input[type="color"]::-webkit-color-swatch-wrapper { padding: 2px; }
         input[type="color"]::-webkit-color-swatch { border: none; border-radius: 2px; }
@@ -222,112 +274,44 @@
 </head>
 <body>
     <div class="header">
-        <h1><span class="brand">flipper</span> · ui sandbox · ResponsiveFrame</h1>
+        <h1><span class="brand">flipper</span> · ui sandbox</h1>
         <span style="font-size:12px;color:var(--text-dim);font-family:'SF Mono',Menlo,monospace">256 × 144</span>
     </div>
 
-    <div class="screen-wrap">
-        <canvas id="screen" width="256" height="144"></canvas>
-        <div class="pixel-grid" id="grid"></div>
-    </div>
-
-    <div class="panel">
-        <div class="panel-title">view</div>
-        <div class="toggles">
-            <label><input type="checkbox" id="gridToggle" checked> pixel grid</label>
+    <div id="componentList">
+        <div class="panel">
+            <div class="panel-title">component library</div>
+            <div class="card-grid" id="cardGrid"></div>
         </div>
     </div>
 
-    <div class="panel">
-        <div class="panel-title">position</div>
-        <div class="controls">
-            <label for="x">x</label>
-            <input type="range" id="x" min="0" max="256" value="6">
-            <span class="val" id="xv">6</span>
-
-            <label for="y">y</label>
-            <input type="range" id="y" min="0" max="144" value="6">
-            <span class="val" id="yv">6</span>
+    <div id="componentDetail" class="hidden">
+        <div class="detail-topbar">
+            <button class="back-btn" id="backBtn">← back to library</button>
+            <span class="detail-name" id="detailName"></span>
         </div>
-    </div>
 
-    <div class="panel">
-        <div class="panel-title">size</div>
-        <div class="controls">
-            <label for="w">width</label>
-            <input type="range" id="w" min="1" max="256" value="244">
-            <span class="val" id="wv">244</span>
-
-            <label for="h">height</label>
-            <input type="range" id="h" min="1" max="144" value="22">
-            <span class="val" id="hv">22</span>
+        <div class="screen-wrap">
+            <canvas id="screen" width="256" height="144"></canvas>
+            <div class="pixel-grid" id="grid"></div>
         </div>
-    </div>
 
-    <div class="panel">
-        <div class="panel-title">anchor</div>
-        <div class="grid-2">
-            <div>
-                <div class="sublabel">horizontal</div>
-                <div class="radio-group">
-                    <label><input type="radio" name="anchorH" value="left" checked> left</label>
-                    <label><input type="radio" name="anchorH" value="center"> center</label>
-                    <label><input type="radio" name="anchorH" value="right"> right</label>
-                </div>
-            </div>
-            <div>
-                <div class="sublabel">vertical</div>
-                <div class="radio-group">
-                    <label><input type="radio" name="anchorV" value="top" checked> top</label>
-                    <label><input type="radio" name="anchorV" value="center"> center</label>
-                    <label><input type="radio" name="anchorV" value="bottom"> bottom</label>
-                </div>
+        <div class="panel">
+            <div class="panel-title">view</div>
+            <div class="toggles">
+                <label><input type="checkbox" id="gridToggle" checked> pixel grid</label>
             </div>
         </div>
-    </div>
 
-    <div class="panel">
-        <div class="panel-title">fill</div>
-        <div class="color-row">
-            <input type="color" id="fillColor" value="#ffffff">
-            <code id="fillColorVal">#ffffff</code>
-        </div>
-    </div>
-
-    <div class="panel">
-        <div class="panel-title">stroke</div>
-        <div class="toggles" style="margin-bottom: 12px;">
-            <label><input type="checkbox" id="showStroke" checked> show stroke</label>
-        </div>
-        <div class="color-row">
-            <input type="color" id="strokeColor" value="#000000">
-            <code id="strokeColorVal">#000000</code>
-        </div>
-    </div>
-
-    <div class="panel">
-        <div class="panel-title">corners</div>
-        <div class="sublabel">radius</div>
-        <div class="radio-group">
-            <label><input type="radio" name="cornerRadius" value="0"> 0 px</label>
-            <label><input type="radio" name="cornerRadius" value="3" checked> 3 px</label>
-            <label><input type="radio" name="cornerRadius" value="4"> 4 px</label>
-        </div>
-        <div class="sublabel">rounded corners</div>
-        <div class="toggles">
-            <label><input type="checkbox" name="corner" value="tl" checked> top-left</label>
-            <label><input type="checkbox" name="corner" value="tr" checked> top-right</label>
-            <label><input type="checkbox" name="corner" value="bl" checked> bottom-left</label>
-            <label><input type="checkbox" name="corner" value="br" checked> bottom-right</label>
-        </div>
+        <div id="controls"></div>
     </div>
 
     <script src="js/font.js"></script>
     <script src="js/haxrcorp16.js"></script>
     <script src="js/canvas.js"></script>
     <script src="js/input.js"></script>
-    <script src="js/component-library/RoundCorner.js"></script>
     <script src="js/component-library/ResponsiveFrame.js"></script>
+    <script src="js/sandbox/controls.js"></script>
     <script src="js/sandbox/main.js"></script>
 </body>
 </html>

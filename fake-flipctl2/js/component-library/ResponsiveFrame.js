@@ -8,7 +8,9 @@
  *   anchorH: 'left' | 'center' | 'right'
  *   anchorV: 'top'  | 'center' | 'bottom'
  *
- * Requires RoundCorner.js to be loaded first.
+ * Rendering paints only the body pixels of the rounded rectangle;
+ * cut-corner pixels are never touched, so whatever was drawn on the
+ * canvas underneath shows through naturally in any context.
  */
 var ResponsiveFrame = (function() {
     function ResponsiveFrame(options) {
@@ -24,13 +26,6 @@ var ResponsiveFrame = (function() {
         this.corners = options.corners || { tl: true, tr: true, bl: true, br: true };
         this.anchorH = options.anchorH || 'left';
         this.anchorV = options.anchorV || 'top';
-
-        this._rc = {
-            tl: new RoundCorner({ orientation: 'tl', color: 'transparent' }),
-            tr: new RoundCorner({ orientation: 'tr', color: 'transparent' }),
-            bl: new RoundCorner({ orientation: 'bl', color: 'transparent' }),
-            br: new RoundCorner({ orientation: 'br', color: 'transparent' })
-        };
     }
 
     function anchorOffset(anchor, size) {
@@ -58,13 +53,18 @@ var ResponsiveFrame = (function() {
         var rBL = (r > 0 && this.corners.bl) ? r : 0;
         var rBR = (r > 0 && this.corners.br) ? r : 0;
 
+        // Body fill, row by row. Cut-corner pixels are never painted,
+        // so whatever was on the canvas underneath shows through.
         ctx.fillStyle = this.fillColor;
-        ctx.fillRect(x, y, w, h);
-
-        if (rTL) { this._rc.tl.setRadius(rTL); this._rc.tl.setPosition(x, y);               this._rc.tl.render(canvas); }
-        if (rTR) { this._rc.tr.setRadius(rTR); this._rc.tr.setPosition(x + w - rTR, y);     this._rc.tr.render(canvas); }
-        if (rBL) { this._rc.bl.setRadius(rBL); this._rc.bl.setPosition(x, y + h - rBL);     this._rc.bl.render(canvas); }
-        if (rBR) { this._rc.br.setRadius(rBR); this._rc.br.setPosition(x + w - rBR, y + h - rBR); this._rc.br.render(canvas); }
+        for (var dy = 0; dy < h; dy++) {
+            var li = 0, ri = 0;
+            if (dy < rTL)           li = Math.max(li, rTL - 1 - dy);
+            if (dy >= h - rBL)      li = Math.max(li, dy - (h - rBL));
+            if (dy < rTR)           ri = Math.max(ri, rTR - 1 - dy);
+            if (dy >= h - rBR)      ri = Math.max(ri, dy - (h - rBR));
+            var rowW = w - li - ri;
+            if (rowW > 0) ctx.fillRect(x + li, y + dy, rowW, 1);
+        }
 
         if (this.showStroke) {
             ctx.fillStyle = this.strokeColor;
@@ -103,3 +103,26 @@ var ResponsiveFrame = (function() {
 
     return ResponsiveFrame;
 })();
+
+ResponsiveFrame.tweakables = [
+    { section: 'position' },
+    { key: 'x',            type: 'range', min: 0, max: 256, default: 6 },
+    { key: 'y',            type: 'range', min: 0, max: 144, default: 6 },
+    { section: 'size' },
+    { key: 'width',        type: 'range', min: 1, max: 256, default: 244 },
+    { key: 'height',       type: 'range', min: 1, max: 144, default: 22 },
+    { section: 'anchor' },
+    { key: 'anchorH',      type: 'enum', options: ['left', 'center', 'right'],  default: 'left', label: 'horizontal' },
+    { key: 'anchorV',      type: 'enum', options: ['top', 'center', 'bottom'],  default: 'top',  label: 'vertical' },
+    { section: 'fill' },
+    { key: 'fillColor',    type: 'color', default: '#ffffff' },
+    { section: 'stroke' },
+    { key: 'showStroke',   type: 'bool',  default: true, label: 'show stroke' },
+    { key: 'strokeColor',  type: 'color', default: '#000000' },
+    { section: 'corners' },
+    { key: 'cornerRadius', type: 'enum', options: [0, 3, 4], default: 3, label: 'radius' },
+    { key: 'corners.tl',   type: 'bool', default: true, label: 'top-left' },
+    { key: 'corners.tr',   type: 'bool', default: true, label: 'top-right' },
+    { key: 'corners.bl',   type: 'bool', default: true, label: 'bottom-left' },
+    { key: 'corners.br',   type: 'bool', default: true, label: 'bottom-right' }
+];

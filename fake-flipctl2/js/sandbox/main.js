@@ -1,98 +1,88 @@
 (function() {
-    var $ = function(id) { return document.getElementById(id); };
+    var COMPONENTS = [
+        {
+            name: 'ResponsiveFrame',
+            ctor: ResponsiveFrame,
+            description: 'Configurable frame: fill, 1px stroke, per-corner rounded corners, anchor.'
+        }
+    ];
 
-    var canvasEl = $('screen');
+    var listEl       = document.getElementById('componentList');
+    var detailEl     = document.getElementById('componentDetail');
+    var cardGrid     = document.getElementById('cardGrid');
+    var backBtn      = document.getElementById('backBtn');
+    var detailName   = document.getElementById('detailName');
+    var controlsBox  = document.getElementById('controls');
+    var canvasEl     = document.getElementById('screen');
+    var gridToggle   = document.getElementById('gridToggle');
+    var gridEl       = document.getElementById('grid');
+
     var canvas = new FlipCanvas(canvasEl);
     var input = new Input();
+    var currentInstance = null;
+    var rafId = null;
 
-    var xEl = $('x'), yEl = $('y'), wEl = $('w'), hEl = $('h');
-    var xv = $('xv'), yv = $('yv'), wv = $('wv'), hv = $('hv');
-    var fillEl = $('fillColor'), fillVal = $('fillColorVal');
-    var strokeEl = $('strokeColor'), strokeVal = $('strokeColorVal');
-    var showStrokeEl = $('showStroke');
-    var radiusRadios = document.querySelectorAll('input[name="cornerRadius"]');
-    var cornerCheckboxes = document.querySelectorAll('input[name="corner"]');
-    var anchorHRadios = document.querySelectorAll('input[name="anchorH"]');
-    var anchorVRadios = document.querySelectorAll('input[name="anchorV"]');
-
-    var frame = new ResponsiveFrame({
-        x: parseInt(xEl.value, 10),
-        y: parseInt(yEl.value, 10),
-        width: parseInt(wEl.value, 10),
-        height: parseInt(hEl.value, 10),
-        fillColor: fillEl.value,
-        strokeColor: strokeEl.value,
-        showStroke: showStrokeEl.checked,
-        cornerRadius: 3,
-        corners: { tl: true, tr: true, bl: true, br: true },
-        anchorH: 'left',
-        anchorV: 'top'
-    });
-
-    [xEl, yEl, wEl, hEl].forEach(function(el) {
-        el.addEventListener('input', function() {
-            frame.setPosition(parseInt(xEl.value, 10), parseInt(yEl.value, 10));
-            frame.setSize(parseInt(wEl.value, 10), parseInt(hEl.value, 10));
-            xv.textContent = frame.x;
-            yv.textContent = frame.y;
-            wv.textContent = frame.width;
-            hv.textContent = frame.height;
+    function renderList() {
+        cardGrid.innerHTML = '';
+        COMPONENTS.forEach(function(c) {
+            var card = document.createElement('button');
+            card.className = 'card';
+            card.innerHTML =
+                '<div class="card-name">' + c.name + '</div>' +
+                '<div class="card-desc">' + c.description + '</div>';
+            card.addEventListener('click', function() { openDetail(c); });
+            cardGrid.appendChild(card);
         });
-    });
+    }
 
-    fillEl.addEventListener('input', function() {
-        frame.setFillColor(fillEl.value);
-        fillVal.textContent = fillEl.value;
-    });
-
-    strokeEl.addEventListener('input', function() {
-        frame.setStrokeColor(strokeEl.value);
-        strokeVal.textContent = strokeEl.value;
-    });
-
-    showStrokeEl.addEventListener('change', function() {
-        frame.setShowStroke(showStrokeEl.checked);
-    });
-
-    radiusRadios.forEach(function(r) {
-        r.addEventListener('change', function() {
-            if (r.checked) frame.setCornerRadius(parseInt(r.value, 10));
+    function openDetail(c) {
+        detailName.textContent = c.name;
+        var schema = c.ctor.tweakables;
+        var options = ControlsBuilder.defaults(schema);
+        currentInstance = new c.ctor(options);
+        ControlsBuilder.build(schema, controlsBox, function(path, value) {
+            ControlsBuilder.setPath(currentInstance, path, value);
         });
-    });
+        listEl.classList.add('hidden');
+        detailEl.classList.remove('hidden');
+        startLoop();
+    }
 
-    cornerCheckboxes.forEach(function(cb) {
-        cb.addEventListener('change', function() {
-            frame.setCorner(cb.value, cb.checked);
-        });
-    });
+    function closeDetail() {
+        stopLoop();
+        currentInstance = null;
+        controlsBox.innerHTML = '';
+        detailEl.classList.add('hidden');
+        listEl.classList.remove('hidden');
+    }
 
-    anchorHRadios.forEach(function(r) {
-        r.addEventListener('change', function() {
-            if (r.checked) frame.setAnchor(r.value, null);
-        });
-    });
+    backBtn.addEventListener('click', closeDetail);
 
-    anchorVRadios.forEach(function(r) {
-        r.addEventListener('change', function() {
-            if (r.checked) frame.setAnchor(null, r.value);
-        });
-    });
-
-    var gridToggle = $('gridToggle');
-    var grid = $('grid');
     gridToggle.addEventListener('change', function() {
-        grid.classList.toggle('hidden', !gridToggle.checked);
+        gridEl.classList.toggle('hidden', !gridToggle.checked);
     });
 
     function render() {
         canvas.ctx.clearRect(0, 0, canvas.w, canvas.h);
-        frame.render(canvas);
+        if (currentInstance && currentInstance.render) {
+            currentInstance.render(canvas);
+        }
     }
 
     function loop() {
         input.processQueue();
         render();
-        requestAnimationFrame(loop);
+        rafId = requestAnimationFrame(loop);
     }
-    requestAnimationFrame(loop);
+
+    function startLoop() {
+        if (rafId === null) rafId = requestAnimationFrame(loop);
+    }
+
+    function stopLoop() {
+        if (rafId !== null) cancelAnimationFrame(rafId);
+        rafId = null;
+    }
+
+    renderList();
 })();
