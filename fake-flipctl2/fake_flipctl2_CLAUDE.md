@@ -120,6 +120,70 @@ Two sibling variants exist on the device:
 2. Reload the UI: `sudo systemctl restart cog-seat1.service`
 3. The client auto-reloads when `/api/version` reports a new `SERVER_ID` after `fake-flipctl-node-server.service` restarts — no manual page refresh needed
 
+## UI Sandbox
+
+Isolated development environment for building and inspecting components from the component library without running the full app. Runs as its own Node server on a separate port, so editing sandbox-only code never touches the live app.
+
+### Running
+
+```bash
+node ui-sandbox.js
+```
+
+Serves on **port 8900** (no root required, independent of the main app on 8899). Open `http://localhost:8900/`.
+
+### Views
+
+- **Library view** (default): grid of cards, one per registered component (name + short description). Click a card → detail view.
+- **Detail view**: 3× zoomed 256×144 canvas with a light-gray/white checker background (so transparent pixels are visible), a 1-native-pixel grid overlay (toggleable), and auto-generated controls that match the selected component's `tweakables` schema. `← back to library` returns to the list.
+
+### Files
+
+- **`ui-sandbox.js`** — minimal static server. No API endpoints, no sysfs, no root.
+- **`ui-sandbox.html`** — browser entry. Dark theme with Flipper orange (`#FF8200`) accent for controls.
+- **`js/sandbox/main.js`** — registers the `COMPONENTS` list, renders library cards, handles list↔detail transitions, owns the render loop.
+- **`js/sandbox/controls.js`** — schema-driven controls builder (see below).
+
+### Registering a component for the sandbox
+
+1. Add a static `tweakables` schema on the component (outside the IIFE):
+   ```js
+   MyComponent.tweakables = [
+       { section: 'position' },
+       { key: 'x', type: 'range', min: 0, max: 256, default: 0 },
+       // ...
+   ];
+   ```
+2. Add an entry to the `COMPONENTS` array in `js/sandbox/main.js`:
+   ```js
+   { name: 'MyComponent', ctor: MyComponent, description: 'What it does.' }
+   ```
+3. Ensure `ui-sandbox.html` loads the component file via `<script>` (in the component-library block at the bottom).
+
+No other wiring needed — the sandbox instantiates the component with the schema's defaults, builds the controls UI, and mutates the instance on change.
+
+### Tweakables schema
+
+Each entry is one of:
+
+| Entry | Produces |
+| --- | --- |
+| `{ section: 'name' }` | Starts a new panel with this title |
+| `{ key, type: 'range', min, max, default, label? }` | Number slider with live value readout |
+| `{ key, type: 'color', default, label? }` | Native color picker with hex readout |
+| `{ key, type: 'bool',  default, label? }` | Checkbox |
+| `{ key, type: 'enum',  options: [...], default, label? }` | Radio group |
+
+- `key` supports dot paths (e.g. `'corners.tl'`). On change, the builder mutates the live instance directly via that path.
+- `label` defaults to the key.
+- For `enum`, `options` can be strings or numbers; their original type is preserved through `onChange`.
+
+### Constraints & notes
+
+- Components exposed to the sandbox should recompute layout inside `render()` (stateless). Components that cache computed state in an `_update()` method — like `MessageBox` — need setter-based mutation to stay correct; they're not currently in the sandbox registry.
+- The sandbox canvas clears to **transparent** each frame (checker shows through). A component whose appearance depends on being drawn over a specific filled background (e.g. over a prior `canvas.clear('#fff')`) should either paint its own background or behave well on transparent — `ResponsiveFrame`'s body-only fill is the reference pattern here.
+- Main app and sandbox load the **same** component file from `js/component-library/`. Both `server.js` and `ui-sandbox.js` serve from the project root. Edit once, reload both pages — behavior stays in sync.
+
 ## File: test-screen.html
 
 Test pattern page for verifying LCD display alignment — draws 1px border, diagonal cross, center crosshair, and corner coordinate labels at native 256x144.
@@ -128,8 +192,10 @@ Test pattern page for verifying LCD display alignment — draws 1px border, diag
 
 ```
 fake-flipctl2/
-├── server.js                      # Node.js HTTP server + API endpoints
+├── server.js                      # Node.js HTTP server + API endpoints (main app, port 8899)
 ├── index.html                     # Main app entry point
+├── ui-sandbox.js                  # Sandbox Node server (port 8900, no root) — see UI Sandbox
+├── ui-sandbox.html                # Sandbox browser entry (component library + demo views)
 ├── test-screen.html               # Display test pattern
 ├── png-to-bitmap.py               # PNG → 6-bit grayscale sprite/icon converter
 ├── cog-drm-research.txt           # Notes on Cog DRM/Wayland setup
@@ -145,8 +211,13 @@ fake-flipctl2/
     ├── icons.js                   # Icon definitions (re-exports from js/icons/icons.js)
     ├── sprites.js                 # Large sprite assets (dolphin, StatusBarBattery, etc.)
     ├── keyboard-blinking-cursor.js # Blinking cursor helper for text input
-    ├── components/
-    │   └── MessageBox.js          # Rounded speech-bubble dialog with tail indicator
+    ├── component-library/         # Reusable components — see Component Library & UI Sandbox sections
+    │   ├── MessageBox.js          # Rounded speech-bubble dialog with tail indicator
+    │   ├── ResponsiveFrame.js     # Configurable rect: fill, 1px stroke, per-corner rounding, anchor
+    │   └── MenuSelectorFrame.js   # Menu selection frame (duplicate of ResponsiveFrame, diverging)
+    ├── sandbox/                   # Sandbox boot + schema-driven controls builder
+    │   ├── main.js                # Library list → component detail → render loop
+    │   └── controls.js            # Builds UI from each component's .tweakables schema
     ├── icons/
     │   └── icons.js               # 6-bit grayscale icon data (network, system, testing, wifi_0..100, etc.)
     └── apps/
@@ -816,6 +887,59 @@ this.messageBox.render(canvas);
 // Update text dynamically:
 this.messageBox.setText("New message here");
 ```
+
+#### ResponsiveFrame
+Configurable rectangular frame — fill, optional 1px stroke, per-corner rounded corners, 3×3 anchor. Used as a building block for menus, cards, and selection highlights.
+
+**File:** `js/component-library/ResponsiveFrame.js`
+**Sandbox:** registered — full live-tweakable controls.
+
+**Features:**
+- Fill color (any CSS color)
+- Optional 1px stroke, independent color, toggleable
+- Per-corner rounded corners, radius 0/3/4 px, each of the four corners can be enabled or disabled individually
+- Anchor: `anchorH` (`left`/`center`/`right`) × `anchorV` (`top`/`center`/`bottom`) — `(x, y)` represents the chosen anchor point on the frame, not a fixed top-left
+
+**Constructor:**
+```js
+var frame = new ResponsiveFrame({
+    x: 6, y: 6,
+    width: 244, height: 22,
+    fillColor:   '#ffffff',
+    strokeColor: '#000000',
+    showStroke:  true,
+    cornerRadius: 3,
+    corners: { tl: true, tr: true, bl: true, br: true },
+    anchorH: 'left',
+    anchorV: 'top'
+});
+```
+
+Any omitted option falls back to the constructor default.
+
+**Methods:**
+- `render(canvas)` — draw the frame
+- `setPosition(x, y)`, `setSize(w, h)`
+- `setFillColor(c)`, `setStrokeColor(c)`, `setShowStroke(bool)`
+- `setCornerRadius(r)`, `setCorner(which, enabled)` — `which` is `'tl' | 'tr' | 'bl' | 'br'`
+- `setAnchor(h, v)` — pass a falsy value to keep a dimension unchanged
+
+**Rendering approach (important):**
+Paints **only the body pixels** of the rounded rectangle, row by row, using per-corner insets. Cut-corner pixels are never touched, so whatever was already on the canvas at those positions shows through naturally. This works in every context — transparent sandbox canvas, white desktop, or any mixed content underneath — without the component needing to know what's behind it.
+
+**Stroke:**
+- Straight top/bottom/left/right edges are painted between the rounded corner regions.
+- Each enabled rounded corner gets a 1-pixel diagonal border (at `dx + dy == r - 1`, mirrored per orientation).
+- Disabled corners get a square stroke corner via the adjacent straight edges meeting at the full rect corner.
+- `showStroke: false` skips all stroke drawing.
+
+#### MenuSelectorFrame
+Selection frame for menu entries. Starts as an independent duplicate of `ResponsiveFrame` with identical API — will diverge as menu-selector-specific behavior is added (highlight animation, scroll affordance, arrow indicator, etc.).
+
+**File:** `js/component-library/MenuSelectorFrame.js`
+**Sandbox:** registered.
+
+Constructor, methods, and rendering approach match `ResponsiveFrame` exactly for now. Treat this file as the one to edit for any selector-specific work; leave `ResponsiveFrame` as the generic primitive.
 
 ### Component Composition Pattern
 ```javascript

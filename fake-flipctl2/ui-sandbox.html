@@ -289,6 +289,7 @@
         <div class="detail-topbar">
             <button class="back-btn" id="backBtn">← back to library</button>
             <span class="detail-name" id="detailName"></span>
+            <button class="back-btn" id="refreshBtn" style="margin-left: auto;" title="reset to defaults">↻ refresh</button>
         </div>
 
         <div class="screen-wrap">
@@ -300,6 +301,7 @@
             <div class="panel-title">view</div>
             <div class="toggles">
                 <label><input type="checkbox" id="gridToggle" checked> pixel grid</label>
+                <label><input type="checkbox" id="bboxToggle" checked> bounding box highlight</label>
             </div>
         </div>
 
@@ -311,6 +313,7 @@
     <script src="js/canvas.js"></script>
     <script src="js/input.js"></script>
     <script src="js/component-library/ResponsiveFrame.js"></script>
+    <script src="js/component-library/MenuSelectorFrame.js"></script>
     <script src="js/sandbox/controls.js"></script>
     <script src="js/sandbox/main.js"></script>
 </body>
