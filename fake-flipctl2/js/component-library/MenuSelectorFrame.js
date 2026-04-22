@@ -98,6 +98,14 @@ var MenuSelectorFrame = (function() {
             ctx.fillStyle = this.strokeColor;
             ctx.fillRect(x + r, y + h, shadowLen, 1);
         }
+
+        // Right shadow line: 1px wide, at x+w (one column right of the frame).
+        // Top inset: cornerRadius. Length: height - 2*cornerRadius.
+        var shadowVLen = h - 2 * r;
+        if (shadowVLen > 0) {
+            ctx.fillStyle = this.strokeColor;
+            ctx.fillRect(x + w, y + r, 1, shadowVLen);
+        }
     };
 
     MenuSelectorFrame.prototype.setPosition = function(x, y) { this.x = x; this.y = y; };
