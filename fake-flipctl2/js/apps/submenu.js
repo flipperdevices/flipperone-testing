@@ -66,6 +66,7 @@ var SubMenuScene = (function() {
         }
 
         this.items[this.selectedIndex].state = MenuLine.STATE_SELECTED;
+        this._modal = null;  // Optional overlay; see showModal() below.
 
         this.selectorFrame = new MenuSelectorFrame({
             x: SELECTOR_X,
@@ -103,7 +104,26 @@ var SubMenuScene = (function() {
         }
     };
 
+    // Modal overlay API: any object with `render(canvas)` and
+    // `handleInput(action)` (returning truthy if it consumed the
+    // event). While a modal is set, the scene still renders in the
+    // background but all input is routed through the modal first.
+    SubMenuScene.prototype.showModal = function(modal) {
+        this._modal = modal;
+        if (window.requestRender) window.requestRender();
+    };
+    SubMenuScene.prototype.closeModal = function() {
+        this._modal = null;
+        if (window.requestRender) window.requestRender();
+    };
+
     SubMenuScene.prototype.handleInput = function(action) {
+        // Modal (if any) captures all input.
+        if (this._modal) {
+            this._modal.handleInput(action);
+            return;
+        }
+
         var n = this.items.length;
 
         // Left/right toggle: any row whose MenuLine defines `onToggle`
@@ -165,7 +185,10 @@ var SubMenuScene = (function() {
                 pressedLine.state = MenuLine.STATE_SELECTED;
                 var factory = self.appScenes[self.itemNames[idx]];
                 if (factory) {
-                    var next = factory();
+                    // Factories receive the submenu instance so they
+                    // can open a modal in place (returning null) instead
+                    // of pushing a new scene.
+                    var next = factory(self);
                     if (next && typeof next.render === 'function') {
                         self.sceneManager.push(next);
                     }
@@ -232,6 +255,9 @@ var SubMenuScene = (function() {
         // Scrollbar (same geometry as main menu).
         this.scrollbar.update(total, VISIBLE_COUNT, this.scrollOffset);
         this.scrollbar.render(canvas, SCROLLBAR_X, SCROLLBAR_Y, SCROLLBAR_H, SCROLLBAR_THUMB_PAD);
+
+        // Modal overlay on top of everything.
+        if (this._modal) this._modal.render(canvas);
     };
 
     return SubMenuScene;

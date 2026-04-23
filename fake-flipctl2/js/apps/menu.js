@@ -44,6 +44,75 @@ var MenuScene = (function() {
         'Settings'
     ];
 
+    // Modal shown when the user tries to open 5G Modem while airplane
+    // mode is on. Transparent overlay under a ResponsiveFrame with a
+    // two-line message and two app-defined buttons (Cancel / Turn off).
+    function makeAirplaneBlockModal(submenu) {
+        var FRAME_X = 16, FRAME_Y = 40;
+        var FRAME_W = 224, FRAME_H = 60;
+
+        var cancelBtn = new UI.LeftButton('Cancel', 48, 'esc', function() {
+            submenu.closeModal();
+        });
+        var turnOffBtn = new UI.RightButton('Turn off', 48, 'run', function() {
+            UI.setAirplaneMode(false);
+            submenu.closeModal();
+            // Proceed to the original 5G Modem action.
+            submenu.sceneManager.push(new Modem5gScene());
+        });
+
+        return {
+            handleInput: function(action) {
+                var btn = null;
+                if (action === 'back' || action === 'esc') btn = cancelBtn;
+                else if (action === 'ok' || action === 'run')  btn = turnOffBtn;
+                if (!btn) return false;
+                btn.press();
+                if (window.requestRender) window.requestRender();
+                setTimeout(function() {
+                    btn.release();
+                    if (btn.onPress) btn.onPress();
+                    if (window.requestRender) window.requestRender();
+                }, 30);
+                return true;
+            },
+            render: function(canvas) {
+                // Transparent overlay under the modal content.
+                canvas.ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
+                canvas.ctx.fillRect(0, 0, canvas.w, canvas.h);
+
+                // Frame.
+                var frame = new ResponsiveFrame({
+                    x: FRAME_X, y: FRAME_Y,
+                    width: FRAME_W, height: FRAME_H,
+                    anchorH: 'left', anchorV: 'top',
+                    strokeColor: '#000', showStroke: true,
+                    fillColor: '#ffffff', showFill: true,
+                    cornerRadius: 3
+                });
+                frame.render(canvas);
+
+                // Message (HaxrcorpFont16, centred).
+                var lines = [
+                    'To use 5G Modem you need',
+                    'to turn off Airplane mode'
+                ];
+                var lineH = 11;
+                var totalH = lines.length * lineH;
+                var startY = FRAME_Y + Math.floor((FRAME_H - totalH) / 2);
+                for (var i = 0; i < lines.length; i++) {
+                    var w = HaxrcorpFont16.textWidth(lines[i]);
+                    var x = Math.floor((canvas.w - w) / 2);
+                    HaxrcorpFont16.draw(canvas.ctx, lines[i], x, startY + i * lineH, '#000');
+                }
+
+                // Buttons.
+                cancelBtn.render(canvas);
+                turnOffBtn.render(canvas);
+            }
+        };
+    }
+
     function networkMenu(sm) {
         var subMenu = new SubMenuScene(sm, 'Network', [
             'Airplane mode',
@@ -53,7 +122,13 @@ var MenuScene = (function() {
             'Ethernet'
         ], {
             'Routing info': function() { return new RoutingScene(); },
-            '5G Modem': function() { return new Modem5gScene(); },
+            '5G Modem': function(submenu) {
+                if (UI.getAirplaneMode()) {
+                    submenu.showModal(makeAirplaneBlockModal(submenu));
+                    return null;
+                }
+                return new Modem5gScene();
+            },
             'Ethernet': function() { return new EthernetScene(); }
             // 'Airplane mode' has no factory — it's a toggle (see below).
         });
@@ -82,6 +157,17 @@ var MenuScene = (function() {
                     var w = UI.getWifiInfo();
                     if (!w.connected) return 'not connected';
                     return w.ssid || 'connected';
+                };
+                break;
+            }
+        }
+
+        // 5G Modem row surfaces the "Airplane mode" state so the user
+        // understands why tapping it will be blocked.
+        for (var m = 0; m < subMenu.items.length; m++) {
+            if (subMenu.items[m].text === '5G Modem') {
+                subMenu.items[m].statusProvider = function() {
+                    return UI.getAirplaneMode() ? 'Airplane mode' : null;
                 };
                 break;
             }
