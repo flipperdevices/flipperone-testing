@@ -1,15 +1,18 @@
 var UI = (function() {
-    var STATUS_BAR_H = 11;
+    var STATUS_BAR_H = 13;
+    var STATUS_BAR_PAD_TOP = 3;
     var ITEM_H = 12;
     var PAD_LEFT = 4;
     var SCROLLBAR_W = 3;
 
     var batteryLevel = -1;
     var batteryCharging = false;
+    var modemAvailable = false;
     var signalQuality = -1;  // 0-100 or -1 for unknown
     var accessTech = '--';  // Technology: 5G, LTE, 3G, etc.
     var wifiConnected = false;
     var wifiQuality = 0;     // 0-100
+    var ethernetConnected = false;
 
     function pollBattery() {
         var xhr = new XMLHttpRequest();
@@ -48,6 +51,7 @@ var UI = (function() {
         xhr.onload = function() {
             if (xhr.status === 200) {
                 var data = JSON.parse(xhr.responseText);
+                modemAvailable = !!data.available;
                 if (data.available && data.signalQuality !== null) {
                     signalQuality = data.signalQuality;
                 }
@@ -55,6 +59,32 @@ var UI = (function() {
                     accessTech = formatTech(data.accessTech);
                 }
             }
+        };
+        xhr.onerror = xhr.ontimeout = function() { modemAvailable = false; };
+        xhr.send();
+    }
+
+    function pollEthernet() {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', '/api/ethernet', true);
+        xhr.timeout = 3000;
+        xhr.onload = function() {
+            if (xhr.status !== 200) return;
+            var data;
+            try { data = JSON.parse(xhr.responseText); } catch (e) { return; }
+            // /api/ethernet returns an array of interfaces; connected if any
+            // interface state contains "connected" but not "disconnected".
+            var connected = false;
+            if (Array.isArray(data)) {
+                for (var i = 0; i < data.length; i++) {
+                    var s = data[i] && data[i].state;
+                    if (s && s.indexOf('connected') !== -1 && s.indexOf('disconnected') === -1) {
+                        connected = true;
+                        break;
+                    }
+                }
+            }
+            ethernetConnected = connected;
         };
         xhr.send();
     }
@@ -94,6 +124,10 @@ var UI = (function() {
     pollWifi();
     setInterval(pollWifi, 2000);
 
+    // Poll ethernet every 2 seconds
+    pollEthernet();
+    setInterval(pollEthernet, 2000);
+
     function formatDateTime() {
         var now = new Date();
         var hours = String(now.getHours()).padStart(2, '0');
@@ -116,25 +150,15 @@ var UI = (function() {
         }
     }
 
-    function drawPlugIcon(canvas, x, y) {
-        // Small power plug icon 5x7 in black on white status bar
-        // Prongs
-        canvas.drawRect(x + 1, y, 1, 2, '#000');
-        canvas.drawRect(x + 3, y, 1, 2, '#000');
-        // Body
-        canvas.drawRect(x, y + 2, 5, 3, '#000');
-        // Cord
-        canvas.drawRect(x + 2, y + 5, 1, 2, '#000');
-    }
-
-    function drawSignalBars(canvas, x, y, quality) {
-        // 5 signal bars: heights 3, 4, 5, 6, 7 from left to right
-        // Each bar 1px wide with 1px gap between
+    function drawSignalBars(canvas, x, topY, quality) {
+        // 5 signal bars: heights 3, 4, 5, 6, 7 from left to right.
+        // `topY` is where the TOP of the tallest bar sits; shorter bars
+        // share the same bottom as the tallest.
         var heights = [3, 4, 5, 6, 7];
+        var tallest = 7;
         var barX = x;
-        var barBottom = y + STATUS_BAR_H;
+        var barBottom = topY + tallest;
 
-        // Calculate how many bars should be filled (black)
         var filledBars = 0;
         if (quality >= 0) {
             filledBars = Math.ceil((quality / 100) * 5);
@@ -143,58 +167,71 @@ var UI = (function() {
         for (var i = 0; i < 5; i++) {
             var h = heights[i];
             var barY = barBottom - h;
-            var color = (i < filledBars) ? '#000' : '#ccc';
+            // Filled bars use the foreground (white on black bar); empty
+            // bars keep '#ccc' — the "shade" tone carried over from the
+            // light-mode bar design.
+            var color = (i < filledBars) ? '#fff' : '#ccc';
             canvas.drawRect(barX, barY, 1, h, color);
             barX += 2;  // 1px bar + 1px gap
         }
     }
 
     function drawStatusBar(canvas, title) {
-        canvas.drawRect(0, 0, canvas.w, STATUS_BAR_H, '#fff');
-        canvas.drawText(title, PAD_LEFT, 2, '#000');
+        // Black bar background. All foreground elements sit at
+        // STATUS_BAR_PAD_TOP (3px) from the top edge.
+        canvas.drawRect(0, 0, canvas.w, STATUS_BAR_H, '#000');
+        var top = STATUS_BAR_PAD_TOP;
 
-        // Draw 5G signal bars (left side with 2px padding, raised 2px up)
-        drawSignalBars(canvas, 2, -2, signalQuality);
+        canvas.drawText(title, PAD_LEFT, top, '#fff');
 
-        // Draw technology label (5G, LTE, etc.) right of signal bars with 1px gap
-        HaxrcorpFont16.draw(canvas.ctx, accessTech, 12, 0, '#000');
-
-        // Wifi icon (7x7) right of accessTech label, only when connected.
-        // Vertically centered in the 11px bar — (11-7)/2 = 2.
+        // Left-side network indicators are laid out left-to-right, only
+        // showing elements whose underlying interface is present.
+        var leftX = 2;
+        if (modemAvailable) {
+            drawSignalBars(canvas, leftX, top, signalQuality);
+            leftX += 10;  // 5 bars × 1px + 4 gaps × 1px + 1px trailing gap
+            HaxrcorpFont16.draw(canvas.ctx, accessTech, leftX, top, '#fff');
+            leftX += HaxrcorpFont16.textWidth(accessTech) + 2;
+        }
         if (wifiConnected) {
-            var wifiX = 12 + HaxrcorpFont16.textWidth(accessTech) + 2;
-            canvas.drawSprite(wifiIcon(wifiQuality), wifiX, 2, '#000');
+            canvas.drawSprite(wifiIcon(wifiQuality), leftX, top, '#fff');
+            leftX += 7 + 2;  // wifi is 7px wide + 2px gap
+        }
+        if (ethernetConnected) {
+            canvas.drawSprite(Icons.ethernet_statusbar, leftX, top, '#fff');
+            leftX += Icons.ethernet_statusbar.w + 2;
         }
 
-        // Draw time in center
-        var timeStr = formatDateTime();
-        var timeWidth = HaxrcorpFont16.textWidth(timeStr);
-        var timeX = Math.floor((canvas.w - timeWidth) / 2);
-        HaxrcorpFont16.draw(canvas.ctx, timeStr, timeX, 0, '#000');
-
-        // Battery sprite (16x9) + percentage, right-aligned
+        // Battery sprite (16x9) + percentage, right-aligned.
         var pctStr = batteryLevel >= 0 ? batteryLevel + '%' : '--%';
         var batteryW = StatusBarBattery.sprite.w;
         var batteryX = canvas.w - 2 - batteryW;
-        var textX = batteryX - 2 - (pctStr.length * 6);
+        // Right-align so the last glyph ends 1px left of the battery icon,
+        // using the font's actual pixel width (not a 6px-per-char estimate).
+        var textX = batteryX - 1 - HaxrcorpFont16.textWidth(pctStr);
 
-        if (batteryCharging) {
-            var plugX = textX - 7;
-            drawPlugIcon(canvas, plugX, 2);
-        }
+        HaxrcorpFont16.draw(canvas.ctx, pctStr, textX, top - 2, '#fff');
+        var batteryY = top - 1;
+        canvas.drawSprite(StatusBarBattery.sprite, batteryX, batteryY, '#fff');
 
-        HaxrcorpFont16.draw(canvas.ctx, pctStr, textX, 0, '#000');
-        canvas.drawSprite(StatusBarBattery.sprite, batteryX, 1, '#000');
-
-        // Draw battery level bar inside sprite
+        // Battery level bar inside the sprite — offset kept constant
+        // relative to the sprite's top-left.
         var barMaxWidth = 10;
         var barHeight = 5;
-        var barX = 240;  // Fixed position - first pixel of battery level bar
-        var barY = 1 + 3 - 1;  // 3px top padding - 1px (moved up)
+        var barX = 240;
+        var barY = top + 1;  // 2px from sprite top (sprite now at top-1)
         var barWidth = Math.round((barMaxWidth * Math.max(0, batteryLevel)) / 100);
 
         if (barWidth > 0) {
-            canvas.drawRect(barX, barY, barWidth, barHeight, '#000');
+            canvas.drawRect(barX, barY, barWidth, barHeight, '#fff');
+        }
+
+        // Charging bolt overlays the battery icon flush with its
+        // left/top edge. Rendered literally so black stays black, white
+        // stays white, and transparent lets the battery sprite show
+        // through.
+        if (batteryCharging) {
+            canvas.drawSpriteLiteral(Icons.charging_status_bar, batteryX, batteryY);
         }
     }
 

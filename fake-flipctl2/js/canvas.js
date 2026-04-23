@@ -732,6 +732,43 @@ var FlipCanvas = (function() {
         }
     };
 
+    // Paint a 6-bit grayscale sprite using the pixel's own grayscale
+    // value as the output color (0 = black, 62 = near-white, etc.).
+    // Value 63 is the transparency sentinel and is skipped, so this is
+    // suitable for overlays where the canvas underneath must remain
+    // visible around the icon.
+    FlipCanvas.prototype.drawSpriteLiteral = function(sprite, x, y) {
+        if (!sprite || !sprite.d) return;
+        if (!sprite.grayscale || sprite.bitsPerPixel !== 6) return;
+
+        var ctx = this.ctx;
+        var dataIndex = 0;
+
+        for (var row = 0; row < sprite.h; row++) {
+            for (var col = 0; col < sprite.w; col += 4) {
+                var b0 = sprite.d[dataIndex]     || 0;
+                var b1 = sprite.d[dataIndex + 1] || 0;
+                var b2 = sprite.d[dataIndex + 2] || 0;
+                dataIndex += 3;
+
+                var pixels = [
+                    (b0 >> 2) & 0x3F,
+                    (((b0 & 0x03) << 4) | ((b1 >> 4) & 0x0F)) & 0x3F,
+                    (((b1 & 0x0F) << 2) | ((b2 >> 6) & 0x03)) & 0x3F,
+                    b2 & 0x3F
+                ];
+
+                for (var i = 0; i < 4 && col + i < sprite.w; i++) {
+                    var g = pixels[i];
+                    if (g >= 63) continue;  // transparent sentinel
+                    var v = Math.round((g / 63) * 255);
+                    ctx.fillStyle = 'rgb(' + v + ',' + v + ',' + v + ')';
+                    ctx.fillRect(x + col + i, y + row, 1, 1);
+                }
+            }
+        }
+    };
+
     // Draw a single frame of a vertically-stacked sprite strip. The strip
     // describes frame count via `frames`; each frame occupies h/frames rows.
     FlipCanvas.prototype.drawSpriteFrame = function(sprite, x, y, frameIndex, color) {

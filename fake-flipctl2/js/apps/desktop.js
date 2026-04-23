@@ -36,21 +36,6 @@ var DesktopScene = (function() {
         // Initialize message box (will be updated in enter())
         this.messageBox = null;
 
-        // Top-layer responsive frame (32x32, 3px radius on TL/TR/BL, stroked)
-        this.testFrame = new ResponsiveFrame({
-            x: 10,
-            y: 10,
-            width: 32,
-            height: 32,
-            anchorH: 'left',
-            anchorV: 'top',
-            fillColor: '#ffffff',
-            strokeColor: '#000000',
-            showStroke: true,
-            cornerRadius: 3,
-            corners: { tl: true, tr: true, bl: true, br: false }
-        });
-
         // Hostname lines — populated asynchronously via /api/hostname
         this.hostnameLine1 = '';
         this.hostnameLine2 = '';
@@ -152,9 +137,6 @@ var DesktopScene = (function() {
             var btn = this.app_defined_buttons[b];
             if (btn) btn.render(canvas);
         }
-
-        // Top-layer responsive frame (drawn last so it sits above everything)
-        this.testFrame.render(canvas);
     };
 
     return DesktopScene;

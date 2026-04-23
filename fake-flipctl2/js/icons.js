@@ -443,7 +443,48 @@ var Icons = (function() {
         ]
     };
 
+    // ethernet_statusbar icon (auto-generated from PNG)
+    var ethernet_statusbar = {
+        w: 13,
+        h: 7,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0xff,            0xff,            0xc0,            0xff,            0xff,            0xff,            0xfc,            0x0f,            0xff,            0xfc,  // row 0
+            0x00,            0x00,            0xff,            0xf0,            0x3f,            0xff,            0xff,            0xff,            0xff,            0xf0,  // row 1
+            0x3f,            0xfc,            0x00,            0x00,            0xfc,            0x0f,            0xff,            0xff,            0xff,            0xff,  // row 2
+            0xff,            0xff,            0xc0,            0xfc,            0x00,            0x00,            0x03,            0xff,            0xff,            0x03,  // row 3
+            0xf0,            0x3f,            0x03,            0xff,            0xff,            0x00,            0x00,            0x00,            0xfc,            0x0f,  // row 4
+            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xc0,            0xfc,            0x00,            0x00,  // row 5
+            0xff,            0xf0,            0x3f,            0xff,            0xff,            0xff,            0xff,            0xf0,            0x3f,            0xfc,  // row 6
+            0x00,            0x00,            0xff,            0xff,            0xc0,            0xff,            0xff,            0xff,            0xfc,            0x0f,  // row 7
+            0xff,            0xfc,            0x00,            0x00 
+        ]
+    };
+
+    // charging_status_bar icon (auto-generated from PNG)
+    var charging_status_bar = {
+        w: 16,
+        h: 9,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0xff,            0xff,            0xff,            0xff,            0xff,            0xc0,            0xf4,            0x0f,            0xff,            0xff,            0xff,            0xff,  // row 0
+            0xff,            0xff,            0xff,            0xff,            0xf0,            0x3d,            0xf4,            0x0f,            0xff,            0xff,            0xff,            0xff,  // row 1
+            0xff,            0xff,            0xff,            0xfc,            0x0f,            0x7d,            0xf4,            0x0f,            0xff,            0xff,            0xff,            0xff,  // row 2
+            0xff,            0xff,            0xff,            0x03,            0xdf,            0x7d,            0x00,            0x00,            0x3f,            0xff,            0xff,            0xff,  // row 3
+            0xff,            0xff,            0xc0,            0xf7,            0xdf,            0x7d,            0xf7,            0xdf,            0x40,            0xff,            0xff,            0xff,  // row 4
+            0xff,            0xff,            0xc0,            0x00,            0x00,            0x3d,            0xf7,            0xd0,            0x3f,            0xff,            0xff,            0xff,  // row 5
+            0xff,            0xff,            0xff,            0xfc,            0x0f,            0x7d,            0xf4,            0x0f,            0xff,            0xff,            0xff,            0xff,  // row 6
+            0xff,            0xff,            0xff,            0xfc,            0x0f,            0x7d,            0x03,            0xff,            0xff,            0xff,            0xff,            0xff,  // row 7
+            0xff,            0xff,            0xff,            0xfc,            0x0f,            0x40,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff   // row 8
+
+        ]
+    };
+
     return {
+        charging_status_bar: charging_status_bar,
+        ethernet_statusbar: ethernet_statusbar,
         wifi_0: wifi_0,
         wifi_25: wifi_25,
         wifi_50: wifi_50,

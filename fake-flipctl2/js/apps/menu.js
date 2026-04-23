@@ -198,21 +198,6 @@ var MenuScene = (function() {
         }
 
         this.items[this.selectedIndex].state = STATE_SELECTED;
-
-        // Create left button (back to desktop)
-        var self = this;
-        this.leftButton = new UI.LeftButton('Desktop', BTN_W, 'esc', function() {
-            self.sceneManager.pop();
-        });
-
-        // Create right button (open selected menu)
-        this.rightButton = new UI.RightButton('Open', BTN_W, null, null);  // No action, we'll handle it manually
-
-        // Build button action map
-        this.btnActionMap = {};
-        if (this.leftButton && this.leftButton.action) {
-            this.btnActionMap[this.leftButton.action] = this.leftButton;
-        }
     }
 
     MenuScene.prototype.enter = function() {
@@ -232,16 +217,6 @@ var MenuScene = (function() {
     };
 
     MenuScene.prototype.handleInput = function(action) {
-        // Check if action maps to a button
-        var btn = this.btnActionMap[action];
-        if (btn) {
-            var self = this;
-            btn.press();
-            if (btn.onPress) btn.onPress();
-            setTimeout(function() { btn.release(); }, 30);
-            return;
-        }
-
         if (action === 'down') {
             if (this.selectedIndex < this.items.length - 1) {
                 this.items[this.selectedIndex].state = STATE_DEFAULT;
@@ -255,17 +230,10 @@ var MenuScene = (function() {
                 this.items[this.selectedIndex].state = STATE_SELECTED;
             }
         } else if (action === 'ok' || action === 'run') {
-            // Show button feedback
-            var self = this;
-            this.rightButton.press();
-            setTimeout(function() {
-                self.rightButton.release();
-                // Open the submenu after button feedback
-                var factory = subMenus[menuItems[self.selectedIndex]];
-                if (factory) {
-                    self.sceneManager.push(factory(self.sceneManager));
-                }
-            }, 30);
+            var factory = subMenus[menuItems[this.selectedIndex]];
+            if (factory) {
+                this.sceneManager.push(factory(this.sceneManager));
+            }
         } else if (action === 'back' || action === 'esc') {
             return 'pop';
         }
@@ -275,28 +243,13 @@ var MenuScene = (function() {
         canvas.clear('#fff');
         UI.drawStatusBar(canvas, '');
 
-        // Draw breadcrumbs
-        var breadcrumbsY = 12;
-        var breadcrumbsH = 12;
-        canvas.drawRect(0, breadcrumbsY, canvas.w, breadcrumbsH, '#CCCCCC');
-
-        // Draw breadcrumb text "Main menu" centered
-        var breadcrumbText = 'Main menu';
-        var breadcrumbWidth = HaxrcorpFont16.textWidth(breadcrumbText);
-        var breadcrumbX = Math.floor((canvas.w - breadcrumbWidth) / 2);
-        var breadcrumbTextY = breadcrumbsY + Math.floor((breadcrumbsH - 11) / 2);  // Center vertically
-        HaxrcorpFont16.draw(canvas.ctx, breadcrumbText, breadcrumbX, breadcrumbTextY, '#000');
-
-        var startY = breadcrumbsY + breadcrumbsH + 2;
+        // Menu items start just below the status bar (13px) + 2px gap.
+        var startY = 15;
 
         for (var i = 0; i < this.items.length; i++) {
             var y = startY + i * ITEM_H_REGULAR;
             this.items[i].render(canvas, 8, y);
         }
-
-        // Render buttons
-        this.leftButton.render(canvas);
-        this.rightButton.render(canvas);
     };
 
     return MenuScene;
