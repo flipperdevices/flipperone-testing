@@ -91,6 +91,12 @@ var UI = (function() {
         xhr.send();
     }
 
+    // Hysteresis: a single "disconnected" response is ignored. Only flip
+    // to disconnected after 2 consecutive misses (≈4s with the 2s poll).
+    // Protects against any residual transient false-negatives.
+    var wifiDisconnectStreak = 0;
+    var WIFI_DISCONNECT_THRESHOLD = 2;
+
     function pollWifi() {
         var xhr = new XMLHttpRequest();
         xhr.open('GET', '/api/wifi', true);
@@ -99,9 +105,19 @@ var UI = (function() {
             if (xhr.status !== 200) return;
             var data;
             try { data = JSON.parse(xhr.responseText); } catch (e) { return; }
-            wifiConnected = !!data.connected;
-            wifiQuality = typeof data.quality === 'number' ? data.quality : 0;
-            wifiSSID = typeof data.ssid === 'string' ? data.ssid : '';
+            if (data.connected) {
+                wifiConnected = true;
+                wifiDisconnectStreak = 0;
+                wifiQuality = typeof data.quality === 'number' ? data.quality : wifiQuality;
+                wifiSSID = typeof data.ssid === 'string' && data.ssid ? data.ssid : wifiSSID;
+            } else {
+                wifiDisconnectStreak++;
+                if (wifiDisconnectStreak >= WIFI_DISCONNECT_THRESHOLD) {
+                    wifiConnected = false;
+                    wifiQuality = 0;
+                    wifiSSID = '';
+                }
+            }
         };
         xhr.send();
     }

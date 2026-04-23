@@ -550,27 +550,90 @@ function serveStatic(req, res) {
     });
 }
 
-// Parses `nmcli -t -f IN-USE,SIGNAL dev wifi` — the row marked with `*` is the
-// active connection. SIGNAL is already a 0-100 quality value.
+// Wi-Fi connection info.
+//
+// Previously parsed `nmcli dev wifi` (the scan list) and relied on the
+// IN-USE `*` marker. That list is unstable — background rescans, roaming,
+// and cache refreshes briefly drop the `*` row, which looked like
+// disconnections in the UI.
+//
+// New approach: query the active connection state directly. `nmcli c show
+// --active` reflects NetworkManager's state machine, not the scan list,
+// so it doesn't flap during rescans. If an 802-11-wireless connection is
+// activated, we're connected; then fetch signal via `iw dev link` which
+// reads kernel-side link state (also not tied to scan cache).
 function getWifiInfo() {
     try {
-        var raw = execSync('nmcli -t -f IN-USE,SSID,SIGNAL dev wifi', { encoding: 'utf8', timeout: 2000 });
-        var lines = raw.split('\n');
+        var active = execSync('nmcli -t -f NAME,TYPE,STATE c show --active',
+            { encoding: 'utf8', timeout: 2000 });
+        var wifiName = null;
+        var lines = active.split('\n');
         for (var i = 0; i < lines.length; i++) {
             var line = lines[i];
-            if (!line || line[0] !== '*') continue;
-            // nmcli -t escapes inner colons as "\:"; protect them while
-            // splitting, then restore. Fields: IN-USE, SSID, SIGNAL.
+            if (!line) continue;
             var parts = line
                 .replace(/\\:/g, '\x01')
                 .split(':')
                 .map(function(p) { return p.replace(/\x01/g, ':'); });
-            var ssid = parts[1] || '';
-            var signal = parseInt(parts[2], 10);
-            if (isNaN(signal)) continue;
-            var quality = Math.max(0, Math.min(100, signal));
-            return { connected: true, quality: quality, ssid: ssid };
+            if (parts[1] === '802-11-wireless' && parts[2] === 'activated') {
+                wifiName = parts[0] || '';
+                break;
+            }
         }
+        if (!wifiName) return { connected: false, quality: 0, ssid: '' };
+
+        // Connected. Find the device bound to this connection, then query
+        // kernel-side link signal via `iw`.
+        var ssid = wifiName;
+        var quality = 0;
+        try {
+            var dev = execSync(
+                'nmcli -t -f GENERAL.DEVICE,GENERAL.TYPE,GENERAL.CONNECTION d show',
+                { encoding: 'utf8', timeout: 2000 });
+            var iface = null;
+            var blocks = dev.split(/\n(?=GENERAL\.DEVICE:)/);
+            var escName = wifiName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            for (var b = 0; b < blocks.length; b++) {
+                if (/GENERAL\.TYPE:wifi/.test(blocks[b]) &&
+                    new RegExp('GENERAL\\.CONNECTION:' + escName).test(blocks[b])) {
+                    var m = blocks[b].match(/GENERAL\.DEVICE:([^\n]+)/);
+                    if (m) iface = m[1];
+                    break;
+                }
+            }
+            if (iface) {
+                var link = execSync('iw dev ' + iface + ' link',
+                    { encoding: 'utf8', timeout: 1500 });
+                var ssidM = link.match(/SSID:\s*(.+)/);
+                if (ssidM) ssid = ssidM[1].trim();
+                var sigM = link.match(/signal:\s*(-?\d+)\s*dBm/);
+                if (sigM) {
+                    // dBm → 0-100 quality. -50 ≈ 100, -100 ≈ 0.
+                    var dbm = parseInt(sigM[1], 10);
+                    quality = Math.max(0, Math.min(100, 2 * (dbm + 100)));
+                }
+            }
+        } catch (e) { /* iw missing; fall back */ }
+
+        // Fallback: grab signal from the scan list if iw didn't work.
+        if (quality === 0) {
+            try {
+                var scan = execSync('nmcli -t -f IN-USE,SSID,SIGNAL dev wifi',
+                    { encoding: 'utf8', timeout: 2000 });
+                var sl = scan.split('\n');
+                for (var j = 0; j < sl.length; j++) {
+                    if (!sl[j] || sl[j][0] !== '*') continue;
+                    var sp = sl[j].replace(/\\:/g, '\x01').split(':').map(
+                        function(p) { return p.replace(/\x01/g, ':'); });
+                    var s = parseInt(sp[2], 10);
+                    if (!isNaN(s)) quality = Math.max(0, Math.min(100, s));
+                    if (sp[1]) ssid = sp[1];
+                    break;
+                }
+            } catch (e) { /* keep defaults */ }
+        }
+
+        return { connected: true, quality: quality, ssid: ssid };
     } catch (e) { /* nmcli missing or failed */ }
     return { connected: false, quality: 0, ssid: '' };
 }
