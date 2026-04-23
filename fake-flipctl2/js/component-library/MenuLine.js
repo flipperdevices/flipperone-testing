@@ -136,21 +136,37 @@ var MenuLine = (function() {
                 ? textColor
                 : (active ? '#000' : '#999999');
             if (status === '< ON >' || status === '< OFF >') {
-                // Inherit the original layout: < centred OFF/ON >
-                var ltW   = statusFont.textWidth('<');
-                var midW  = statusFont.textWidth('OFF');
-                var gtW   = statusFont.textWidth('>');
-                var spacing = 15;
-                var rightX = x + this.w - STATUS_PAD_R;
-                var gtX    = rightX - gtW;
-                var ltX    = gtX - spacing - midW - spacing - ltW;
+                // Toggle-style status: show the `< value >` layout only
+                // while the row is highlighted (SELECTED or PRESSED) —
+                // the arrows are an affordance for the left/right
+                // keys, which only apply to the focused row. When not
+                // highlighted, collapse to just the value word, right-
+                // aligned like any other status string.
                 var midTxt = status === '< ON >' ? 'ON' : 'OFF';
-                var midBase = ltX + ltW + spacing;
-                var midTxtW = statusFont.textWidth(midTxt);
-                var midX   = Math.floor(midBase + (midW - midTxtW) / 2);
-                statusFont.draw(canvas.ctx, '<',     ltX,  textY, statusColor);
-                statusFont.draw(canvas.ctx, midTxt,  midX, textY, statusColor);
-                statusFont.draw(canvas.ctx, '>',     gtX,  textY, statusColor);
+                if (active) {
+                    var ltW   = statusFont.textWidth('<');
+                    var midW  = statusFont.textWidth('OFF');
+                    var gtW   = statusFont.textWidth('>');
+                    var spacing = 15;
+                    var rightX = x + this.w - STATUS_PAD_R;
+                    var gtX    = rightX - gtW;
+                    var ltX    = gtX - spacing - midW - spacing - ltW;
+                    var midBase = ltX + ltW + spacing;
+                    var midTxtW = statusFont.textWidth(midTxt);
+                    var midX    = Math.floor(midBase + (midW - midTxtW) / 2);
+                    // Arrow press feedback: when the scene flags this
+                    // line's `arrowPressed = 'left'|'right'`, the
+                    // corresponding chevron renders in #222222 as a
+                    // tap indicator.
+                    var ltColor = this.arrowPressed === 'left'  ? '#222222' : statusColor;
+                    var gtColor = this.arrowPressed === 'right' ? '#222222' : statusColor;
+                    statusFont.draw(canvas.ctx, '<',     ltX,  textY, ltColor);
+                    statusFont.draw(canvas.ctx, midTxt,  midX, textY, statusColor);
+                    statusFont.draw(canvas.ctx, '>',     gtX,  textY, gtColor);
+                } else {
+                    var dimW = statusFont.textWidth(midTxt);
+                    statusFont.draw(canvas.ctx, midTxt, x + this.w - dimW - STATUS_PAD_R, textY, statusColor);
+                }
             } else {
                 var sw = statusFont.textWidth(status);
                 statusFont.draw(canvas.ctx, status, x + this.w - sw - STATUS_PAD_R, textY, statusColor);

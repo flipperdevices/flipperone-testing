@@ -106,7 +106,28 @@ var SubMenuScene = (function() {
     SubMenuScene.prototype.handleInput = function(action) {
         var n = this.items.length;
 
-        // Left/right toggle for the special Fake-FlipCTL_2 row.
+        // Left/right toggle: any row whose MenuLine defines `onToggle`
+        // (set by the submenu's owner at construction time).
+        var selectedItem = this.items[this.selectedIndex];
+        if ((action === 'left' || action === 'right') && typeof selectedItem.onToggle === 'function') {
+            selectedItem.onToggle();
+            // Visual tap feedback on the pressed chevron — 120ms in
+            // #222222, then reverts to the normal status colour. 120ms
+            // is long enough to be visible past the rAF cadence and
+            // the 200ms animation tick.
+            selectedItem.arrowPressed = action;
+            if (window.requestRender) window.requestRender();
+            setTimeout(function() {
+                if (selectedItem.arrowPressed === action) {
+                    selectedItem.arrowPressed = null;
+                    if (window.requestRender) window.requestRender();
+                }
+            }, 120);
+            return;
+        }
+
+        // Legacy Fake-FlipCTL_2 toggle (pre-dates `onToggle`; kept for
+        // the Testing submenu's status-string-based entry).
         var selectedItemName = this.itemNames[this.selectedIndex];
         if ((action === 'left' || action === 'right') && selectedItemName === 'Fake-FlipCTL_2') {
             this.toggleState['Fake-FlipCTL_2'] = !this.toggleState['Fake-FlipCTL_2'];
@@ -125,14 +146,23 @@ var SubMenuScene = (function() {
             this.items[this.selectedIndex].state = MenuLine.STATE_SELECTED;
             this._ensureVisible();
         } else if (action === 'ok' || action === 'run') {
-            // 30ms press flash then open the factory-returned scene.
+            // Toggle rows flip their value on enter — no press flash,
+            // no scene push (same behaviour as left/right).
+            var pressedLine = this.items[this.selectedIndex];
+            if (typeof pressedLine.onToggle === 'function') {
+                pressedLine.onToggle();
+                if (window.requestRender) window.requestRender();
+                return;
+            }
+
+            // Regular rows: 30ms press flash, then open the
+            // factory-returned scene.
             var self = this;
             var idx = this.selectedIndex;
-            var line = this.items[idx];
-            line.state = MenuLine.STATE_PRESSED;
+            pressedLine.state = MenuLine.STATE_PRESSED;
             if (window.requestRender) window.requestRender();
             setTimeout(function() {
-                line.state = MenuLine.STATE_SELECTED;
+                pressedLine.state = MenuLine.STATE_SELECTED;
                 var factory = self.appScenes[self.itemNames[idx]];
                 if (factory) {
                     var next = factory();

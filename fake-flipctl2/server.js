@@ -575,11 +575,52 @@ function getWifiInfo() {
     return { connected: false, quality: 0, ssid: '' };
 }
 
+function getAirplaneMode() {
+    try {
+        var raw = execSync('nmcli -t -f WIFI,WWAN radio', { encoding: 'utf8', timeout: 2000 });
+        var line = raw.split('\n').find(function(l) { return l; }) || '';
+        var parts = line.split(':');
+        var wifi = parts[0] || '';
+        var wwan = parts[1] || '';
+        // Airplane mode is "on" when every managed radio is disabled.
+        return { enabled: wifi === 'disabled' && wwan === 'disabled' };
+    } catch (e) { /* nmcli missing */ }
+    return { enabled: false };
+}
+
+function setAirplaneMode(enabled) {
+    try {
+        execSync('nmcli radio all ' + (enabled ? 'off' : 'on'), { encoding: 'utf8', timeout: 3000 });
+        return { ok: true };
+    } catch (e) {
+        return { ok: false, error: String(e && e.message || e) };
+    }
+}
+
 var server = http.createServer(function(req, res) {
     if (req.url === '/api/wifi') {
         var wifi = getWifiInfo();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(wifi));
+        return;
+    }
+    if (req.url === '/api/airplane' && req.method === 'GET') {
+        var a = getAirplaneMode();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(a));
+        return;
+    }
+    if (req.url === '/api/airplane' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            if (err) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Invalid request' }));
+                return;
+            }
+            var result = setAirplaneMode(!!(data && data.enabled));
+            res.writeHead(result.ok ? 200 : 500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(Object.assign({ enabled: !!(data && data.enabled) }, result)));
+        });
         return;
     }
     if (req.url === '/api/power') {

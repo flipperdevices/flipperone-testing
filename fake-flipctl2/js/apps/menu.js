@@ -46,6 +46,7 @@ var MenuScene = (function() {
 
     function networkMenu(sm) {
         var subMenu = new SubMenuScene(sm, 'Network', [
+            'Airplane mode',
             'Routing info',
             '5G Modem',
             'Wi-Fi',
@@ -54,16 +55,23 @@ var MenuScene = (function() {
             'Routing info': function() { return new RoutingScene(); },
             '5G Modem': function() { return new Modem5gScene(); },
             'Ethernet': function() { return new EthernetScene(); }
+            // 'Airplane mode' has no factory — it's a toggle (see below).
         });
 
         var iconMap = {
             'Routing info': Icons.info_icon,
             '5G Modem': Icons.modem_5g,
             'Wi-Fi': Icons.wifi,
-            'Ethernet': Icons.ethernet
+            'Ethernet': Icons.ethernet,
+            'Airplane mode': Icons.airplane_mode
+        };
+        var animatedIconMap = {
+            'Airplane mode': AnimatedIcons.airplane_mode_animated
         };
         for (var i = 0; i < subMenu.items.length; i++) {
-            subMenu.items[i].icon = iconMap[subMenu.items[i].text];
+            var name = subMenu.items[i].text;
+            subMenu.items[i].icon = iconMap[name] || null;
+            subMenu.items[i].iconAnimated = animatedIconMap[name] || null;
         }
 
         // Wi-Fi row shows the current SSID, or "not connected" — pulled
@@ -74,6 +82,23 @@ var MenuScene = (function() {
                     var w = UI.getWifiInfo();
                     if (!w.connected) return 'not connected';
                     return w.ssid || 'connected';
+                };
+                break;
+            }
+        }
+
+        // Airplane mode: a live ON/OFF toggle wired to the real device
+        // state via UI.getAirplaneMode / UI.setAirplaneMode. The setter
+        // optimistically updates local state and calls the server; the
+        // 3s poll reconciles if anything drifts.
+        for (var k = 0; k < subMenu.items.length; k++) {
+            if (subMenu.items[k].text === 'Airplane mode') {
+                var line = subMenu.items[k];
+                line.statusProvider = function() {
+                    return UI.getAirplaneMode() ? '< ON >' : '< OFF >';
+                };
+                line.onToggle = function() {
+                    UI.setAirplaneMode(!UI.getAirplaneMode());
                 };
                 break;
             }

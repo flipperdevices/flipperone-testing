@@ -14,6 +14,7 @@ var UI = (function() {
     var wifiQuality = 0;     // 0-100
     var wifiSSID = '';
     var ethernetConnected = false;
+    var airplaneEnabled = false;
 
     function pollBattery() {
         var xhr = new XMLHttpRequest();
@@ -109,6 +110,43 @@ var UI = (function() {
         return { connected: wifiConnected, quality: wifiQuality, ssid: wifiSSID };
     }
 
+    function pollAirplane() {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', '/api/airplane', true);
+        xhr.timeout = 3000;
+        xhr.onload = function() {
+            if (xhr.status !== 200) return;
+            try {
+                var data = JSON.parse(xhr.responseText);
+                airplaneEnabled = !!data.enabled;
+            } catch (e) { /* ignore */ }
+        };
+        xhr.send();
+    }
+
+    function getAirplaneMode() {
+        return airplaneEnabled;
+    }
+
+    function setAirplaneMode(enabled) {
+        // Optimistically update local state so the UI reflects the
+        // change immediately; the 3s poller will reconcile if the
+        // server call fails or produces a different result.
+        airplaneEnabled = !!enabled;
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/airplane', true);
+        xhr.timeout = 3000;
+        xhr.setRequestHeader('Content-Type', 'application/json');
+        xhr.onload = function() {
+            if (xhr.status !== 200) return;
+            try {
+                var data = JSON.parse(xhr.responseText);
+                if (typeof data.enabled === 'boolean') airplaneEnabled = data.enabled;
+            } catch (e) { /* ignore */ }
+        };
+        xhr.send(JSON.stringify({ enabled: airplaneEnabled }));
+    }
+
     function wifiIcon(quality) {
         // Map quality (0-100) to the five icon variants.
         if (quality >= 80) return Icons.wifi_100;
@@ -133,6 +171,10 @@ var UI = (function() {
     // Poll ethernet every 2 seconds
     pollEthernet();
     setInterval(pollEthernet, 2000);
+
+    // Poll airplane-mode state every 3 seconds.
+    pollAirplane();
+    setInterval(pollAirplane, 3000);
 
     function formatDateTime() {
         var now = new Date();
@@ -628,6 +670,8 @@ var UI = (function() {
         DeleteConfirmDialog: DeleteConfirmDialog,
         Scrollbar:      Scrollbar,
         getWifiInfo:    getWifiInfo,
+        getAirplaneMode: getAirplaneMode,
+        setAirplaneMode: setAirplaneMode,
         STATUS_BAR_H:   STATUS_BAR_H,
         ITEM_H:         ITEM_H,
         PAD_LEFT:       PAD_LEFT
