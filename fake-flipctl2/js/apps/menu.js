@@ -26,8 +26,14 @@ var MenuScene = (function() {
     var SELECTOR_X = 10;
     var SELECTOR_W = 232;
     var SELECTOR_H = 22;
+    var SELECTOR_CORNER_R = 3;
     // Vertical offset: centres the 22px frame over the 20px line.
     var SELECTOR_Y_OFFSET = -1;
+
+    // Gray divider spans the selector frame's straight top/bottom edge
+    // (selector width − 2× rounded-corner radius), aligned to it.
+    var DIVIDER_X = SELECTOR_X + SELECTOR_CORNER_R;
+    var DIVIDER_W = SELECTOR_W - 2 * SELECTOR_CORNER_R;
 
     var menuItems = [
         'Router',
@@ -58,6 +64,19 @@ var MenuScene = (function() {
         };
         for (var i = 0; i < subMenu.items.length; i++) {
             subMenu.items[i].icon = iconMap[subMenu.items[i].text];
+        }
+
+        // Wi-Fi row shows the current SSID, or "not connected" — pulled
+        // live from the UI polling state each render.
+        for (var j = 0; j < subMenu.items.length; j++) {
+            if (subMenu.items[j].text === 'Wi-Fi') {
+                subMenu.items[j].statusProvider = function() {
+                    var w = UI.getWifiInfo();
+                    if (!w.connected) return 'not connected';
+                    return w.ssid || 'connected';
+                };
+                break;
+            }
         }
 
         return subMenu;
@@ -115,17 +134,18 @@ var MenuScene = (function() {
         this.items = [];
 
         var iconMap = {
-            'Network': Icons.network,
-            'Testing': Icons.testing,
             'Settings': Icons.system,
             'Router':   Icons.router
-            // 'Files' / 'Apps' have no static icon — they fall back to
-            // frame 0 of their animated strip while unselected.
+            // 'Network' / 'Files' / 'Apps' / 'Testing' have no static
+            // icon — they fall back to frame 0 of their animated strip
+            // while unselected.
         };
         var animatedIconMap = {
             'Settings': AnimatedIcons.settings_animated,
             'Files':    AnimatedIcons.files_animated,
-            'Apps':     AnimatedIcons.apps_animated
+            'Apps':     AnimatedIcons.apps_animated,
+            'Network':  AnimatedIcons.network_animated,
+            'Testing':  AnimatedIcons.testing_animated
         };
 
         for (var i = 0; i < menuItems.length; i++) {
@@ -231,7 +251,7 @@ var MenuScene = (function() {
             this.items[i].render(canvas, CONTAINER_X, y);
             y += MenuLine.H;
             if (i < last - 1) {
-                canvas.drawHLine(CONTAINER_X, y, CONTAINER_W, DIVIDER_COLOR);
+                canvas.drawHLine(DIVIDER_X, y, DIVIDER_W, DIVIDER_COLOR);
                 y += 1;
             }
         }

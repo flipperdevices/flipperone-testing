@@ -554,18 +554,25 @@ function serveStatic(req, res) {
 // active connection. SIGNAL is already a 0-100 quality value.
 function getWifiInfo() {
     try {
-        var raw = execSync('nmcli -t -f IN-USE,SIGNAL dev wifi', { encoding: 'utf8', timeout: 2000 });
+        var raw = execSync('nmcli -t -f IN-USE,SSID,SIGNAL dev wifi', { encoding: 'utf8', timeout: 2000 });
         var lines = raw.split('\n');
         for (var i = 0; i < lines.length; i++) {
             var line = lines[i];
             if (!line || line[0] !== '*') continue;
-            var signal = parseInt(line.split(':')[1], 10);
+            // nmcli -t escapes inner colons as "\:"; protect them while
+            // splitting, then restore. Fields: IN-USE, SSID, SIGNAL.
+            var parts = line
+                .replace(/\\:/g, '\x01')
+                .split(':')
+                .map(function(p) { return p.replace(/\x01/g, ':'); });
+            var ssid = parts[1] || '';
+            var signal = parseInt(parts[2], 10);
             if (isNaN(signal)) continue;
             var quality = Math.max(0, Math.min(100, signal));
-            return { connected: true, quality: quality };
+            return { connected: true, quality: quality, ssid: ssid };
         }
     } catch (e) { /* nmcli missing or failed */ }
-    return { connected: false, quality: 0 };
+    return { connected: false, quality: 0, ssid: '' };
 }
 
 var server = http.createServer(function(req, res) {

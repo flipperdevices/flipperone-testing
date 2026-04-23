@@ -12,6 +12,7 @@ var UI = (function() {
     var accessTech = '--';  // Technology: 5G, LTE, 3G, etc.
     var wifiConnected = false;
     var wifiQuality = 0;     // 0-100
+    var wifiSSID = '';
     var ethernetConnected = false;
 
     function pollBattery() {
@@ -99,8 +100,13 @@ var UI = (function() {
             try { data = JSON.parse(xhr.responseText); } catch (e) { return; }
             wifiConnected = !!data.connected;
             wifiQuality = typeof data.quality === 'number' ? data.quality : 0;
+            wifiSSID = typeof data.ssid === 'string' ? data.ssid : '';
         };
         xhr.send();
+    }
+
+    function getWifiInfo() {
+        return { connected: wifiConnected, quality: wifiQuality, ssid: wifiSSID };
     }
 
     function wifiIcon(quality) {
@@ -621,6 +627,7 @@ var UI = (function() {
         InputField:     InputField,
         DeleteConfirmDialog: DeleteConfirmDialog,
         Scrollbar:      Scrollbar,
+        getWifiInfo:    getWifiInfo,
         STATUS_BAR_H:   STATUS_BAR_H,
         ITEM_H:         ITEM_H,
         PAD_LEFT:       PAD_LEFT

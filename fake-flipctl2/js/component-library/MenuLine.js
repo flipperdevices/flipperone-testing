@@ -18,8 +18,8 @@
 var MenuLine = (function() {
     var ICON_PAD      = 3;    // icon inset from left/top/bottom
     var TEXT_GAP      = 4;    // gap between icon and text
-    var TEXT_DRAW_Y   = 2;    // draw y (inside the line) so cap top lands at 5
-    var STATUS_PAD_R  = 3;    // right padding for status text
+    var TEXT_DRAW_Y   = 3;    // draw y (inside the line) so cap top lands at 6
+    var STATUS_PAD_R  = 5;    // right padding for status text
     var H             = 20;   // fixed line height (14px icon + 3+3 padding)
     var FRAME_MS      = 200;  // 5 fps animated-icon cadence
     var DEFAULT_W     = 224;
@@ -36,6 +36,10 @@ var MenuLine = (function() {
         this.icon          = options.icon || null;
         this.iconAnimated  = options.iconAnimated || null;
         this.status        = options.status || null;
+        // Optional callback: called in render() to produce a fresh
+        // status string each frame (e.g. live Wi-Fi SSID). Return
+        // falsy to suppress the status.
+        this.statusProvider = options.statusProvider || null;
         this.state         = options.state || STATE_DEFAULT;
     }
 
@@ -113,33 +117,43 @@ var MenuLine = (function() {
             textLeft = iconX + iconSource.w + TEXT_GAP;
         }
 
-        // Default state uses BusyFont9; active lines (SELECTED or
-        // PRESSED) switch to Born2bSportyV2Medium. Status text follows
-        // the same swap.
-        var font = active ? Born2bSportyV2Medium : BusyFont9;
+        // Label font swaps: BusyFont9 in DEFAULT, Born2bSportyV2Medium
+        // in SELECTED/PRESSED. Status text is different — it always
+        // stays on BusyFont9 so the row's right-side info keeps the
+        // same typographic weight across states; only its *colour*
+        // changes with the state.
+        var font       = active ? Born2bSportyV2Medium : BusyFont9;
+        var statusFont = BusyFont9;
         var textY = y + TEXT_DRAW_Y;
         font.draw(canvas.ctx, this.text, textLeft, textY, textColor);
 
-        if (this.status) {
-            if (this.status === '< ON >' || this.status === '< OFF >') {
+        var status = this.statusProvider ? this.statusProvider() : this.status;
+        if (status) {
+            // Status text is dimmer than the label when the row isn't
+            // highlighted: #999 in DEFAULT, #000 in SELECTED, inherits
+            // white from `textColor` in PRESSED.
+            var statusColor = this.state === STATE_PRESSED
+                ? textColor
+                : (active ? '#000' : '#999999');
+            if (status === '< ON >' || status === '< OFF >') {
                 // Inherit the original layout: < centred OFF/ON >
-                var ltW   = font.textWidth('<');
-                var midW  = font.textWidth('OFF');
-                var gtW   = font.textWidth('>');
+                var ltW   = statusFont.textWidth('<');
+                var midW  = statusFont.textWidth('OFF');
+                var gtW   = statusFont.textWidth('>');
                 var spacing = 15;
                 var rightX = x + this.w - STATUS_PAD_R;
                 var gtX    = rightX - gtW;
                 var ltX    = gtX - spacing - midW - spacing - ltW;
-                var midTxt = this.status === '< ON >' ? 'ON' : 'OFF';
+                var midTxt = status === '< ON >' ? 'ON' : 'OFF';
                 var midBase = ltX + ltW + spacing;
-                var midTxtW = font.textWidth(midTxt);
+                var midTxtW = statusFont.textWidth(midTxt);
                 var midX   = Math.floor(midBase + (midW - midTxtW) / 2);
-                font.draw(canvas.ctx, '<',     ltX,  textY, textColor);
-                font.draw(canvas.ctx, midTxt,  midX, textY, textColor);
-                font.draw(canvas.ctx, '>',     gtX,  textY, textColor);
+                statusFont.draw(canvas.ctx, '<',     ltX,  textY, statusColor);
+                statusFont.draw(canvas.ctx, midTxt,  midX, textY, statusColor);
+                statusFont.draw(canvas.ctx, '>',     gtX,  textY, statusColor);
             } else {
-                var sw = font.textWidth(this.status);
-                font.draw(canvas.ctx, this.status, x + this.w - sw - STATUS_PAD_R, textY, textColor);
+                var sw = statusFont.textWidth(status);
+                statusFont.draw(canvas.ctx, status, x + this.w - sw - STATUS_PAD_R, textY, statusColor);
             }
         }
     };

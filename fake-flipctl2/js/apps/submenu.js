@@ -1,86 +1,38 @@
 var SubMenuScene = (function() {
-    var FONT_H = 11;
-    var PAD_X = 6;
-    var RADIUS = 2;
-    var ITEM_W = 240;
-    var ITEM_H_REGULAR = 19;
-    var ITEM_H_LAST = 18;
-    var BTN_W = 48;
+    // Layout mirrors the main menu (see MenuScene in menu.js) — same
+    // MenuLine geometry, same selector frame behaviour, same scrollbar
+    // — but the submenu has its own container anchor and a narrower
+    // left margin. The icon's left edge must sit 8px from the canvas
+    // left; since the MenuLine's built-in ICON_PAD is 3, that puts the
+    // container at x = 8 - 3 = 5.
+    //   - container x:           5 (icon lands at x=8)
+    //   - container top:         14px below the status bar
+    //   - selector frame x:      4 (canvas-left padding)
+    var CONTAINER_X = 5;
+    var CONTAINER_W = 224;
+    var DIVIDER_COLOR = '#CCCCCC';
+    var ANIMATED_ICON_FRAME_MS = 200;
 
-    var STATE_DEFAULT = 'default';
-    var STATE_SELECTED = 'selected';
-    var STATE_PRESSED = 'pressed';
+    var VISIBLE_COUNT = 5;
+    var VIEWPORT_H   = VISIBLE_COUNT * MenuLine.H + (VISIBLE_COUNT - 1);  // 104
 
-    function MenuItem(text, isLast, icon, status) {
-        this.text = text;
-        this.w = ITEM_W;
-        this.h = isLast ? ITEM_H_LAST : ITEM_H_REGULAR;
-        this.state = STATE_DEFAULT;
-        this.icon = icon || null;
-        this.isLast = isLast || false;
-        this.status = status || null;
-    }
+    var SELECTOR_X = 4;
+    // Selector width depends on scrollbar visibility. When the list is
+    // long enough to show the scrollbar, leave room for it (244). When
+    // it isn't, the selector extends further right to leave 5px of
+    // spacing between its right edge and the canvas right edge
+    // (`canvas.w − SELECTOR_X − 5 = 247`).
+    var SELECTOR_W_WITH_SCROLL = 244;
+    var SELECTOR_W_NO_SCROLL   = 247;
+    var SELECTOR_H = 22;
+    var SELECTOR_CORNER_R = 3;
+    var SELECTOR_Y_OFFSET = -1;
 
-    MenuItem.prototype.render = function(canvas, x, y) {
-        var textColor = '#000';
-        var iconColor = '#000';
-
-        if (this.state === STATE_DEFAULT) {
-            if (!this.isLast) {
-                canvas.drawHLine(x + 2, y + this.h - 1, this.w - 4, '#EDEDED');
-            }
-        } else if (this.state === STATE_SELECTED) {
-            canvas.drawRoundFrame(x, y - 1, this.w, this.h + 1, RADIUS, '#000');
-        } else if (this.state === STATE_PRESSED) {
-            canvas.drawRoundRect(x, y - 1, this.w, this.h + 1, RADIUS, '#000');
-            textColor = '#fff';
-            iconColor = '#fff';
-        }
-
-        var verticalPadding = Math.floor((this.h - FONT_H) / 2);
-
-        if (this.icon) {
-            var iconX = x + PAD_X;
-            var iconY = y + Math.floor((this.h - this.icon.h) / 2);
-            // Use drawSprite for grayscale icons, drawIcon for binary icons
-            if (this.icon.grayscale) {
-                canvas.drawSprite(this.icon, iconX, iconY, iconColor);
-            } else {
-                canvas.drawIcon(this.icon, iconX, iconY, iconColor);
-            }
-        }
-
-        var textX = this.icon ? x + PAD_X + 14 + 4 : x + PAD_X;
-        var textY = y + verticalPadding;
-        HaxrcorpFont16.draw(canvas.ctx, this.text, textX, textY, textColor);
-
-        // Draw status text on the right if available
-        if (this.status) {
-            // For Fake-FlipCTL_2, render with custom spacing
-            if (this.status === '< ON >' || this.status === '< OFF >') {
-                var ltWidth = HaxrcorpFont16.textWidth('<');
-                var maxMiddleWidth = HaxrcorpFont16.textWidth('OFF');  // Use longest text width
-                var gtWidth = HaxrcorpFont16.textWidth('>');
-                var spacing = 15;
-
-                var rightX = x + this.w - PAD_X;
-                var gtX = rightX - gtWidth;
-                var ltX = gtX - spacing - maxMiddleWidth - spacing - ltWidth;
-                var middleText = this.status === '< ON >' ? 'ON' : 'OFF';
-                var middleBaseX = ltX + ltWidth + spacing;
-                var middleTextWidth = HaxrcorpFont16.textWidth(middleText);
-                var middleX = Math.floor(middleBaseX + (maxMiddleWidth - middleTextWidth) / 2);
-
-                HaxrcorpFont16.draw(canvas.ctx, '<', ltX, textY, textColor);
-                HaxrcorpFont16.draw(canvas.ctx, middleText, middleX, textY, textColor);
-                HaxrcorpFont16.draw(canvas.ctx, '>', gtX, textY, textColor);
-            } else {
-                var statusWidth = HaxrcorpFont16.textWidth(this.status);
-                var statusX = x + this.w - statusWidth - PAD_X;
-                HaxrcorpFont16.draw(canvas.ctx, this.status, statusX, textY, textColor);
-            }
-        }
-    };
+    // Scrollbar spans the full menu column (matches main menu).
+    var SCROLLBAR_X = 253;
+    var SCROLLBAR_Y = 15;
+    var SCROLLBAR_H = 127;
+    var SCROLLBAR_THUMB_PAD = 1;
 
     function SubMenuScene(sceneManager, title, items, appScenes) {
         this.sceneManager = sceneManager;
@@ -88,63 +40,73 @@ var SubMenuScene = (function() {
         this.itemNames = items;
         this.appScenes = appScenes || {};
         this.selectedIndex = 0;
-        this.items = [];
         this.scrollOffset = 0;
+        this.items = [];
         this.toggleState = {
-            'Fake-FlipCTL_2': true  // true = ON, false = OFF
+            'Fake-FlipCTL_2': true
         };
 
-        // Viewport dimensions for scrolling
-        this.viewportY = 26;  // Below breadcrumbs (12px) + padding (2px)
-        this.viewportH = 144 - 26 - 18;  // Screen height - breadcrumbs - button area
-        this.visibleItems = Math.floor(this.viewportH / ITEM_H_REGULAR);
+        // Container top sits 14px below the status bar per spec.
+        // Breadcrumb is a single left-aligned "> Title" string, 4px
+        // from the canvas left and 4px below the status bar.
+        this.containerY   = UI.STATUS_BAR_H + 14;
+        this.breadcrumbX  = 4;
+        this.breadcrumbY  = UI.STATUS_BAR_H + 2;
 
-        // Create scrollbar
-        this.scrollbar = new UI.Scrollbar(items.length, this.visibleItems, this.scrollOffset);
-
-        // Create menu items
         for (var i = 0; i < items.length; i++) {
-            var isLast = (i === items.length - 1);
             var status = null;
             if (items[i] === 'Fake-FlipCTL_2') {
                 status = this.toggleState['Fake-FlipCTL_2'] ? '< ON >' : '< OFF >';
             }
-            this.items.push(new MenuItem(items[i], isLast, null, status));
+            this.items.push(new MenuLine({
+                text: items[i],
+                width: CONTAINER_W,
+                status: status
+            }));
         }
 
-        this.items[this.selectedIndex].state = STATE_SELECTED;
+        this.items[this.selectedIndex].state = MenuLine.STATE_SELECTED;
 
-        // Create left button (back to desktop)
-        var self = this;
-        this.leftButton = new UI.LeftButton('Desktop', BTN_W, 'esc', function() {
-            self.sceneManager.popToRoot();
+        this.selectorFrame = new MenuSelectorFrame({
+            x: SELECTOR_X,
+            y: 0,
+            width: SELECTOR_W_WITH_SCROLL,  // updated per-frame based on scrollbar visibility
+            height: SELECTOR_H,
+            anchorH: 'left',
+            anchorV: 'top',
+            strokeColor: '#000',
+            showStroke: true,
+            showFill: false
         });
 
-        // Create right button (open selected item)
-        this.rightButton = new UI.RightButton('Open', BTN_W, null, null);  // No action, we'll handle it manually
-
-        // Build button action map
-        this.btnActionMap = {};
-        if (this.leftButton && this.leftButton.action) {
-            this.btnActionMap[this.leftButton.action] = this.leftButton;
-        }
+        this.scrollbar = new UI.Scrollbar(items.length, VISIBLE_COUNT, this.scrollOffset);
     }
 
-    SubMenuScene.prototype.enter = function() {};
-    SubMenuScene.prototype.exit = function() {};
+    SubMenuScene.prototype.enter = function() {
+        if (this._animTimer) return;
+        this._animTimer = setInterval(function() {
+            if (window.requestRender) window.requestRender();
+        }, ANIMATED_ICON_FRAME_MS);
+    };
+    SubMenuScene.prototype.exit = function() {
+        if (this._animTimer) {
+            clearInterval(this._animTimer);
+            this._animTimer = null;
+        }
+    };
+
+    SubMenuScene.prototype._ensureVisible = function() {
+        if (this.selectedIndex < this.scrollOffset) {
+            this.scrollOffset = this.selectedIndex;
+        } else if (this.selectedIndex >= this.scrollOffset + VISIBLE_COUNT) {
+            this.scrollOffset = this.selectedIndex - VISIBLE_COUNT + 1;
+        }
+    };
 
     SubMenuScene.prototype.handleInput = function(action) {
-        // Check if action maps to a button
-        var btn = this.btnActionMap[action];
-        if (btn) {
-            var self = this;
-            btn.press();
-            if (btn.onPress) btn.onPress();
-            setTimeout(function() { btn.release(); }, 30);
-            return;
-        }
+        var n = this.items.length;
 
-        // Handle left/right toggle for Fake-FlipCTL_2
+        // Left/right toggle for the special Fake-FlipCTL_2 row.
         var selectedItemName = this.itemNames[this.selectedIndex];
         if ((action === 'left' || action === 'right') && selectedItemName === 'Fake-FlipCTL_2') {
             this.toggleState['Fake-FlipCTL_2'] = !this.toggleState['Fake-FlipCTL_2'];
@@ -152,42 +114,35 @@ var SubMenuScene = (function() {
             return;
         }
 
-        if (action === 'down') {
-            if (this.selectedIndex < this.items.length - 1) {
-                this.items[this.selectedIndex].state = STATE_DEFAULT;
-                this.selectedIndex++;
-                this.items[this.selectedIndex].state = STATE_SELECTED;
-                // Scroll to keep selected item visible
-                if (this.selectedIndex >= this.scrollOffset + this.visibleItems) {
-                    this.scrollOffset = this.selectedIndex - this.visibleItems + 1;
-                }
+        if (action === 'down' || action === 'up') {
+            // Infinity scroll: wraps at both ends.
+            this.items[this.selectedIndex].state = MenuLine.STATE_DEFAULT;
+            if (action === 'down') {
+                this.selectedIndex = (this.selectedIndex + 1) % n;
+            } else {
+                this.selectedIndex = (this.selectedIndex - 1 + n) % n;
             }
-        } else if (action === 'up') {
-            if (this.selectedIndex > 0) {
-                this.items[this.selectedIndex].state = STATE_DEFAULT;
-                this.selectedIndex--;
-                this.items[this.selectedIndex].state = STATE_SELECTED;
-                // Scroll to keep selected item visible
-                if (this.selectedIndex < this.scrollOffset) {
-                    this.scrollOffset = this.selectedIndex;
-                }
-            }
+            this.items[this.selectedIndex].state = MenuLine.STATE_SELECTED;
+            this._ensureVisible();
         } else if (action === 'ok' || action === 'run') {
-            // Show button feedback
+            // 30ms press flash then open the factory-returned scene.
             var self = this;
-            this.rightButton.press();
+            var idx = this.selectedIndex;
+            var line = this.items[idx];
+            line.state = MenuLine.STATE_PRESSED;
+            if (window.requestRender) window.requestRender();
             setTimeout(function() {
-                self.rightButton.release();
-                // Open the item after button feedback
-                var factory = self.appScenes[self.itemNames[self.selectedIndex]];
+                line.state = MenuLine.STATE_SELECTED;
+                var factory = self.appScenes[self.itemNames[idx]];
                 if (factory) {
-                    var result = factory();
-                    if (result && typeof result.render === 'function') {
-                        self.sceneManager.push(result);
+                    var next = factory();
+                    if (next && typeof next.render === 'function') {
+                        self.sceneManager.push(next);
                     }
                 }
+                if (window.requestRender) window.requestRender();
             }, 30);
-        } else if (action === 'back') {
+        } else if (action === 'back' || action === 'esc') {
             return 'pop';
         }
     };
@@ -196,32 +151,57 @@ var SubMenuScene = (function() {
         canvas.clear('#fff');
         UI.drawStatusBar(canvas, '');
 
-        // Draw breadcrumbs
-        var breadcrumbsY = 12;
-        var breadcrumbsH = 12;
-        canvas.drawRect(0, breadcrumbsY, canvas.w, breadcrumbsH, '#CCCCCC');
+        // Breadcrumb: "> Title", left-aligned, in the canonical accent
+        // gray. No background fill.
+        HaxrcorpFont16.draw(canvas.ctx, '> ' + this.title, this.breadcrumbX, this.breadcrumbY, '#CCCCCC');
 
-        var breadcrumbText = this.title;
-        var breadcrumbWidth = HaxrcorpFont16.textWidth(breadcrumbText);
-        var breadcrumbX = Math.floor((canvas.w - breadcrumbWidth) / 2);
-        var breadcrumbTextY = breadcrumbsY + Math.floor((breadcrumbsH - 11) / 2);
-        HaxrcorpFont16.draw(canvas.ctx, breadcrumbText, breadcrumbX, breadcrumbTextY, '#000');
+        // Selector width tracks scrollbar visibility; the gray divider
+        // matches the selector's straight edge (width − 2×radius).
+        var total = this.items.length;
+        var hasScroll = total > VISIBLE_COUNT;
+        var selectorW = hasScroll ? SELECTOR_W_WITH_SCROLL : SELECTOR_W_NO_SCROLL;
+        var dividerX = SELECTOR_X + SELECTOR_CORNER_R;
+        var dividerW = selectorW - 2 * SELECTOR_CORNER_R;
 
-        var startY = this.viewportY;
+        // MenuLine's `w` is its status-right-alignment reference. Extend
+        // it so the right edge lands on the selector's right edge —
+        // MenuLine then applies its STATUS_PAD_R = 3 internally, giving
+        // the spec'd "3px padding from the MenuSelectorFrame".
+        var lineW = selectorW + SELECTOR_X - CONTAINER_X;
+        for (var k = 0; k < this.items.length; k++) this.items[k].w = lineW;
 
-        // Render only visible items
-        for (var i = this.scrollOffset; i < this.scrollOffset + this.visibleItems && i < this.items.length; i++) {
-            var y = startY + (i - this.scrollOffset) * ITEM_H_REGULAR;
-            this.items[i].render(canvas, 8, y);
+        // Render only the slice of items currently in the viewport.
+        var first = this.scrollOffset;
+        var last = Math.min(total, first + VISIBLE_COUNT);
+        var y = this.containerY;
+        var selectedLineY = this.containerY;
+        for (var i = first; i < last; i++) {
+            if (i === this.selectedIndex) selectedLineY = y;
+            this.items[i].render(canvas, CONTAINER_X, y);
+            y += MenuLine.H;
+            if (i < last - 1) {
+                canvas.drawHLine(dividerX, y, dividerW, DIVIDER_COLOR);
+                y += 1;
+            }
         }
 
-        // Update and render scrollbar
-        this.scrollbar.update(this.items.length, this.visibleItems, this.scrollOffset);
-        this.scrollbar.render(canvas, canvas.w - 2, this.viewportY, this.viewportH);
+        // Selector frame: filled while PRESSED, outline otherwise.
+        var pressed = this.items[this.selectedIndex].state === MenuLine.STATE_PRESSED;
+        this.selectorFrame.setPosition(SELECTOR_X, selectedLineY + SELECTOR_Y_OFFSET);
+        this.selectorFrame.setSize(selectorW, SELECTOR_H);
+        this.selectorFrame.setShowFill(pressed);
+        if (pressed) this.selectorFrame.setFillColor('#000');
+        this.selectorFrame.render(canvas);
 
-        // Render buttons
-        this.leftButton.render(canvas);
-        this.rightButton.render(canvas);
+        // Redraw the selected line on top when PRESSED so its inverted
+        // text/icon sit over the black backdrop.
+        if (pressed) {
+            this.items[this.selectedIndex].render(canvas, CONTAINER_X, selectedLineY);
+        }
+
+        // Scrollbar (same geometry as main menu).
+        this.scrollbar.update(total, VISIBLE_COUNT, this.scrollOffset);
+        this.scrollbar.render(canvas, SCROLLBAR_X, SCROLLBAR_Y, SCROLLBAR_H, SCROLLBAR_THUMB_PAD);
     };
 
     return SubMenuScene;
