@@ -7,6 +7,20 @@ var MenuScene = (function() {
     var DIVIDER_COLOR = '#CCCCCC';
     var ANIMATED_ICON_FRAME_MS = 200; // 5 fps redraw cadence
 
+    // Viewport: the menu area fits 5 lines (5*20 + 4 dividers = 104px)
+    // before the canvas bottom. When the list is longer, scroll.
+    var VISIBLE_COUNT = 5;
+    var VIEWPORT_H = VISIBLE_COUNT * 20 + (VISIBLE_COUNT - 1); // 104
+    var SCROLLBAR_X = 253;  // 3px-wide thumb centred here → cols 252..254
+
+    // Scrollbar geometry independent of the viewport: dotted line sits
+    // 2px below the status bar and 2px above the canvas bottom; the
+    // thumb has an extra 1px inset so its minimum distance from the
+    // status bar and canvas bottom is 3px.
+    var SCROLLBAR_Y = 15;
+    var SCROLLBAR_H = 127;   // 143 (canvas bottom 2px pad) - 15 + 1
+    var SCROLLBAR_THUMB_PAD = 1;
+
     // MenuSelectorFrame around the selected line. Positioned/sized
     // independently of the MenuLine itself per spec.
     var SELECTOR_X = 10;
@@ -16,6 +30,9 @@ var MenuScene = (function() {
     var SELECTOR_Y_OFFSET = -1;
 
     var menuItems = [
+        'Router',
+        'Apps',
+        'Files',
         'Network',
         'Testing',
         'Settings'
@@ -82,22 +99,33 @@ var MenuScene = (function() {
 
     var subMenus = {
         'Network': networkMenu,
+        // Files / Apps / Router have no backing scene yet — factories
+        // return null so pressing ok/run is a no-op until wired up.
+        'Files':  function() { return null; },
+        'Apps':   function() { return null; },
         'Testing': testingMenu,
-        'Settings': settingsMenu
+        'Settings': settingsMenu,
+        'Router': function() { return null; }
     };
 
     function MenuScene(sceneManager) {
         this.sceneManager = sceneManager;
         this.selectedIndex = 0;
+        this.scrollOffset = 0;
         this.items = [];
 
         var iconMap = {
             'Network': Icons.network,
             'Testing': Icons.testing,
-            'Settings': Icons.system
+            'Settings': Icons.system,
+            'Router':   Icons.router
+            // 'Files' / 'Apps' have no static icon — they fall back to
+            // frame 0 of their animated strip while unselected.
         };
         var animatedIconMap = {
-            'Settings': AnimatedIcons.settings_animated
+            'Settings': AnimatedIcons.settings_animated,
+            'Files':    AnimatedIcons.files_animated,
+            'Apps':     AnimatedIcons.apps_animated
         };
 
         for (var i = 0; i < menuItems.length; i++) {
@@ -122,6 +150,8 @@ var MenuScene = (function() {
             showStroke: true,
             showFill: false     // transparent interior; line content shows through
         });
+
+        this.scrollbar = new UI.Scrollbar(menuItems.length, VISIBLE_COUNT, this.scrollOffset);
     }
 
     MenuScene.prototype.enter = function() {
@@ -137,24 +167,47 @@ var MenuScene = (function() {
         }
     };
 
+    MenuScene.prototype._ensureVisible = function() {
+        // Shift the viewport so the selected line is inside it.
+        if (this.selectedIndex < this.scrollOffset) {
+            this.scrollOffset = this.selectedIndex;
+        } else if (this.selectedIndex >= this.scrollOffset + VISIBLE_COUNT) {
+            this.scrollOffset = this.selectedIndex - VISIBLE_COUNT + 1;
+        }
+    };
+
     MenuScene.prototype.handleInput = function(action) {
-        if (action === 'down') {
-            if (this.selectedIndex < this.items.length - 1) {
-                this.items[this.selectedIndex].state = MenuLine.STATE_DEFAULT;
-                this.selectedIndex++;
-                this.items[this.selectedIndex].state = MenuLine.STATE_SELECTED;
+        var n = this.items.length;
+        if (action === 'down' || action === 'up') {
+            // Infinity scroll: down past the last item jumps to the first,
+            // up past the first jumps to the last.
+            this.items[this.selectedIndex].state = MenuLine.STATE_DEFAULT;
+            if (action === 'down') {
+                this.selectedIndex = (this.selectedIndex + 1) % n;
+            } else {
+                this.selectedIndex = (this.selectedIndex - 1 + n) % n;
             }
-        } else if (action === 'up') {
-            if (this.selectedIndex > 0) {
-                this.items[this.selectedIndex].state = MenuLine.STATE_DEFAULT;
-                this.selectedIndex--;
-                this.items[this.selectedIndex].state = MenuLine.STATE_SELECTED;
-            }
+            this.items[this.selectedIndex].state = MenuLine.STATE_SELECTED;
+            this._ensureVisible();
         } else if (action === 'ok' || action === 'run') {
-            var factory = subMenus[menuItems[this.selectedIndex]];
-            if (factory) {
-                this.sceneManager.push(factory(this.sceneManager));
-            }
+            // 30ms "press" flash on the selected line, then open the
+            // submenu. The render loop paints the selector frame filled
+            // black while the line is PRESSED, and the line inverts its
+            // own text/icon to white.
+            var self = this;
+            var idx = this.selectedIndex;
+            var line = this.items[idx];
+            line.state = MenuLine.STATE_PRESSED;
+            if (window.requestRender) window.requestRender();
+            setTimeout(function() {
+                line.state = MenuLine.STATE_SELECTED;
+                var factory = subMenus[menuItems[idx]];
+                if (factory) {
+                    var next = factory(self.sceneManager);
+                    if (next) self.sceneManager.push(next);
+                }
+                if (window.requestRender) window.requestRender();
+            }, 30);
         } else if (action === 'back' || action === 'esc') {
             return 'pop';
         }
@@ -164,27 +217,45 @@ var MenuScene = (function() {
         canvas.clear('#fff');
         UI.drawStatusBar(canvas, '');
 
-        // Stack lines flush. Between each pair (never above the first,
-        // never below the last) paint a 1px gray separator. Track the
-        // Y of the selected line so the selector frame can be placed
-        // around it in a second pass.
+        // Render only the slice of items currently in the viewport.
+        // Dividers still sit between every visible pair (the "no
+        // divider on first / last" rule is satisfied because we draw
+        // a divider only between rendered items).
+        var total = this.items.length;
+        var first = this.scrollOffset;
+        var last = Math.min(total, first + VISIBLE_COUNT);
         var y = CONTAINER_Y;
         var selectedLineY = CONTAINER_Y;
-        for (var i = 0; i < this.items.length; i++) {
+        for (var i = first; i < last; i++) {
             if (i === this.selectedIndex) selectedLineY = y;
             this.items[i].render(canvas, CONTAINER_X, y);
             y += MenuLine.H;
-            if (i < this.items.length - 1) {
+            if (i < last - 1) {
                 canvas.drawHLine(CONTAINER_X, y, CONTAINER_W, DIVIDER_COLOR);
                 y += 1;
             }
         }
 
-        // Selector frame around the selected line, drawn last so its
-        // stroke sits on top of both the line content and any divider
-        // the frame overlaps.
+        // Selector frame. Filled while PRESSED (covers the selected
+        // line backdrop in black); outline otherwise.
+        var pressed = this.items[this.selectedIndex].state === MenuLine.STATE_PRESSED;
         this.selectorFrame.setPosition(SELECTOR_X, selectedLineY + SELECTOR_Y_OFFSET);
+        this.selectorFrame.setShowFill(pressed);
+        if (pressed) this.selectorFrame.setFillColor('#000');
         this.selectorFrame.render(canvas);
+
+        // The filled frame just painted over the selected line content.
+        // Redraw the selected line on top so its (inverted) text/icon
+        // sit over the black backdrop.
+        if (pressed) {
+            this.items[this.selectedIndex].render(canvas, CONTAINER_X, selectedLineY);
+        }
+
+        // Scrollbar along the right edge. Dotted line spans the full
+        // SCROLLBAR_H (2px off the status bar and bottom); the thumb is
+        // inset 1px more so it sits at least 3px from each edge.
+        this.scrollbar.update(total, VISIBLE_COUNT, this.scrollOffset);
+        this.scrollbar.render(canvas, SCROLLBAR_X, SCROLLBAR_Y, SCROLLBAR_H, SCROLLBAR_THUMB_PAD);
     };
 
     return MenuScene;

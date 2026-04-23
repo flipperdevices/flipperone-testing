@@ -48,20 +48,46 @@ var MenuLine = (function() {
         var textColor = '#000';
         var iconColor = '#000';
 
-        // NOTE: The SELECTED frame is not painted here. The owning scene
-        // is expected to render a MenuSelectorFrame around the selected
-        // line — this keeps the selector's geometry independent of the
-        // line's content area (e.g. main menu uses 232×22 at x=10 while
-        // the line itself is 224×20 at x=16).
+        // Anchor animation time to the moment the line entered an
+        // "active" state (SELECTED or PRESSED). Keeping _selectedAt
+        // across the SELECTED→PRESSED→SELECTED transition means the
+        // strip keeps advancing from the current frame rather than
+        // rewinding when the user presses ok.
+        if (this.state === STATE_SELECTED || this.state === STATE_PRESSED) {
+            if (!this._selectedAt) this._selectedAt = Date.now();
+        } else {
+            this._selectedAt = 0;
+        }
+
+        // NOTE: The SELECTED and PRESSED visuals (outline / filled frame)
+        // are painted by the owning scene — it knows the selector's
+        // geometry, which is independent of the line's content area
+        // (main menu uses 232×22 at x=10 while the line itself is
+        // 224×20 at x=16). PRESSED only inverts the content colours
+        // here so the text/icon read as white over whatever fill the
+        // scene draws behind them.
         if (this.state === STATE_PRESSED) {
-            canvas.drawRoundRect(x, y, this.w, this.h, 2, '#000');
             textColor = '#fff';
             iconColor = '#fff';
         }
 
-        // Pick the icon source: animated strip while selected, else static.
-        var useAnimated = this.state === STATE_SELECTED && this.iconAnimated;
-        var iconSource  = useAnimated ? this.iconAnimated : this.icon;
+        // "active" lines (SELECTED or PRESSED) switch to Born2bSportyV2
+        // for the label and drive the animated icon. Computed here so
+        // both the icon-rendering block below and the font section can
+        // read it.
+        var active = this.state === STATE_SELECTED || this.state === STATE_PRESSED;
+
+        // Icon rendering has three modes:
+        //   1. active (SELECTED or PRESSED) + iconAnimated → play the
+        //      strip at FRAME_MS cadence. PRESSED is included so the
+        //      30ms press flash picks up the strip at its current
+        //      frame instead of rewinding to frame 0.
+        //   2. this.icon set           → draw it as a normal sprite / icon.
+        //   3. only iconAnimated set   → draw frame 0 of the strip as a
+        //      static fallback, so unselected lines aren't iconless when
+        //      no dedicated static icon was supplied.
+        var useAnimated = active && this.iconAnimated;
+        var iconSource  = useAnimated ? this.iconAnimated : (this.icon || this.iconAnimated);
 
         var textLeft = x + ICON_PAD;
         if (iconSource) {
@@ -69,8 +95,16 @@ var MenuLine = (function() {
             var iconY = y + ICON_PAD;
             if (useAnimated) {
                 var frames = iconSource.frames || 1;
-                var idx = Math.floor(Date.now() / FRAME_MS) % frames;
+                var elapsed = Date.now() - this._selectedAt;
+                // Unselected lines already show frame 0 (via the static
+                // fallback), so the highlight should jump straight to
+                // frame 1 — otherwise the first visible "selected" frame
+                // is identical to the static and the motion is missed.
+                var idx = (Math.floor(elapsed / FRAME_MS) + 1) % frames;
                 canvas.drawSpriteFrame(iconSource, iconX, iconY, idx, iconColor);
+            } else if (!this.icon && this.iconAnimated) {
+                // No dedicated static — use the first frame of the strip.
+                canvas.drawSpriteFrame(iconSource, iconX, iconY, 0, iconColor);
             } else if (iconSource.grayscale) {
                 canvas.drawSprite(iconSource, iconX, iconY, iconColor);
             } else {
@@ -79,9 +113,10 @@ var MenuLine = (function() {
             textLeft = iconX + iconSource.w + TEXT_GAP;
         }
 
-        // Default state uses BusyFont9; SELECTED lines switch to
-        // Born2bSportyV2Medium. Status text follows the same font swap.
-        var font = this.state === STATE_SELECTED ? Born2bSportyV2Medium : BusyFont9;
+        // Default state uses BusyFont9; active lines (SELECTED or
+        // PRESSED) switch to Born2bSportyV2Medium. Status text follows
+        // the same swap.
+        var font = active ? Born2bSportyV2Medium : BusyFont9;
         var textY = y + TEXT_DRAW_Y;
         font.draw(canvas.ctx, this.text, textLeft, textY, textColor);
 

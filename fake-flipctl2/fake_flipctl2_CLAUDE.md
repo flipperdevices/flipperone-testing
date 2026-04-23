@@ -533,16 +533,22 @@ var frameIndex = Math.floor(Date.now() / FRAME_MS) % sprite.frames;
 canvas.drawSpriteFrame(sprite, x, y, frameIndex, '#000');
 ```
 
-### MenuItem integration
+### MenuLine integration
 
-`MenuItem` supports an optional `iconAnimated` property. When the item's
-state is `STATE_SELECTED` **and** `iconAnimated` is set, the strip plays
-at 5 fps; otherwise the static `icon` renders in all states. Example
-from `menu.js`:
+`MenuLine` supports an optional `iconAnimated` property. When the line's
+state is `SELECTED` or `PRESSED` **and** `iconAnimated` is set, the
+strip plays at 5 fps; frame index is `(floor(elapsed / 200ms) + 1) %
+frames` so the first highlighted frame is frame 1 (user-facing "frame
+2"), not the static fallback. When unselected, the line draws the
+static `icon` if present, or falls back to **frame 0 of the strip** if
+only `iconAnimated` was supplied.
 
 ```javascript
-var item = new MenuItem('Settings', true, Icons.system);
-item.iconAnimated = AnimatedIcons.settings_animated;
+var line = new MenuLine({
+    text: 'Settings',
+    icon: Icons.system,                              // static fallback
+    iconAnimated: AnimatedIcons.settings_animated    // plays on highlight
+});
 ```
 
 ### Driving redraws
@@ -598,7 +604,7 @@ Complete guide to the fake-flipctl UI system for building new screens and compon
 - **Metrics**: `HaxrcorpFont16.textWidth(text)` → pixels
 - **Used by**: status bar, submenu titles, most scenes
 
-### Menu Font: BusyFont9
+### Menu Font (default): BusyFont9
 - **Cap height**: 9px (capital R spans 9 rows)
 - **Row frame**: 14 rows × 16 bits (MSB = leftmost pixel; 2 bytes per
   row to accommodate glyphs up to 16px wide)
@@ -607,7 +613,16 @@ Complete guide to the fake-flipctl UI system for building new screens and compon
 - **Source file**: `js/busy9.js`
 - **Supported**: ASCII 32–126
 - **API**: same surface as HaxrcorpFont16 — `BusyFont9.draw(ctx, text, x, y, color)` and `BusyFont9.textWidth(text)`
-- **Used by**: `MenuItem` (main menu and submenus)
+- **Used by**: `MenuLine` in the `DEFAULT` state (unselected rows)
+
+### Menu Font (highlighted): Born2bSportyV2Medium
+- **Row frame**: 18 rows × 16 bits (MSB = leftmost pixel)
+- **Source file**: `js/born2bsportyv2.js` (TTF at `/Users/vladpetrenko/Downloads/Born2bSportyV2.ttf`)
+- **Supported**: ASCII 32–126
+- **API**: `Born2bSportyV2Medium.draw(ctx, text, x, y, color)` / `.textWidth(text)`
+- **Used by**: `MenuLine` in `SELECTED` and `PRESSED` states — labels and
+  status text both swap to this font so the whole row reads as a single
+  unit while highlighted.
 
 See [Font Creation (TTF → bitmap)](#font-creation-ttf--bitmap) for the
 conversion pipeline.
@@ -668,16 +683,16 @@ This section consolidates the visual conventions used across all components. Val
 | `STATUS_BAR_H` | 13px | `ui.js` | Status bar height (black bg) |
 | `STATUS_BAR_PAD_TOP` | 3px | `ui.js` | Top padding for every foreground element in the bar |
 | `ITEM_H` (simple list) | 12px | `ui.js` | Plain menu row height |
-| `ITEM_H_REGULAR` (MenuItem) | 19px | `menu.js` | Standard menu item height (with divider) |
-| `ITEM_H_LAST` (MenuItem) | 18px | `menu.js` | Last-item height (no divider) |
-| `ITEM_W` | 240px | `menu.js` | MenuItem width (256 canvas − 16px margin) |
-| `PAD_X` | 6px | `menu.js` | MenuItem internal left/right padding |
+| `MenuLine.H` | 20px | `MenuLine.js` | Fixed height of every `MenuLine` (14px icon + 3px top + 3px bottom padding) |
+| `MenuLine` icon inset | 3px | `MenuLine.js` | Icon padding from the line's left/top/bottom (`ICON_PAD`) |
+| `MenuLine` icon→text gap | 4px | `MenuLine.js` | Gap between icon and label (`TEXT_GAP`) |
+| `MenuLine` cap-top offset | 5px | `MenuLine.js` | Y of the first pixel of capitals inside the line (achieved via `TEXT_DRAW_Y = 2`) |
+| `MenuLine` status right pad | 3px | `MenuLine.js` | Right padding for status text (`STATUS_PAD_R`) |
 | `PAD_LEFT` | 4px | `ui.js` | Status bar + simple list text left padding |
-| `SCROLLBAR_W` | 3px | `ui.js` | Scrollbar track width |
+| `SCROLLBAR_W` | 3px | `ui.js` | Scrollbar track width (dotted 1px line + 3px thumb centred on it) |
 | `BTN_H` (bottom bar) | 14px | `canvas.js` | Height of LeftButton/MiddleButton/RightButton |
 | `BTN_W` (bottom bar) | 48px | `menu.js` | Width of a single button slot (5 × 48 + 4 × 2 = 256) |
 | `BTN_R` (bottom bar) | 4px | `canvas.js` | Top-corner radius on bottom-bar buttons |
-| `RADIUS` (MenuItem) | 2px | `menu.js` | Rounded border radius for selected/pressed menu items |
 | `POPUP_ITEM_H` | 13px | `ui.js` | Height of a row inside PopupMenuLeft |
 | `POPUP_PAD` | 3px | `ui.js` | Inner padding of PopupMenuLeft |
 | Keyboard `BTN_W` × `BTN_H` | 15 × 16px | `ui.js` | Virtual keyboard key cell |
@@ -689,7 +704,8 @@ Only two radius values are used system-wide. `drawRoundRect` / `drawRoundFrame` 
 
 | Radius | Where it's used |
 |--------|-----------------|
-| **2px** | Selected / pressed MenuItem (`drawRoundFrame` / `drawRoundRect`); PopupMenuLeft item selection |
+| **2px** | PopupMenuLeft item selection; legacy MenuItem selected/pressed |
+| **3px** | MenuSelectorFrame (default `cornerRadius`) — used by the main menu selector |
 | **3px** | Dialog boxes (DeleteConfirmDialog body) |
 | **4px** | MessageBox corners (manual pixel routine), bottom-bar button top corners, keyboard container (`drawRoundRect(..., 4, bg)`) |
 | *none (1px frame)* | `drawFrame` for InputField, TestScreen borders |
@@ -698,14 +714,14 @@ Only two radius values are used system-wide. `drawRoundRect` / `drawRoundFrame` 
 
 All interactive components expose four possible states: `default`, `selected`, `pressed`, `disabled`. Not every component uses all four.
 
-**MenuItem** (`js/apps/menu.js`):
+**MenuLine** (`js/component-library/MenuLine.js`, owning scene paints the selector):
 
-| State | Visual treatment |
-|-------|------------------|
-| `default` | No frame. 1px horizontal divider line at `y + h - 1`, color `#EDEDED`, inset 2px on both sides. Suppressed on `isLast` items. |
-| `selected` | `drawRoundFrame(x, y-1, w, h+1, 2, '#000')` — 1px black outline, r=2, drawn 1px taller than the item to overlap the divider cleanly |
-| `pressed` | `drawRoundRect(x, y-1, w, h+1, 2, '#000')` — filled black rounded rect. Text and icon render in `#fff` (inverted). |
-| `disabled` | Not implemented on MenuItem today. |
+| State | Line-level visual | Selector frame (painted by scene) | Font |
+|-------|-------------------|-----------------------------------|------|
+| `default` | No frame. Icon + text in `#000`. | — | `BusyFont9` |
+| `selected` | Icon + text still `#000`. Animated strip plays if `iconAnimated` is set. | `MenuSelectorFrame` outline (`showStroke: true`, `showFill: false`) around the line. | `Born2bSportyV2Medium` |
+| `pressed` | Icon + text flip to `#fff`. Animation keeps advancing (clock preserved across `SELECTED ↔ PRESSED`). | Same `MenuSelectorFrame` instance but with `showFill: true`, `fillColor: '#000'` — drawn *behind* the line content, then the line is redrawn on top so the white content reads over the black fill. | `Born2bSportyV2Medium` |
+| `disabled` | Not implemented. |
 
 **Bottom-bar buttons** (`drawMiddleButton` / `drawLeftButton` / `drawRightButton`):
 
@@ -732,7 +748,7 @@ All interactive components expose four possible states: `default`, `selected`, `
 
 | Size | Format | Used for |
 |------|--------|----------|
-| 14×14 | 6-bit grayscale | Menu icons (network, system, testing) — vertically centered in the 19px MenuItem, 6px from left |
+| 14×14 | 6-bit grayscale | Menu icons (network, system, testing, router) — inset 3px from the MenuLine's left/top/bottom (line is 20px tall) |
 | 16×9 | 6-bit grayscale | Status bar battery (`StatusBarBattery.sprite`) |
 | 7×7 | 6-bit grayscale | Wifi icon variants (`wifi_0` … `wifi_100`) — fits in the 11px status bar |
 | 5×7 | drawn primitives | Plug icon — hand-drawn via `drawRect` calls |
@@ -927,15 +943,88 @@ MyComponent.prototype.release = function() {
 
 ### Built-in Components
 
-#### MenuItem
-- **Properties**: `text`, `isLast`, `icon` (14×14, optional), `status` (optional right-aligned text like `< ON >` / `< OFF >` or plain label)
-- **Dimensions**: 240px wide × 19px tall (18px when `isLast` — suppresses the trailing divider)
-- **States** (see [Visual Design System → Component State Styling](#component-state-styling) for full details):
-  - `default` — 1px `#EDEDED` divider at bottom (unless `isLast`), no frame
-  - `selected` — `drawRoundFrame`, radius 2, color `#000`, drawn 1px taller than item to overlap the divider
-  - `pressed` — `drawRoundRect` filled `#000`, radius 2; text + icon inverted to `#fff`
-- **Layout**: icon at `x + 6`, text starts at `x + 6 + 14 + 4 = x + 24` (when icon present) or `x + 6` (no icon); text vertically centered via `Math.floor((h - 11) / 2)`; `status` right-aligned at `x + w - 6`
-- **Render**: `item.render(canvas, x, y)`
+#### MenuLine
+Shared single-row menu component in [`js/component-library/MenuLine.js`](js/component-library/MenuLine.js). Replaces the old per-scene `MenuItem` class. Designed to be reused by the main menu today and submenus/other lists in the future.
+
+- **Properties** (constructor options): `text`, `width` (default 224), `icon` (optional static), `iconAnimated` (optional vertical strip), `status` (optional right-aligned label / `< ON >` / `< OFF >`)
+- **Dimensions**: `width × 20px` (`MenuLine.H = 20` — 14px icon + 3px top + 3px bottom padding)
+- **Internal layout** (relative to the line's top-left):
+  - Icon at `(3, 3)` with 3px L/T/B padding (icon expected 14×14)
+  - Text 4px right of the icon; text draw `y = 2` so the capital-letter top lands at line `y = 5`
+  - Status text right-aligned at `x + w - 3`
+- **States**: `MenuLine.STATE_DEFAULT` / `STATE_SELECTED` / `STATE_PRESSED`
+- **Font swap**: `BusyFont9` in `DEFAULT`, **`Born2bSportyV2Medium`** in `SELECTED` and `PRESSED`.
+- **Icon mode** (three-tier):
+  1. `SELECTED` or `PRESSED` **and** `iconAnimated` set → the strip plays at `FRAME_MS = 200ms` (5 fps). Frame index is `(floor(elapsed / FRAME_MS) + 1) % frames` so the first visible frame after highlight is frame 1 (user-facing "frame 2"), not the static fallback.
+  2. `this.icon` present → standard sprite / icon.
+  3. Only `iconAnimated` present → frame 0 of the strip is drawn as the static fallback for unselected lines (so you don't need a separate static asset).
+- **`_selectedAt` timestamp**: stamped on the first render where the line is in an "active" state (SELECTED or PRESSED), cleared on transition to DEFAULT. Kept across the `SELECTED ↔ PRESSED` transition so the press flash picks up the animation at its current frame instead of rewinding.
+- **The SELECTED/PRESSED frame is NOT painted by MenuLine.** The owning scene renders a `MenuSelectorFrame` around the selected line — this decouples the selector's geometry (e.g. `232×22` at `x=10` in the main menu) from the line's content area (`224×20` at `x=16`). `PRESSED` only inverts the line's own text/icon colours to white so they read over the black fill the scene paints behind them.
+- **Render**: `menuLine.render(canvas, x, y)`
+
+### Main Menu scene
+
+Implemented in `js/apps/menu.js` as `MenuScene`. Sets the reference
+layout that `MenuLine` + `MenuSelectorFrame` are designed around.
+
+**Container** (top-left anchor):
+- `CONTAINER_X = 16`, `CONTAINER_Y = 24` (below the 13px status bar with
+  11px of breathing room — the breadcrumb bar was removed, this gap is
+  intentional)
+- `CONTAINER_W = 224` (`256 − 16 − 16`)
+- No background fill of its own; the canvas clear is `#fff`
+
+**Items**: `MenuLine` instances stacked flush inside the container with
+a 1px gray (`#CCCCCC`) horizontal divider between each adjacent pair.
+No divider above the first visible line, none below the last. Dividers
+always sit **beneath** the selector frame.
+
+**Current item list** (in order):
+`Network, Files, Apps, Testing, Settings, Router` — this is treated as
+the maximum list size; the spec is "6 items, scroll to reveal any
+beyond the viewport."
+
+**Selector frame** — one `MenuSelectorFrame` reused across frames:
+| Knob | Value | Meaning |
+|------|-------|---------|
+| `SELECTOR_X` | 10 | Absolute X; overshoots the container's 16px left pad by 6px |
+| `SELECTOR_W` | 232 | Extends 2px past the container's right edge |
+| `SELECTOR_H` | 22 | 2px taller than the 20px line |
+| `SELECTOR_Y_OFFSET` | `-1` | Vertical inset so the 22px frame sits centred over the 20px line |
+| `showStroke` | `true` | Always on |
+| `showFill` | toggled per-frame | `true` during `PRESSED` (filled black), `false` otherwise |
+
+**Viewport + scroll**:
+- `VISIBLE_COUNT = 5` lines
+- `VIEWPORT_H = 104` (5 × 20 + 4 dividers)
+- Viewport starts at `CONTAINER_Y`; items outside it are skipped during
+  render.
+- Navigation wraps — `down` past the last item jumps to the first and
+  `up` past the first jumps to the last (`_ensureVisible()` then
+  adjusts `scrollOffset` so the new selection lands on screen).
+
+**Scrollbar** (uses the shared `UI.Scrollbar`):
+| Knob | Value |
+|------|-------|
+| `SCROLLBAR_X` | 253 (3px-wide thumb centred → cols 252..254) |
+| `SCROLLBAR_Y` | 15 (2px below the 13px status bar) |
+| `SCROLLBAR_H` | 127 (reaches to `y = 141` — 2px above the canvas bottom) |
+| `SCROLLBAR_THUMB_PAD` | 1 — ensures the thumb stays ≥3px from both the status bar and the canvas bottom |
+
+**Press flash** — `ok` / `run` feedback:
+1. On keypress: selected line's state flips to `PRESSED`; a redraw is
+   requested immediately.
+2. `render` paints the selector frame filled black behind the line,
+   then redraws the (now inverted) line on top so its `#fff` content
+   sits over the black fill.
+3. `setTimeout(30 ms)` flips the state back to `SELECTED` and calls
+   the submenu factory. If the factory returns a scene it's pushed;
+   returning `null` is a no-op (used today for `Files`, `Apps`,
+   `Router` — empty stubs).
+
+**Animation tick**: `enter()` starts a `setInterval(200 ms)` that calls
+`window.requestRender()`; `exit()` clears it. See
+[Animated Icons → Driving redraws](#driving-redraws).
 
 #### Buttons: LeftButton, MiddleButton, RightButton
 - **Width**: 48px each, 2px gap between (5 × 48 + 4 × 2 = 256px exact)
@@ -953,10 +1042,10 @@ MyComponent.prototype.release = function() {
 
 #### Scrollbar
 - **When visible**: `totalItems > visibleItems`
-- **Components**: Dotted track line + solid thumb indicator
-- **Calculation**: `thumbHeight = (visibleItems / totalItems) * height`
+- **Components**: dotted track line (full `(y, height)` range) + solid 3px-wide thumb
+- **Calculation**: `thumbHeight = max(5, round(thumbRange * visibleItems / totalItems))`; `thumbY = y + thumbPad + round((thumbRange - thumbHeight) * scrollRatio)` where `thumbRange = height - 2 * thumbPad`
 - **Position**: x ≈ 251–253, leaving 1px clearance from right edge
-- **Render**: `scrollbar.render(canvas, x, y, height)`
+- **Render**: `scrollbar.render(canvas, x, y, height, thumbPad = 0)` — the optional `thumbPad` inset keeps the thumb `thumbPad` pixels away from each end of the dotted line (useful when the track sits near the status bar or canvas edge). The dotted line itself always fills the full range.
 
 #### PopupMenu
 - **Items**: List of action strings ('Delete', 'Rename', 'Clone', etc.)
@@ -1090,18 +1179,23 @@ Paints **only the body pixels** of the rounded rectangle, row by row, using per-
 - `showStroke: false` skips all stroke drawing.
 
 #### MenuSelectorFrame
-Selection frame for menu entries. Starts as an independent duplicate of `ResponsiveFrame` with identical API — will diverge as menu-selector-specific behavior is added (highlight animation, scroll affordance, arrow indicator, etc.).
+Selection frame for menu rows. Descendant of `ResponsiveFrame` with the same API (`x`, `y`, `width`, `height`, `anchorH`/`anchorV`, `showStroke`, `showFill`, `strokeColor`, `fillColor`, `cornerRadius`, `corners`), plus selector-specific embellishments.
 
 **File:** `js/component-library/MenuSelectorFrame.js`
 **Sandbox:** registered.
 
-Constructor, methods, and rendering approach match `ResponsiveFrame` exactly for now. Treat this file as the one to edit for any selector-specific work; leave `ResponsiveFrame` as the generic primitive.
+**Selector-specific flourishes (always painted, on top of the stroke):**
+- **Bottom-right shadow pair** — a 1px horizontal segment at `y + h` and a 1px vertical segment at `x + w`, both using `strokeColor`. Each is `w - 2*r + 1` / `h - 2*r + 1` long so it meets the BR corner stair.
+- **Two corner pixels at the bottom-right** — painted in the rounded-corner cut region at `(x + w − 2, y + h − 1)` and `(x + w − 1, y + h − 2)`. They thicken the BR corner visually and connect the shadow to the frame.
+- Defaults: `cornerRadius = 3`, `showStroke = true`, `showFill = false` (transparent interior — the owning scene sets `showFill=true` only for the press-flash path).
+
+**Main menu integration:** see [Main Menu scene](#main-menu-scene) for the specific geometry (`232×22` at `x=10`, `SELECTOR_Y_OFFSET = -1`) and the `showFill` toggle during the 30 ms press flash.
 
 ### Component Composition Pattern
 ```javascript
 function MenuScene() {
     // Core components
-    this.items = [...];                          // Array of MenuItem
+    this.items = [...];                          // Array of MenuLine
     this.scrollbar = null;                       // Optional scrollbar
     this.buttons = {
         edit: new MiddleButton(...),
@@ -1448,28 +1542,32 @@ return {
 
 **Step 4: Use in scenes**
 ```javascript
-// In MenuItem creation
-new MenuItem('My Item', false, Icons.myIcon)
+// Inside a MenuScene
+this.items.push(new MenuLine({
+    text: 'My Item',
+    icon: Icons.myIcon
+}));
 
-// In custom rendering
+// Or directly in custom rendering
 canvas.drawSprite(Icons.myIcon, x, y, '#000');  // Black
 canvas.drawSprite(Icons.myIcon, x, y, '#fff');  // White (for pressed state)
 ```
 
 ## Rendering Icons
 
-### In Menu Items
+### In Menu Lines
 
-**File**: `js/apps/menu.js`
+**File**: `js/component-library/MenuLine.js`
 
-Icons are automatically rendered with menu items:
+Icons are rendered at a fixed 3px inset from the line's top-left; the
+line picks between static and animated sources based on state:
 
 ```javascript
-MenuItem.prototype.render = function(canvas, x, y) {
+MenuLine.prototype.render = function(canvas, x, y) {
     if (this.icon) {
-        var iconX = x + PAD_X;
-        var iconY = y + Math.floor((this.h - this.icon.h) / 2);
-        
+        var iconX = x + 3;
+        var iconY = y + 3;
+
         // Use drawSprite for grayscale, drawIcon for binary
         if (this.icon.grayscale) {
             canvas.drawSprite(this.icon, iconX, iconY, iconColor);
@@ -1550,36 +1648,43 @@ FlipCanvas.prototype._drawGrayscaleSprite = function(sprite, x, y, color) {
 
 ### Main Menu with Icons
 
+The current main menu is built from `MenuLine` instances inside `MenuScene`
+(`js/apps/menu.js`). See [Main Menu scene](#main-menu-scene) below for the
+full layout contract; here's the construction pattern:
+
 ```javascript
-function MenuScene() {
-    var items = [
-        new MenuItem('Network', false, Icons.network),
-        new MenuItem('Testing', false, Icons.testing),
-        new MenuItem('Settings', true, Icons.system)  // Last item (no divider)
-    ];
-}
+var line = new MenuLine({
+    text: 'Settings',
+    width: 224,
+    icon: Icons.system,                      // static icon (shown when unselected)
+    iconAnimated: AnimatedIcons.settings_animated  // plays while SELECTED
+});
 ```
 
-**Result**:
-- Row 1: [Network icon] Network (divider line)
-- Row 2: [Testing icon] Testing (divider line)
-- Row 3: [System icon] Settings (no divider — the `System` submenu is now surfaced as "Settings" in the main menu)
+If no static icon is supplied but `iconAnimated` is, the line falls back
+to frame 0 of the strip as the static render — no separate static asset
+needed (used today for `Files` and `Apps`).
 
 ### Dynamic Icon Color in Pressed State
 
+`MenuLine` itself only inverts its content colours during `PRESSED` —
+the filled black backdrop is painted by the owning scene via the
+`MenuSelectorFrame` (see [Main Menu scene](#main-menu-scene)). The line
+looks up which font to use for text and then switches `iconColor` /
+`textColor` based on state:
+
 ```javascript
-MenuItem.prototype.render = function(canvas, x, y) {
+MenuLine.prototype.render = function(canvas, x, y) {
     var textColor = '#000';
     var iconColor = '#000';
 
-    if (this.state === 'pressed') {
-        // Black background, white icon and text
-        canvas.drawRoundRect(x, y - 1, this.w, this.h + 1, 2, '#000');
+    if (this.state === STATE_PRESSED) {
         textColor = '#fff';
-        iconColor = '#fff';  // Icon becomes white
+        iconColor = '#fff';   // line draws icon/text in white over the
+                              // black selector fill the scene painted
     }
 
-    // Draw icon with state-based color
+    // Pick static vs animated; grayscale sprites alpha-blend the colour.
     if (this.icon && this.icon.grayscale) {
         canvas.drawSprite(this.icon, iconX, iconY, iconColor);
     }
@@ -1594,7 +1699,7 @@ fake-flipctl/
 │   ├── icons.js                    # Icon definitions (network, system, testing)
 │   ├── canvas.js                   # drawSprite() & _drawGrayscaleSprite()
 │   └── apps/
-│       └── menu.js                 # MenuItem rendering with icon support
+│       └── menu.js                 # Main menu scene — builds MenuLine rows, owns the MenuSelectorFrame + scroll state
 ├── icons/
 │   ├── main_menu/
 │   │   ├── 14_px_network.png      # PNG source
@@ -1640,5 +1745,5 @@ For larger assets (>32×32), consider dedicated sprite assets with better compre
 ## References
 
 - **Grayscale sprite example**: Dolphins (`js/sprites.js`) — 150×114 at 6-bit grayscale
-- **Related components**: Canvas drawing primitives, MenuItem rendering
+- **Related components**: Canvas drawing primitives, [MenuLine](#menuline) rendering
 - **Converter tools**: `png-to-bitmap.py` (grayscale), `png-to-bitmap-converter-v3.py` (binary, legacy)

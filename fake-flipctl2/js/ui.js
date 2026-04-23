@@ -577,23 +577,27 @@ var UI = (function() {
         return this.totalItems > this.visibleItems;
     };
 
-    Scrollbar.prototype.render = function(canvas, x, y, height) {
+    Scrollbar.prototype.render = function(canvas, x, y, height, thumbPad) {
         if (!this.shouldShow()) return;
 
-        // x is the position for the dotted line
-        // Draw dotted base line (1 pixel wide, dotted pattern: 1px black, 1px transparent)
+        thumbPad = thumbPad || 0;
+
+        // Dotted base line fills the full (y, height) range.
         for (var i = 0; i < height; i += 2) {
             canvas.drawPixel(x, y + i, '#000');
         }
 
-        // Calculate thumb size and position
-        var thumbHeight = Math.max(5, Math.round(height * this.visibleItems / this.totalItems));
+        // Thumb is inset from both ends of the dotted line by `thumbPad`
+        // so it never touches the extremes — useful when the bar sits
+        // close to another UI element (e.g. the status bar).
+        var thumbRange = height - 2 * thumbPad;
+        if (thumbRange < 5) thumbRange = 5;
+        var thumbHeight = Math.max(5, Math.round(thumbRange * this.visibleItems / this.totalItems));
         var maxScroll = this.totalItems - this.visibleItems;
         var scrollRatio = maxScroll > 0 ? this.currentIndex / maxScroll : 0;
-        var thumbY = y + Math.round((height - thumbHeight) * scrollRatio);
+        var thumbY = y + thumbPad + Math.round((thumbRange - thumbHeight) * scrollRatio);
 
-        // Draw thumb (3 pixels wide) centered on the dotted line
-        // 1 pixel left of line (x-1), line itself (x), 1 pixel right of line (x+1)
+        // Draw thumb (3 pixels wide) centered on the dotted line.
         canvas.drawRect(x - 1, thumbY, 3, thumbHeight, '#000');
     };
 
