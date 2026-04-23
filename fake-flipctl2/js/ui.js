@@ -214,7 +214,7 @@ var UI = (function() {
         }
     }
 
-    function drawSignalBars(canvas, x, topY, quality) {
+    function drawSignalBars(canvas, x, topY, quality, fg, dim) {
         // 5 signal bars: heights 3, 4, 5, 6, 7 from left to right.
         // `topY` is where the TOP of the tallest bar sits; shorter bars
         // share the same bottom as the tallest.
@@ -231,38 +231,41 @@ var UI = (function() {
         for (var i = 0; i < 5; i++) {
             var h = heights[i];
             var barY = barBottom - h;
-            // Filled bars use the foreground (white on black bar); empty
-            // bars keep '#ccc' — the "shade" tone carried over from the
-            // light-mode bar design.
-            var color = (i < filledBars) ? '#fff' : '#ccc';
+            var color = (i < filledBars) ? fg : dim;
             canvas.drawRect(barX, barY, 1, h, color);
             barX += 2;  // 1px bar + 1px gap
         }
     }
 
-    function drawStatusBar(canvas, title) {
-        // Black bar background. All foreground elements sit at
-        // STATUS_BAR_PAD_TOP (3px) from the top edge.
-        canvas.drawRect(0, 0, canvas.w, STATUS_BAR_H, '#000');
+    function drawStatusBar(canvas, title, opts) {
+        // Default dark theme (black bar, white foreground). A scene can
+        // pass `{ bg, fg, dim }` to override — Desktop uses #EEEEEE bg
+        // with #000 fg, for example.
+        opts = opts || {};
+        var bg  = opts.bg  || '#000';
+        var fg  = opts.fg  || '#fff';
+        var dim = opts.dim || '#ccc';  // empty signal bars / soft accents
+
+        canvas.drawRect(0, 0, canvas.w, STATUS_BAR_H, bg);
         var top = STATUS_BAR_PAD_TOP;
 
-        canvas.drawText(title, PAD_LEFT, top, '#fff');
+        canvas.drawText(title, PAD_LEFT, top, fg);
 
         // Left-side network indicators are laid out left-to-right, only
         // showing elements whose underlying interface is present.
         var leftX = 2;
         if (modemAvailable) {
-            drawSignalBars(canvas, leftX, top, signalQuality);
+            drawSignalBars(canvas, leftX, top, signalQuality, fg, dim);
             leftX += 10;  // 5 bars × 1px + 4 gaps × 1px + 1px trailing gap
-            HaxrcorpFont16.draw(canvas.ctx, accessTech, leftX, top, '#fff');
+            HaxrcorpFont16.draw(canvas.ctx, accessTech, leftX, top, fg);
             leftX += HaxrcorpFont16.textWidth(accessTech) + 2;
         }
         if (wifiConnected) {
-            canvas.drawSprite(wifiIcon(wifiQuality), leftX, top, '#fff');
-            leftX += 7 + 2;  // wifi is 7px wide + 2px gap
+            canvas.drawSprite(wifiIcon(wifiQuality), leftX, top, fg);
+            leftX += 7 + 2;
         }
         if (ethernetConnected) {
-            canvas.drawSprite(Icons.ethernet_statusbar, leftX, top, '#fff');
+            canvas.drawSprite(Icons.ethernet_statusbar, leftX, top, fg);
             leftX += Icons.ethernet_statusbar.w + 2;
         }
 
@@ -270,24 +273,22 @@ var UI = (function() {
         var pctStr = batteryLevel >= 0 ? batteryLevel + '%' : '--%';
         var batteryW = StatusBarBattery.sprite.w;
         var batteryX = canvas.w - 2 - batteryW;
-        // Right-align so the last glyph ends 1px left of the battery icon,
-        // using the font's actual pixel width (not a 6px-per-char estimate).
         var textX = batteryX - 1 - HaxrcorpFont16.textWidth(pctStr);
 
-        HaxrcorpFont16.draw(canvas.ctx, pctStr, textX, top - 2, '#fff');
+        HaxrcorpFont16.draw(canvas.ctx, pctStr, textX, top - 2, fg);
         var batteryY = top - 1;
-        canvas.drawSprite(StatusBarBattery.sprite, batteryX, batteryY, '#fff');
+        canvas.drawSprite(StatusBarBattery.sprite, batteryX, batteryY, fg);
 
         // Battery level bar inside the sprite — offset kept constant
         // relative to the sprite's top-left.
         var barMaxWidth = 10;
         var barHeight = 5;
         var barX = 240;
-        var barY = top + 1;  // 2px from sprite top (sprite now at top-1)
+        var barY = top + 1;
         var barWidth = Math.round((barMaxWidth * Math.max(0, batteryLevel)) / 100);
 
         if (barWidth > 0) {
-            canvas.drawRect(barX, barY, barWidth, barHeight, '#fff');
+            canvas.drawRect(barX, barY, barWidth, barHeight, fg);
         }
 
         // Charging bolt overlays the battery icon flush with its

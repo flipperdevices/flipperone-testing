@@ -28,5 +28,18 @@ var SceneManager = (function() {
         }
     };
 
+    // Collects `breadcrumbTitle` strings from every scene currently on
+    // the stack (bottom → top). Scenes without that property are
+    // skipped — e.g. Desktop and the Main Menu don't contribute to the
+    // "> Network > Ethernet" trail.
+    SceneManager.prototype.breadcrumb = function() {
+        var titles = [];
+        for (var i = 0; i < this._stack.length; i++) {
+            var t = this._stack[i].breadcrumbTitle;
+            if (t) titles.push(t);
+        }
+        return titles;
+    };
+
     return SceneManager;
 })();

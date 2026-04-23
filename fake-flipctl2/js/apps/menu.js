@@ -129,7 +129,7 @@ var MenuScene = (function() {
                 }
                 return new Modem5gScene();
             },
-            'Ethernet': function() { return new EthernetScene(); }
+            'Ethernet': function() { return new EthernetScene(sm); }
             // 'Airplane mode' has no factory — it's a toggle (see below).
         });
 

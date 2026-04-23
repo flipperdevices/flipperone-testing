@@ -37,6 +37,9 @@ var SubMenuScene = (function() {
     function SubMenuScene(sceneManager, title, items, appScenes) {
         this.sceneManager = sceneManager;
         this.title = title;
+        // Exposed for SceneManager.breadcrumb() — contributes this level
+        // to the breadcrumb trail (e.g. "Network" in "> Network > …").
+        this.breadcrumbTitle = title;
         this.itemNames = items;
         this.appScenes = appScenes || {};
         this.selectedIndex = 0;

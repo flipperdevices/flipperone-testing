@@ -87,6 +87,13 @@ var DesktopScene = (function() {
     };
 
     DesktopScene.prototype.handleInput = function(action) {
+        // ok / run open the Main Menu (same effect as tapping the
+        // existing "Menu" button via its 'edit' action).
+        if (action === 'ok' || action === 'run') {
+            this._onMenu();
+            return;
+        }
+
         // Check if action maps to a button
         var btn = this.btnActionMap[action];
         if (btn) {
@@ -109,8 +116,9 @@ var DesktopScene = (function() {
         // Render message box component
         this.messageBox.render(canvas);
 
-        // Status bar (overlays on top of dolphin)
-        UI.drawStatusBar(canvas, '');
+        // Status bar (overlays on top of dolphin). Desktop uses a
+        // light theme — #EEEEEE bar with black foreground elements.
+        UI.drawStatusBar(canvas, '', { bg: '#EEEEEE', fg: '#000' });
 
         // Draw profile info: "Profile: Router" on the right, under status bar
         var profileText = 'Profile: Router';
