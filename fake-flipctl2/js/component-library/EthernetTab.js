@@ -84,7 +84,7 @@ var EthernetTab = (function() {
         // content below uses `this.y` anchors so it stays anchored to
         // the top edge of the frame.
         if (this.selected) {
-            var sel = new MenuSelectorFrame({
+            var sel = new ComponentSelectorFrame({
                 x: this.x, y: this.y,
                 width: this.w, height: totalH,
                 anchorH: 'left', anchorV: 'top',

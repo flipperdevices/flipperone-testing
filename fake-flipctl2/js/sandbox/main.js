@@ -10,6 +10,12 @@
             ctor: MenuSelectorFrame,
             description: 'Selection frame for menu entries. Starts as a duplicate of ResponsiveFrame.',
             bboxPadding: { top: 0, right: 1, bottom: 1, left: 0 }
+        },
+        {
+            name: 'ComponentSelectorFrame',
+            ctor: ComponentSelectorFrame,
+            description: 'Selection frame for generic component cards (e.g. EthernetTab). Clone of MenuSelectorFrame ready to diverge.',
+            bboxPadding: { top: 0, right: 1, bottom: 1, left: 0 }
         }
     ];
 
