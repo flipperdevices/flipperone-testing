@@ -222,7 +222,8 @@ fake-flipctl2/
     │   └── icons.js               # 6-bit grayscale icon data (network, system, testing, wifi_0..100, etc.)
     └── apps/
         ├── desktop.js             # Desktop startup scene with Menu button
-        ├── menu.js                # Main menu (Network, Testing, System)
+        ├── menu.js                # Main menu (Network, Testing, Settings — no breadcrumb, no bottom buttons; keyboard-only navigation)
+        ├── animated_icons.js      # Vertical sprite strips (e.g. settings_animated) played on SELECTED menu items
         ├── submenu.js             # Generic submenu handler
         ├── modem5g.js             # 5G modem info via /api/modem
         ├── diskspace.js           # Disk space via /api/disk
@@ -243,51 +244,66 @@ Note: systemd units are **not** in this repo. They live in the sibling `/flipper
 ## Status Bar
 
 ### Layout
-- **Height**: 11px
-- **Background**: White (#fff)
-- **Left**: 5G signal bars (2px padding) + technology label (1px gap)
-- **Center**: Time and date (HH:MM MMM DD)
-- **Right**: Battery percentage + battery icon + plug icon (if charging)
+- **Height**: 13px (`STATUS_BAR_H` in `ui.js`)
+- **Background**: Black (`#000`)
+- **Top padding for all elements**: 3px (`STATUS_BAR_PAD_TOP`)
+- **Foreground color**: White (`#fff`). Grayscale sprites preserve their
+  internal shade relationships through the canvas alpha-blending path.
+- **Left side** (conditional, laid out left-to-right via a `leftX` cursor):
+  1. **5G signal bars + tech label** — only when modem reports
+     `available: true`.
+  2. **Wifi icon** — only when wifi is connected.
+  3. **Ethernet icon** (`Icons.ethernet_statusbar`, 13×7) — only when at
+     least one ethernet interface reports a `connected` state (and not
+     `disconnected`).
+- **Right side**: Battery percentage + battery sprite. Charging bolt
+  overlays the battery sprite when `batteryCharging === true`.
+- **No time/date** is rendered in this variant.
 
 ### 5G Signal Bars
 
-**Visual Indicator** (left side, 2px padding):
+**Visual Indicator** (left-side cursor, 2px initial padding):
 - **5 vertical bars** with heights: 3, 4, 5, 6, 7px (left to right)
-- **Width**: 1px each
-- **Gap**: 1px between bars
-- **Total width**: 9px
-- **Position**: Y raised 2px above baseline
+- **Width**: 1px each, 1px gap → 9px total span
+- **`drawSignalBars(canvas, x, topY, quality)`** takes `topY` as the top
+  of the *tallest* bar; all bars share a common bottom so shorter bars
+  are bottom-aligned.
 
-**Coloring** (proportional to `signalQuality`):
-- **Black (#000)**: Filled bars = `ceil(quality / 100 * 5)`
-- **Gray (#ccc)**: Empty bars
-- **Example**: 60% quality → 3 black + 2 gray bars
+**Coloring**:
+- **White (`#fff`)** — filled bars (`ceil(quality / 100 * 5)`)
+- **`#ccc`** — empty bars. Kept intentionally as a "shade" tone rather
+  than re-inverting, so the empty/filled contrast mirrors the light-mode
+  palette.
 
-**Source**: Polled from `/api/modem` every 1 second
+**Visibility**: The whole block (bars + tech label) is skipped when
+`modemAvailable === false`, which happens when `/api/modem` returns
+`available: false` **or** the poll errors/times out.
+
+**Source**: Polled from `/api/modem` every 1 second.
 
 ### Technology Label
 
-**Display** (right of signal bars, 1px gap):
-- **Format**: Technology abbreviation (5G, LTE, 3G, 2G, or combinations like "5G+LTE")
-- **Default**: `--` (if unavailable)
+**Display** (right of signal bars, 2px gap):
+- **Format**: Technology abbreviation (5G, LTE, 3G, 2G, or combos like
+  "5G+LTE")
+- **Default**: `--` (never visible, since the whole block hides when no
+  modem)
 - **Font**: HaxrcorpFont16
-- **Color**: Black (#000)
-- **Position**: X = 12px, Y = 0
+- **Color**: `#fff`
+- **Position**: `leftX` cursor after the signal bars, `y = top` (=3)
 
 **Mapping**:
 - `5gnr` → "5G"
 - `lte` → "LTE"
 - `umts/hspa/hsdpa/hsupa` → "3G"
 - `gsm/gprs/edge` → "2G"
-- Multiple techs joined with `+` (e.g., "5G+LTE")
-
-**Source**: Extracted from `/api/modem` accessTech array
+- Multiple techs joined with `+`
 
 ### Wifi Icon
 
-**Display** (right of the technology label, 2px gap, only when connected):
-- **Size**: 7×7 sprite, rendered via `canvas.drawSprite`
-- **Position**: `x = 12 + HaxrcorpFont16.textWidth(accessTech) + 2`, `y = 2` (vertically centered in 11px bar)
+**Display** (after modem block via `leftX` cursor, only when connected):
+- **Size**: 7×7 sprite, rendered via `canvas.drawSprite(..., '#fff')`
+- **Position**: `leftX`, `y = top` (=3)
 - **Icon variants** (by `quality` 0–100):
   - `>= 80` → `Icons.wifi_100`
   - `>= 60` → `Icons.wifi_75`
@@ -296,49 +312,52 @@ Note: systemd units are **not** in this repo. They live in the sibling `/flipper
   - else → `Icons.wifi_0`
 - **Hidden** when `wifiConnected === false`
 
-**Source**: Polled from `/api/wifi` every 2 seconds. The endpoint parses `nmcli -t -f ACTIVE,SIGNAL dev wifi` and returns `{ connected, quality }`.
+**Source**: Polled from `/api/wifi` every 2 seconds.
 
-### Time & Date Display
+### Ethernet Icon
 
-**Center of Status Bar**:
-- **Format**: `HH:MM MMM DD` (24-hour format, month day)
-- **Example**: `23:30 Apr 13`
-- **Font**: HaxrcorpFont16
-- **Color**: Black (#000)
-- **Position**: Centered horizontally
-- **Update**: Every frame (real-time)
+**Display** (after wifi via `leftX` cursor, only when connected):
+- **Asset**: `Icons.ethernet_statusbar` (13×7, 6-bit grayscale)
+- **Rendered** with `canvas.drawSprite(..., '#fff')`
+- **Connected check**: `state.indexOf('connected') !== -1 && state.indexOf('disconnected') === -1` over all interfaces returned by `/api/ethernet`
+- **Source**: Polled from `/api/ethernet` every 2 seconds
 
-### Battery Icon (Status Bar)
+### Battery Icon + Charging Overlay
 
-**Sprite Asset**:
-- **File**: `js/sprites.js` → `StatusBarBattery.sprite`
-- **Dimensions**: 16×9 pixels
-- **Format**: 6-bit grayscale (64 gray levels)
-- **Position**: Right-aligned, 2px from right edge, 1px from top
+**Battery sprite** (right-aligned):
+- **Asset**: `StatusBarBattery.sprite` (16×9, 6-bit grayscale)
+- **`batteryX = canvas.w - 2 - 16`** → `238px`
+- **`batteryY = top - 1`** → `2px` (raised 1px vs. the other elements
+  so the visual center sits closer to the bar's optical midline)
 
-**Battery Level Bar** (drawn inside sprite):
-- **Max dimensions**: 10px wide × 5px high (at 100% charge)
-- **Position inside sprite**: 6px from left, 3px from top
-- **Calculation**: `barWidth = Math.round((10 * batteryLevel) / 100)`
-- **Example**: At 69% → width = 7px (rounded from 6.9)
-- **Color**: Black (#000)
+**Battery level bar** (drawn inside the sprite):
+- **Max**: 10px wide × 5px tall at 100%
+- **`barX = 240`** (fixed)
+- **`barY = top + 1`** → `4px` (2px from the sprite's top-left)
+- **Color**: `#fff`
 
-**Example Rendering**:
-```javascript
-// In drawStatusBar():
-var batteryX = canvas.w - 2 - 16;  // 238px (right-aligned)
-canvas.drawSprite(StatusBarBattery.sprite, batteryX, 1, '#000');
+**Percentage text** (right-aligned to the battery sprite):
+- **Font**: HaxrcorpFont16, color `#fff`
+- **Position**: Right edge of the last glyph sits **1px left** of the
+  battery sprite — computed with `textX = batteryX - 1 - HaxrcorpFont16.textWidth(pctStr)` (do **not** approximate with `pctStr.length * 6`; glyph widths vary).
+- **Y**: `top - 2` (raised 1px vs. other elements for optical
+  alignment with the battery sprite, matching the sprite's 1px rise)
 
-// Draw level bar on top
-var barWidth = Math.round((10 * batteryLevel) / 100);
-canvas.drawRect(batteryX + 6, 4, barWidth, 5, '#000');
-```
+**Charging overlay**:
+- When `batteryCharging === true`, `Icons.charging_status_bar` (16×9)
+  is drawn on top of the battery sprite at `(batteryX, batteryY)`
+  (flush with sprite top-left).
+- **Rendered via `canvas.drawSpriteLiteral`** (not `drawSprite`) so the
+  three tones map as: dark source → black, bright source → white,
+  `gray=63` sentinel → transparent (battery shows through around the
+  bolt silhouette). See [Canvas Drawing Primitives](#basic-methods).
 
 ### Battery State
-- **Default value**: -1 (unknown, shows "--%" until API responds)
-- **Source**: Polled from `/api/power` every 5 seconds
-- **Charging indicator**: Plug icon (7×7) if status === 'Charging' or 'Full'
-- **Position**: Right-aligned, 2px from right edge, 1px from top
+
+- **Default `batteryLevel`**: `-1` (unknown) → `--%` until the API
+  responds.
+- **Source**: `/api/power` polled every 5 seconds. `batteryCharging` is
+  set when `status` is `'Charging'` or `'Full'`.
 
 ---
 
@@ -475,6 +494,73 @@ var VariableName = (function() {
 
 ---
 
+## Animated Icons
+
+Animated icons are **vertical sprite strips**: the same 6-bit grayscale
+format as regular sprites, but with all frames stacked top-to-bottom in
+one `d` array.
+
+**File**: `js/animated_icons.js`
+
+**Shape**:
+```javascript
+var AnimatedIcons = (function() {
+    var settings_animated = {
+        w: 14,                 // width of each frame
+        h: 140,                // TOTAL strip height (frameH × frames)
+        frames: 10,            // frame count
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [ /* ... */ ]       // packed 6-bit data, rows top-to-bottom
+    };
+    return { settings_animated: settings_animated };
+})();
+```
+
+**Byte layout note (important):** the grayscale renderer reads 3 bytes
+per 4-pixel group, so a row consumes `ceil(w/4) * 3` bytes — **not**
+`ceil(w*6/8)`. For `w=14` that's 12 bytes/row, not 11. `drawSpriteFrame`
+uses the correct formula so `frameIndex` lands on the right offset.
+
+### Playback
+
+Scenes drive animation by computing a frame index from wall-clock time
+and calling `canvas.drawSpriteFrame`:
+
+```javascript
+var FRAME_MS = 200;  // 5 fps
+var frameIndex = Math.floor(Date.now() / FRAME_MS) % sprite.frames;
+canvas.drawSpriteFrame(sprite, x, y, frameIndex, '#000');
+```
+
+### MenuItem integration
+
+`MenuItem` supports an optional `iconAnimated` property. When the item's
+state is `STATE_SELECTED` **and** `iconAnimated` is set, the strip plays
+at 5 fps; otherwise the static `icon` renders in all states. Example
+from `menu.js`:
+
+```javascript
+var item = new MenuItem('Settings', true, Icons.system);
+item.iconAnimated = AnimatedIcons.settings_animated;
+```
+
+### Driving redraws
+
+The main loop throttles renders (it only redraws on input or every
+`IDLE_REDRAW_MS = 250 ms`). For smooth animation, scenes should tick
+more frequently:
+
+- `main.js` exposes `window.requestRender()` — call it to force a redraw
+  on the next rAF tick.
+- `MenuScene.enter()` starts a `setInterval(200 ms)` that calls
+  `window.requestRender()`; `exit()` clears it.
+
+Any new scene that hosts time-driven animation should follow the same
+pattern (start an interval in `enter`, clear it in `exit`).
+
+---
+
 # UI System Documentation
 
 Complete guide to the fake-flipctl UI system for building new screens and components.
@@ -505,10 +591,60 @@ Complete guide to the fake-flipctl UI system for building new screens and compon
 ### Primary Font: HaxrcorpFont16
 - **Glyph size**: 5×7 pixels
 - **Cell size**: 6×8 pixels (5px + 1px kerning)
+- **Row frame**: 11 rows × 8 bits (bit7 = leftmost pixel)
 - **Supported**: ASCII 32–126 (printable ASCII)
 - **Color**: Any hex color (passed as parameter)
 - **API**: `HaxrcorpFont16.draw(ctx, text, x, y, color)`
 - **Metrics**: `HaxrcorpFont16.textWidth(text)` → pixels
+- **Used by**: status bar, submenu titles, most scenes
+
+### Menu Font: BusyFont9
+- **Cap height**: 9px (capital R spans 9 rows)
+- **Row frame**: 14 rows × 16 bits (MSB = leftmost pixel; 2 bytes per
+  row to accommodate glyphs up to 16px wide)
+- **Generated from**: `/Users/vladpetrenko/Downloads/busy-regular_9px.ttf`
+  rasterised at `size=15` (the PIL size at which caps render 9px tall)
+- **Source file**: `js/busy9.js`
+- **Supported**: ASCII 32–126
+- **API**: same surface as HaxrcorpFont16 — `BusyFont9.draw(ctx, text, x, y, color)` and `BusyFont9.textWidth(text)`
+- **Used by**: `MenuItem` (main menu and submenus)
+
+See [Font Creation (TTF → bitmap)](#font-creation-ttf--bitmap) for the
+conversion pipeline.
+
+### Font Creation (TTF → bitmap)
+
+New fonts live under `js/` as hand-generated `.js` modules emitted by
+`ttf-to-js.py` at the project root (sibling of `png-to-bitmap.py`). The converter:
+
+1. Loads the TTF at a chosen rasterisation size (pick whatever size
+   makes the target cap height right — for `busy-regular_9px.ttf`,
+   `SIZE = 15` gives a 9px capital R).
+2. For each ASCII codepoint 32–126: rasterises onto a wide `L`-mode
+   canvas at `(1, TEXT_Y)`, thresholds at `>= 128`, crops the leftmost
+   whitespace column, then packs the first `ROWS` rows × `COLS` columns
+   into integers (MSB = leftmost pixel).
+3. Writes a `<Name> = (function() { ... })()` IIFE with `draw` and
+   `textWidth`, matching `haxrcorp16.js`.
+
+Key knobs inside the converter:
+
+| Knob | Purpose |
+|------|---------|
+| `SIZE` | PIL rasterisation size. Pick to control cap height. |
+| `ROWS` | Fixed row count per glyph. Must cover ascenders + descenders. |
+| `COLS` | Bit width per row (8 or 16). Use 16 if any glyph is wider than 8px. |
+| `TEXT_Y` | Row at which to draw the text on the canvas. Choose so that cap tops land where you want them. |
+
+Wiring a new font into a scene:
+
+1. Add `<script src="js/<name>.js"></script>` to `index.html` after
+   `haxrcorp16.js`.
+2. Replace `HaxrcorpFont16.draw` / `HaxrcorpFont16.textWidth` calls in
+   the target scene with the new font's symbol.
+3. If the font uses a different `ROWS` count than the old one, update
+   the scene's `FONT_H` constant so vertical centring accounts for the
+   new frame height (e.g. `menu.js` uses `FONT_H = 14` for BusyFont9).
 
 ## Color Palette
 
@@ -529,7 +665,8 @@ This section consolidates the visual conventions used across all components. Val
 
 | Token | Value | Source | Meaning |
 |-------|-------|--------|---------|
-| `STATUS_BAR_H` | 11px | `ui.js` | Status bar height |
+| `STATUS_BAR_H` | 13px | `ui.js` | Status bar height (black bg) |
+| `STATUS_BAR_PAD_TOP` | 3px | `ui.js` | Top padding for every foreground element in the bar |
 | `ITEM_H` (simple list) | 12px | `ui.js` | Plain menu row height |
 | `ITEM_H_REGULAR` (MenuItem) | 19px | `menu.js` | Standard menu item height (with divider) |
 | `ITEM_H_LAST` (MenuItem) | 18px | `menu.js` | Last-item height (no divider) |
@@ -644,9 +781,28 @@ canvas.drawVLine(x, y, length, color)           // Vertical line
 canvas.drawIcon(iconData, x, y, color)          // 14×14 bitmap icon
 canvas.drawCursor(x, y, w, h, color)            // Text cursor indicator
 
+// Sprite variants
+canvas.drawSprite(sprite, x, y, color)                    // Full sprite (binary or 6-bit grayscale, alpha-blended)
+canvas.drawSpriteFrame(sprite, x, y, frameIndex, color)   // One frame of a vertical strip (sprite has `frames` count)
+canvas.drawSpriteLiteral(sprite, x, y)                    // Three-tone overlay: paint each pixel at its own grayscale value; gray=63 = transparent sentinel
+
 // Text is rendered via font object, NOT canvas directly
 HaxrcorpFont16.draw(canvas.ctx, text, x, y, color)
+BusyFont9.draw(canvas.ctx, text, x, y, color)
 ```
+
+**When to use each sprite method:**
+- `drawSprite` — standard foreground-on-background rendering. Uses
+  `opacity = (63 - grayValue) / 63`, so dark source pixels become
+  opaque in the chosen `color`. Good for single-tone icons that should
+  adopt the scene's ink colour.
+- `drawSpriteFrame` — same rendering as `drawSprite`, but crops to one
+  frame of a vertically-stacked strip (see [Animated Icons](#animated-icons)).
+- `drawSpriteLiteral` — preserves the original pixel values. Dark
+  stays dark, light stays light, `gray=63` skips the pixel entirely so
+  whatever was drawn underneath shows through. Use for multi-tone
+  overlays (e.g. the charging bolt that must sit on top of another
+  sprite without taking on the scene's foreground colour).
 
 ### Common Patterns
 ```javascript
@@ -1399,7 +1555,7 @@ function MenuScene() {
     var items = [
         new MenuItem('Network', false, Icons.network),
         new MenuItem('Testing', false, Icons.testing),
-        new MenuItem('System', true, Icons.system)  // Last item (no divider)
+        new MenuItem('Settings', true, Icons.system)  // Last item (no divider)
     ];
 }
 ```
@@ -1407,7 +1563,7 @@ function MenuScene() {
 **Result**:
 - Row 1: [Network icon] Network (divider line)
 - Row 2: [Testing icon] Testing (divider line)
-- Row 3: [System icon] System (no divider)
+- Row 3: [System icon] Settings (no divider — the `System` submenu is now surfaced as "Settings" in the main menu)
 
 ### Dynamic Icon Color in Pressed State
 

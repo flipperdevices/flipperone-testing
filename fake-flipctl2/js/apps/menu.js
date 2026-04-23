@@ -1,102 +1,19 @@
 var MenuScene = (function() {
-    var FONT_H = 11;
-    var PAD_X = 6;
-    var RADIUS = 2;
-    var ITEM_W = 240;
-    var ITEM_H_REGULAR = 19;  // Regular items height (with bottom line)
-    var ITEM_H_LAST = 18;     // Last item height (no line)
-    var BTN_W = 48;
+    // Parent menu container anchor (top-left) and width. Items stack
+    // flush inside this container with 1px gray dividers between them.
+    var CONTAINER_X = 16;
+    var CONTAINER_Y = 24;
+    var CONTAINER_W = 224;            // 256 - 16 (left) - 16 (right)
+    var DIVIDER_COLOR = '#CCCCCC';
+    var ANIMATED_ICON_FRAME_MS = 200; // 5 fps redraw cadence
 
-    var STATE_DEFAULT = 'default';
-    var STATE_SELECTED = 'selected';
-    var STATE_PRESSED = 'pressed';
-
-    function MenuItem(text, isLast, icon, status) {
-        this.text = text;
-        this.w = ITEM_W;
-        this.h = isLast ? ITEM_H_LAST : ITEM_H_REGULAR;
-        this.state = STATE_DEFAULT;
-        this.icon = icon || null;
-        // Optional vertical sprite strip that plays while the item is
-        // SELECTED. Expected shape: { w, h, frames, ... }. If absent, the
-        // static `icon` renders in all states.
-        this.iconAnimated = null;
-        this.isLast = isLast || false;
-        this.status = status || null;
-    }
-
-    // 5 fps = 200 ms per frame.
-    var ANIMATED_ICON_FRAME_MS = 200;
-
-    MenuItem.prototype.render = function(canvas, x, y) {
-        var textColor = '#000';
-        var iconColor = '#000';
-
-        if (this.state === STATE_DEFAULT) {
-            if (!this.isLast) {
-                canvas.drawHLine(x + 2, y + this.h - 1, this.w - 4, '#EDEDED');
-            }
-        } else if (this.state === STATE_SELECTED) {
-            canvas.drawRoundFrame(x, y - 1, this.w, this.h + 1, RADIUS, '#000');
-        } else if (this.state === STATE_PRESSED) {
-            canvas.drawRoundRect(x, y - 1, this.w, this.h + 1, RADIUS, '#000');
-            textColor = '#fff';
-            iconColor = '#fff';
-        }
-
-        // Center text vertically
-        var verticalPadding = Math.floor((this.h - FONT_H) / 2);
-
-        // Draw icon. When selected and an animated strip is available,
-        // play it; otherwise fall back to the static icon.
-        var activeAnim = (this.state === STATE_SELECTED && this.iconAnimated) ? this.iconAnimated : null;
-        var iconSource = activeAnim || this.icon;
-        if (iconSource) {
-            var frameH = activeAnim ? Math.floor(iconSource.h / (iconSource.frames || 1)) : iconSource.h;
-            var iconX = x + PAD_X;
-            var iconY = y + Math.floor((this.h - frameH) / 2);
-            if (activeAnim) {
-                var frameIndex = Math.floor(Date.now() / ANIMATED_ICON_FRAME_MS) % (activeAnim.frames || 1);
-                canvas.drawSpriteFrame(activeAnim, iconX, iconY, frameIndex, iconColor);
-            } else if (iconSource.grayscale) {
-                canvas.drawSprite(iconSource, iconX, iconY, iconColor);
-            } else {
-                canvas.drawIcon(iconSource, iconX, iconY, iconColor);
-            }
-        }
-
-        // Draw text
-        var textX = this.icon ? x + PAD_X + 14 + 4 : x + PAD_X;
-        var textY = y + verticalPadding;
-        HaxrcorpFont16.draw(canvas.ctx, this.text, textX, textY, textColor);
-
-        // Draw status text on the right if available
-        if (this.status) {
-            // For Fake-FlipCTL_2, render with custom spacing
-            if (this.status === '< ON >' || this.status === '< OFF >') {
-                var ltWidth = HaxrcorpFont16.textWidth('<');
-                var maxMiddleWidth = HaxrcorpFont16.textWidth('OFF');  // Use longest text width
-                var gtWidth = HaxrcorpFont16.textWidth('>');
-                var spacing = 15;
-
-                var rightX = x + this.w - PAD_X;
-                var gtX = rightX - gtWidth;
-                var ltX = gtX - spacing - maxMiddleWidth - spacing - ltWidth;
-                var middleText = this.status === '< ON >' ? 'ON' : 'OFF';
-                var middleBaseX = ltX + ltWidth + spacing;
-                var middleTextWidth = HaxrcorpFont16.textWidth(middleText);
-                var middleX = Math.floor(middleBaseX + (maxMiddleWidth - middleTextWidth) / 2);
-
-                HaxrcorpFont16.draw(canvas.ctx, '<', ltX, textY, textColor);
-                HaxrcorpFont16.draw(canvas.ctx, middleText, middleX, textY, textColor);
-                HaxrcorpFont16.draw(canvas.ctx, '>', gtX, textY, textColor);
-            } else {
-                var statusWidth = HaxrcorpFont16.textWidth(this.status);
-                var statusX = x + this.w - statusWidth - PAD_X;
-                HaxrcorpFont16.draw(canvas.ctx, this.status, statusX, textY, textColor);
-            }
-        }
-    };
+    // MenuSelectorFrame around the selected line. Positioned/sized
+    // independently of the MenuLine itself per spec.
+    var SELECTOR_X = 10;
+    var SELECTOR_W = 232;
+    var SELECTOR_H = 22;
+    // Vertical offset: centres the 22px frame over the 20px line.
+    var SELECTOR_Y_OFFSET = -1;
 
     var menuItems = [
         'Network',
@@ -116,15 +33,12 @@ var MenuScene = (function() {
             'Ethernet': function() { return new EthernetScene(); }
         });
 
-        // Map icons to menu items
         var iconMap = {
             'Routing info': Icons.info_icon,
             '5G Modem': Icons.modem_5g,
             'Wi-Fi': Icons.wifi,
             'Ethernet': Icons.ethernet
         };
-
-        // Add icons to existing items
         for (var i = 0; i < subMenu.items.length; i++) {
             subMenu.items[i].icon = iconMap[subMenu.items[i].text];
         }
@@ -177,8 +91,6 @@ var MenuScene = (function() {
         this.selectedIndex = 0;
         this.items = [];
 
-        // Map menu items to icons. Animated entries take over on selection
-        // and fall back to the static icon otherwise.
         var iconMap = {
             'Network': Icons.network,
             'Testing': Icons.testing,
@@ -188,22 +100,31 @@ var MenuScene = (function() {
             'Settings': AnimatedIcons.settings_animated
         };
 
-        // Create menu items
         for (var i = 0; i < menuItems.length; i++) {
-            var isLast = (i === menuItems.length - 1);
-            var icon = iconMap[menuItems[i]] || null;
-            var item = new MenuItem(menuItems[i], isLast, icon);
-            item.iconAnimated = animatedIconMap[menuItems[i]] || null;
-            this.items.push(item);
+            this.items.push(new MenuLine({
+                text: menuItems[i],
+                width: CONTAINER_W,
+                icon: iconMap[menuItems[i]] || null,
+                iconAnimated: animatedIconMap[menuItems[i]] || null
+            }));
         }
 
-        this.items[this.selectedIndex].state = STATE_SELECTED;
+        this.items[this.selectedIndex].state = MenuLine.STATE_SELECTED;
+
+        this.selectorFrame = new MenuSelectorFrame({
+            x: SELECTOR_X,
+            y: 0,               // scene updates this each frame
+            width: SELECTOR_W,
+            height: SELECTOR_H,
+            anchorH: 'left',
+            anchorV: 'top',
+            strokeColor: '#000',
+            showStroke: true,
+            showFill: false     // transparent interior; line content shows through
+        });
     }
 
     MenuScene.prototype.enter = function() {
-        // Tick at the animated-icon framerate so selection animations can
-        // advance even when there's no input. The render loop decides what
-        // to draw; we just nudge it.
         if (this._animTimer) return;
         this._animTimer = setInterval(function() {
             if (window.requestRender) window.requestRender();
@@ -219,15 +140,15 @@ var MenuScene = (function() {
     MenuScene.prototype.handleInput = function(action) {
         if (action === 'down') {
             if (this.selectedIndex < this.items.length - 1) {
-                this.items[this.selectedIndex].state = STATE_DEFAULT;
+                this.items[this.selectedIndex].state = MenuLine.STATE_DEFAULT;
                 this.selectedIndex++;
-                this.items[this.selectedIndex].state = STATE_SELECTED;
+                this.items[this.selectedIndex].state = MenuLine.STATE_SELECTED;
             }
         } else if (action === 'up') {
             if (this.selectedIndex > 0) {
-                this.items[this.selectedIndex].state = STATE_DEFAULT;
+                this.items[this.selectedIndex].state = MenuLine.STATE_DEFAULT;
                 this.selectedIndex--;
-                this.items[this.selectedIndex].state = STATE_SELECTED;
+                this.items[this.selectedIndex].state = MenuLine.STATE_SELECTED;
             }
         } else if (action === 'ok' || action === 'run') {
             var factory = subMenus[menuItems[this.selectedIndex]];
@@ -243,13 +164,27 @@ var MenuScene = (function() {
         canvas.clear('#fff');
         UI.drawStatusBar(canvas, '');
 
-        // Menu items start just below the status bar (13px) + 2px gap.
-        var startY = 15;
-
+        // Stack lines flush. Between each pair (never above the first,
+        // never below the last) paint a 1px gray separator. Track the
+        // Y of the selected line so the selector frame can be placed
+        // around it in a second pass.
+        var y = CONTAINER_Y;
+        var selectedLineY = CONTAINER_Y;
         for (var i = 0; i < this.items.length; i++) {
-            var y = startY + i * ITEM_H_REGULAR;
-            this.items[i].render(canvas, 8, y);
+            if (i === this.selectedIndex) selectedLineY = y;
+            this.items[i].render(canvas, CONTAINER_X, y);
+            y += MenuLine.H;
+            if (i < this.items.length - 1) {
+                canvas.drawHLine(CONTAINER_X, y, CONTAINER_W, DIVIDER_COLOR);
+                y += 1;
+            }
         }
+
+        // Selector frame around the selected line, drawn last so its
+        // stroke sits on top of both the line content and any divider
+        // the frame overlaps.
+        this.selectorFrame.setPosition(SELECTOR_X, selectedLineY + SELECTOR_Y_OFFSET);
+        this.selectorFrame.render(canvas);
     };
 
     return MenuScene;

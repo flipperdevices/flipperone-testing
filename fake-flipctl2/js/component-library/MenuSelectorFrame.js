@@ -92,20 +92,29 @@ var MenuSelectorFrame = (function() {
         }
 
         // Bottom shadow line: 1px tall, at y+h (one row below the frame).
-        // Left inset: cornerRadius. Length: width - 2*cornerRadius.
-        var shadowLen = w - 2 * r;
+        // Left inset: cornerRadius. Length: width - 2*cornerRadius + 1 so
+        // it extends one column further right, meeting the BR corner.
+        var shadowLen = w - 2 * r + 1;
         if (shadowLen > 0) {
             ctx.fillStyle = this.strokeColor;
             ctx.fillRect(x + r, y + h, shadowLen, 1);
         }
 
         // Right shadow line: 1px wide, at x+w (one column right of the frame).
-        // Top inset: cornerRadius. Length: height - 2*cornerRadius.
-        var shadowVLen = h - 2 * r;
+        // Top inset: cornerRadius. Length: height - 2*cornerRadius + 1 so
+        // it extends one row further down, meeting the BR corner.
+        var shadowVLen = h - 2 * r + 1;
         if (shadowVLen > 0) {
             ctx.fillStyle = this.strokeColor;
             ctx.fillRect(x + w, y + r, 1, shadowVLen);
         }
+
+        // Two corner pixels at the bottom-right: inset (right 2 / bottom 1)
+        // and (right 1 / bottom 2) from the container edges. They fill the
+        // cut-corner region to give the selection frame extra weight there.
+        ctx.fillStyle = this.strokeColor;
+        ctx.fillRect(x + w - 2, y + h - 1, 1, 1);
+        ctx.fillRect(x + w - 1, y + h - 2, 1, 1);
     };
 
     MenuSelectorFrame.prototype.setPosition = function(x, y) { this.x = x; this.y = y; };
