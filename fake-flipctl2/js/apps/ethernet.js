@@ -14,14 +14,13 @@ var EthernetScene = (function() {
     var MODE_PAD_L    = 4;
     var MODE_PAD_R    = 4;
     var MODE_ARROW_PRESSED_MS = 120;
-    var MODE_VALUES   = ['Router', 'LAN Bridge', 'Dual WAN'];
-    var MODE_DEFAULT  = 2;   // Dual WAN
+    var MODE_VALUES   = ['Manual'];
+    var MODE_DEFAULT  = 0;
 
-    // Per-mode role labels for (ETH0, ETH1).
+    // Per-mode role labels for (ETH0, ETH1). Dual WAN = both ports act
+    // as independent WAN interfaces.
     var ROLE_BY_MODE = {
-        'Router':     ['WAN', 'LAN'],
-        'LAN Bridge': ['LAN', 'LAN'],
-        'Dual WAN':   ['WAN', 'WAN']
+        'Manual': ['WAN', 'WAN']
     };
 
     // ETH tabs stack below the mode row — 1px more than TAB_GAP so the
@@ -79,6 +78,16 @@ var EthernetScene = (function() {
         return stripCidr(iface.ip4[0]);
     }
 
+    function firstIpv6(iface) {
+        if (!iface || !iface.ip6 || !iface.ip6.length) return '';
+        var addr = stripCidr(iface.ip6[0]);
+        // IPv6 addresses can be up to 39 chars — too long for the
+        // bottom-left slot. Truncate after 30 and append "..." so the
+        // user still sees the prefix.
+        if (addr.length > 30) addr = addr.slice(0, 30) + '...';
+        return addr;
+    }
+
     // Map nmcli's ipv4.method to a short user-facing label.
     //   auto        → "DHCP"         (client, auto-configured)
     //   manual      → "Static"       (client, manual IP)
@@ -88,7 +97,7 @@ var EthernetScene = (function() {
     function formatDhcp(method) {
         if (!method) return '';
         switch (method) {
-            case 'auto':       return 'DHCP';
+            case 'auto':       return 'DHCP Client';
             case 'manual':     return 'Static';
             case 'shared':     return 'DHCP Server';
             case 'link-local': return 'Link-local';
@@ -149,9 +158,10 @@ var EthernetScene = (function() {
         this.modeArrowPressed = null;
         this._autoSelected = false;
         fetchEthernet();
-        // 500ms keeps link changes snappy — the server reads the
-        // kernel carrier file so state is up-to-date within one poll.
-        pollTimer = setInterval(fetchEthernet, 500);
+        // 2s poll keeps dbus-daemon overhead low; the server reads the
+        // kernel carrier file directly so cable changes still surface
+        // on the next tick.
+        pollTimer = setInterval(fetchEthernet, 2000);
         var self = this;
         this._renderTick = setInterval(function() {
             if (!loading) {
@@ -315,6 +325,7 @@ var EthernetScene = (function() {
                 portNumber: i,
                 connected: connected,
                 ipv4: firstIpv4(iface),
+                ipv6: firstIpv6(iface),
                 portRole: roleMap[i] || '',
                 speed: formatSpeed(iface.speed),
                 rxLabel: connected ? formatBytes(iface.rxBytes) : '',

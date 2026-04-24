@@ -50,6 +50,38 @@ var EthernetTab = (function() {
     var BOTTOM_INFO_GAP     = 2;   // gap between arrow and value
     var BOTTOM_INFO_COL_GAP = 5;   // gap between RX value and the up arrow
 
+    // Threshold renderer for the 6-bit grayscale arrow icons. The
+    // default canvas renderer uses (63 − gray) / 63 as opacity, which
+    // turns the icons' anti-aliased pixels into near-transparent white
+    // on the gray pill. `drawSolidSprite` paints every non-transparent
+    // pixel (gray < 63) as a fully opaque `color` — no blending — so
+    // the arrows read crisply regardless of background.
+    function drawSolidSprite(canvas, sprite, x, y, color) {
+        if (!sprite || !sprite.d) return;
+        var ctx = canvas.ctx;
+        ctx.fillStyle = color;
+        var bytesPerRow = Math.ceil(sprite.w / 4) * 3;
+        for (var row = 0; row < sprite.h; row++) {
+            var base = row * bytesPerRow;
+            for (var col = 0; col < sprite.w; col += 4) {
+                var bi = base + (col / 4) * 3;
+                var b0 = sprite.d[bi]     || 0;
+                var b1 = sprite.d[bi + 1] || 0;
+                var b2 = sprite.d[bi + 2] || 0;
+                var p0 = (b0 >> 2) & 0x3F;
+                var p1 = (((b0 & 0x03) << 4) | ((b1 >> 4) & 0x0F)) & 0x3F;
+                var p2 = (((b1 & 0x0F) << 2) | ((b2 >> 6) & 0x03)) & 0x3F;
+                var p3 = b2 & 0x3F;
+                var pixels = [p0, p1, p2, p3];
+                for (var k = 0; k < 4 && col + k < sprite.w; k++) {
+                    if (pixels[k] < 63) {
+                        ctx.fillRect(x + col + k, y + row, 1, 1);
+                    }
+                }
+            }
+        }
+    }
+
     function EthernetTab(options) {
         options = options || {};
         this.x        = options.x      !== undefined ? options.x      : DEFAULT_X;
@@ -152,36 +184,59 @@ var EthernetTab = (function() {
         Born2bSportyV2Medium.draw(canvas.ctx, nameStr, nameX, nameY, fg);
         var nameW = Born2bSportyV2Medium.textWidth(nameStr);
 
-        // Right-aligned status: [portRole]  [status].
-        var infoY     = this.y + INFO_DRAW_Y;
-        var statusStr = this.connected
-            ? (this.speed || 'Connected')
-            : 'Disconnected';
-        var statusW   = HaxrcorpFont16.textWidth(statusStr);
-        var statusX   = this.x + this.w - STATUS_PAD_R - statusW;
+        // Top-row layout:
+        //   [icon] [ETHn]    [IPv4]            [speed  ↓ RX  ↑ TX]
+        // Disconnected:
+        //   [icon] [ETHn]                      [Disconnected]
+        var infoY = this.y + INFO_DRAW_Y;
+        var arrowY = infoY + 2;   // bottom of arrow = infoY + 8 (cap baseline)
 
-        var roleW = 0, roleX = 0;
-        if (this.portRole) {
-            roleW = HaxrcorpFont16.textWidth(this.portRole);
-            roleX = statusX - STATUS_ROLE_GAP - roleW;
+        // IPv4 sits 4px right + 2px below the usual info row so it
+        // doesn't crowd the name.
+        if (this.connected && this.ipv4) {
+            var ipX = nameX + nameW + TEXT_GAP + 4;
+            var ipY = infoY + 2;
+            HaxrcorpFont16.draw(canvas.ctx, this.ipv4, ipX, ipY, fg);
         }
 
-        // Gray backdrop pill anchored to the TR corner of the frame —
-        // painted on the fill layer so the frame's stroke and the
-        // selector's chevron stay crisp on top. 17 rows tall starting
-        // 1 row inside the top stroke; right edge stops short of:
-        //   • selected:   the 6px chevron
-        //   • unselected: the 1px right stroke, with the top two rows
-        //     stair-cut to clear the rounded TR corner stroke pixels.
-        // Bottom-left corner is rounded with radius 4.
-        var pillLeftAnchor = this.portRole ? roleX : statusX;
-        var pillLeft       = pillLeftAnchor - 5;   // 5px left padding
-        var pillTop        = this.y + 1;
-        var pillH          = 17;
-        var pillBLr        = 4;
+        // Measure the top-right cluster first (right-to-left) so the
+        // gray pill can size itself before we actually draw. Order
+        // when connected:  [↓ RX]  [↑ TX]  [speed]  (speed rightmost).
+        var rightEdge = this.x + this.w - STATUS_PAD_R;
+        var measureR  = rightEdge;
+        var arrowWhite = '#000000';
+        var arrowDownW = Icons.arrow_down ? Icons.arrow_down.w : 0;
+        var arrowUpW   = Icons.arrow_up   ? Icons.arrow_up.w   : 0;
+        if (this.connected) {
+            if (this.speed) {
+                measureR -= HaxrcorpFont16.textWidth(this.speed);
+                measureR -= BOTTOM_INFO_COL_GAP;
+            }
+            if (this.txLabel && Icons.arrow_up) {
+                measureR -= HaxrcorpFont16.textWidth(this.txLabel);
+                measureR -= BOTTOM_INFO_GAP + arrowUpW;
+                measureR -= BOTTOM_INFO_COL_GAP;
+            }
+            if (this.rxLabel && Icons.arrow_down) {
+                measureR -= HaxrcorpFont16.textWidth(this.rxLabel);
+                measureR -= BOTTOM_INFO_GAP + arrowDownW;
+            }
+        } else {
+            measureR -= HaxrcorpFont16.textWidth('Disconnected');
+        }
+        var topRightLeftEdge = measureR;
+
+        // Gray backdrop pill behind the top-right cluster. Anchored to
+        // the TR corner, painted on the fill layer so the frame stroke
+        // + selector chevron stay crisp on top. Bottom-left rounded
+        // with radius 4; top-right stair-cut for rounded TR corner (or
+        // clipped at the chevron when selected).
+        var pillLeft = topRightLeftEdge - 5;   // 5px left padding
+        var pillTop  = this.y + 1;
+        var pillH    = 17;
+        var pillBLr  = 4;
         for (var py = 0; py < pillH; py++) {
-            var relY = py + 1;  // row offset inside frame
-            // Right edge.
+            var relY = py + 1;
             var rowEndExcl;
             if (this.selected) {
                 rowEndExcl = this.x + this.w - 6;
@@ -190,8 +245,6 @@ var EthernetTab = (function() {
                 if (relY < CORNER_RADIUS) ri = CORNER_RADIUS - 1 - relY;
                 rowEndExcl = this.x + this.w - 1 - ri;
             }
-            // Left edge — stair-cut on the bottom-left for a radius-4
-            // rounded corner. `li` grows 0..3 over the last 4 rows.
             var li = 0;
             if (py >= pillH - pillBLr) li = py - (pillH - pillBLr);
             var rowStart = pillLeft + li;
@@ -199,51 +252,67 @@ var EthernetTab = (function() {
             if (rowW > 0) canvas.drawRect(rowStart, pillTop + py, rowW, 1, '#CCCCCC');
         }
 
-        HaxrcorpFont16.draw(canvas.ctx, statusStr, statusX, infoY, fg);
-        if (this.portRole) {
-            HaxrcorpFont16.draw(canvas.ctx, this.portRole, roleX, infoY, fg);
-        }
-
-        // Bottom RX/TX info row — only when the tab is connected and
-        // the host enlarged the frame (totalH > top-row height). Text
-        // sits so its bottom edge is BOTTOM_INFO_PAD_B px from the
-        // frame's bottom stroke.
-        if (this.connected && totalH > this.h) {
-            // HaxrcorpFont16 visible glyph bottom = drawY + 8 (glyph rows
-            // 2..8 inside an 11-row frame). Place visible bottom at
-            // (this.y + totalH - 1) - BOTTOM_INFO_PAD_B.
-            var bottomY = this.y + totalH - 1 - BOTTOM_INFO_PAD_B;
-            var rowY    = bottomY - 8;   // HaxrcorpFont16 draw-y for that visible bottom
-            var arrowH  = Icons.arrow_down ? Icons.arrow_down.h : 7;
-            var arrowY  = bottomY - (arrowH - 1);
-            var cursorX = this.x + BOTTOM_INFO_PAD_L;
-
-            if (this.rxLabel && Icons.arrow_down) {
-                canvas.drawSprite(Icons.arrow_down, cursorX, arrowY, fg);
-                cursorX += Icons.arrow_down.w + BOTTOM_INFO_GAP;
-                HaxrcorpFont16.draw(canvas.ctx, this.rxLabel, cursorX, rowY, fg);
-                cursorX += HaxrcorpFont16.textWidth(this.rxLabel) + BOTTOM_INFO_COL_GAP;
+        // Draw the top-right cluster on top of the pill — same
+        // right-to-left order as the measure pass above. Arrow icons
+        // render via `drawSolidSprite` so every non-transparent pixel
+        // is pure white, keeping them readable on the gray pill.
+        var drawR = rightEdge;
+        // Align each icon's bottom with the text's visible bottom
+        // (infoY + 8 for HaxrcorpFont16). Icons are 7 tall → top row
+        // at infoY + 2.
+        var arrowTop = infoY + 2;
+        if (this.connected) {
+            if (this.speed) {
+                var spdW = HaxrcorpFont16.textWidth(this.speed);
+                drawR -= spdW;
+                HaxrcorpFont16.draw(canvas.ctx, this.speed, drawR, infoY, fg);
+                drawR -= BOTTOM_INFO_COL_GAP;
             }
             if (this.txLabel && Icons.arrow_up) {
-                canvas.drawSprite(Icons.arrow_up, cursorX, arrowY, fg);
-                cursorX += Icons.arrow_up.w + BOTTOM_INFO_GAP;
-                HaxrcorpFont16.draw(canvas.ctx, this.txLabel, cursorX, rowY, fg);
+                var txW = HaxrcorpFont16.textWidth(this.txLabel);
+                drawR -= txW;
+                HaxrcorpFont16.draw(canvas.ctx, this.txLabel, drawR, infoY, fg);
+                drawR -= BOTTOM_INFO_GAP + arrowUpW;
+                drawSolidSprite(canvas, Icons.arrow_up, drawR, arrowTop, arrowWhite);
+                drawR -= BOTTOM_INFO_COL_GAP;
+            }
+            if (this.rxLabel && Icons.arrow_down) {
+                var rxW = HaxrcorpFont16.textWidth(this.rxLabel);
+                drawR -= rxW;
+                HaxrcorpFont16.draw(canvas.ctx, this.rxLabel, drawR, infoY, fg);
+                drawR -= BOTTOM_INFO_GAP + arrowDownW;
+                drawSolidSprite(canvas, Icons.arrow_down, drawR, arrowTop, arrowWhite);
+            }
+        } else {
+            var discStr = 'Disconnected';
+            var discW   = HaxrcorpFont16.textWidth(discStr);
+            HaxrcorpFont16.draw(canvas.ctx, discStr, rightEdge - discW, infoY, fg);
+        }
+
+        // Bottom row (connected only, on the tall 40px frame):
+        //   [IPv6]                        [portRole]  [dhcp label]
+        if (this.connected && totalH > this.h) {
+            var bottomY = this.y + totalH - 1 - BOTTOM_INFO_PAD_B;
+            var rowY    = bottomY - 8;
+
+            // IPv6 on the left — 2px further right than the rest of
+            // the BOTTOM_INFO_PAD_L inset.
+            if (this.ipv6) {
+                HaxrcorpFont16.draw(canvas.ctx, this.ipv6, this.x + BOTTOM_INFO_PAD_L + 2, rowY, fg);
             }
 
-            // Right cluster: [ipv4]  [dhcp]. Both right-aligned to
-            // the same STATUS_PAD_R margin; IPv4 sits 5px left of the
-            // DHCP label when both are present.
-            var rightCursor = this.x + this.w - STATUS_PAD_R;
+            // portRole + DHCP label, right-aligned.
+            var brCursor = this.x + this.w - STATUS_PAD_R;
             if (this.dhcpLabel) {
                 var dhcpW = HaxrcorpFont16.textWidth(this.dhcpLabel);
-                rightCursor -= dhcpW;
-                HaxrcorpFont16.draw(canvas.ctx, this.dhcpLabel, rightCursor, rowY, fg);
-                rightCursor -= 5;
+                brCursor -= dhcpW;
+                HaxrcorpFont16.draw(canvas.ctx, this.dhcpLabel, brCursor, rowY, fg);
+                brCursor -= STATUS_ROLE_GAP;
             }
-            if (this.ipv4) {
-                var ipW = HaxrcorpFont16.textWidth(this.ipv4);
-                rightCursor -= ipW;
-                HaxrcorpFont16.draw(canvas.ctx, this.ipv4, rightCursor, rowY, fg);
+            if (this.portRole) {
+                var roleW2 = HaxrcorpFont16.textWidth(this.portRole);
+                brCursor -= roleW2;
+                HaxrcorpFont16.draw(canvas.ctx, this.portRole, brCursor, rowY, fg);
             }
         }
 
