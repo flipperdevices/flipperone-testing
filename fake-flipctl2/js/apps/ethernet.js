@@ -57,9 +57,16 @@ var EthernetScene = (function() {
                 error = true;
             }
             loading = false;
+            if (window.requestRender) window.requestRender();
         };
-        xhr.onerror = function() { error = true; loading = false; };
-        xhr.ontimeout = function() { error = true; loading = false; };
+        xhr.onerror = function() {
+            error = true; loading = false;
+            if (window.requestRender) window.requestRender();
+        };
+        xhr.ontimeout = function() {
+            error = true; loading = false;
+            if (window.requestRender) window.requestRender();
+        };
         xhr.send();
     }
 

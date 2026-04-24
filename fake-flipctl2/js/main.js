@@ -4,13 +4,12 @@
     var input = new Input();
     var scenes = new SceneManager();
 
-    // Redraw immediately on interaction, but cap idle redraws to reduce CPU usage.
+    // Event-driven repaint: the screen only redraws when something
+    // actually changed. Input always flips the flag; scenes / pollers
+    // call `window.requestRender()` to trigger a repaint after they
+    // mutate visible state (data arrivals, animation frames, etc.).
     var needsRender = true;
-    var lastRenderTs = 0;
-    var IDLE_REDRAW_MS = 250;
 
-    // Scenes can call this to force a redraw on the next loop tick (useful
-    // for time-driven animations that aren't triggered by input).
     window.requestRender = function() { needsRender = true; };
 
     scenes.push(new DesktopScene(scenes));
@@ -65,13 +64,12 @@
             }
         }
 
-        if (needsRender || (ts - lastRenderTs) >= IDLE_REDRAW_MS) {
+        if (needsRender) {
             canvas.clear('#000');
             if (scene && scene.render) {
                 scene.render(canvas);
             }
             needsRender = false;
-            lastRenderTs = ts;
         }
 
         requestAnimationFrame(loop);

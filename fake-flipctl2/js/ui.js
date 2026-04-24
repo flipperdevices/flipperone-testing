@@ -27,6 +27,7 @@ var UI = (function() {
                     batteryLevel = data.capacity;
                 }
                 batteryCharging = (data.status === 'Charging' || data.status === 'Full');
+                if (window.requestRender) window.requestRender();
             }
         };
         xhr.send();
@@ -60,9 +61,13 @@ var UI = (function() {
                 if (data.available && data.accessTech) {
                     accessTech = formatTech(data.accessTech);
                 }
+                if (window.requestRender) window.requestRender();
             }
         };
-        xhr.onerror = xhr.ontimeout = function() { modemAvailable = false; };
+        xhr.onerror = xhr.ontimeout = function() {
+            modemAvailable = false;
+            if (window.requestRender) window.requestRender();
+        };
         xhr.send();
     }
 
@@ -86,7 +91,10 @@ var UI = (function() {
                     }
                 }
             }
-            ethernetConnected = connected;
+            if (ethernetConnected !== connected) {
+                ethernetConnected = connected;
+                if (window.requestRender) window.requestRender();
+            }
         };
         xhr.send();
     }
@@ -105,6 +113,7 @@ var UI = (function() {
             if (xhr.status !== 200) return;
             var data;
             try { data = JSON.parse(xhr.responseText); } catch (e) { return; }
+            var prev = wifiConnected + '|' + wifiQuality + '|' + wifiSSID;
             if (data.connected) {
                 wifiConnected = true;
                 wifiDisconnectStreak = 0;
@@ -118,6 +127,8 @@ var UI = (function() {
                     wifiSSID = '';
                 }
             }
+            var next = wifiConnected + '|' + wifiQuality + '|' + wifiSSID;
+            if (prev !== next && window.requestRender) window.requestRender();
         };
         xhr.send();
     }
@@ -134,7 +145,11 @@ var UI = (function() {
             if (xhr.status !== 200) return;
             try {
                 var data = JSON.parse(xhr.responseText);
-                airplaneEnabled = !!data.enabled;
+                var next = !!data.enabled;
+                if (next !== airplaneEnabled) {
+                    airplaneEnabled = next;
+                    if (window.requestRender) window.requestRender();
+                }
             } catch (e) { /* ignore */ }
         };
         xhr.send();
