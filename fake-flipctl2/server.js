@@ -361,6 +361,69 @@ function getEthernetInfo() {
         } catch (e) {
             info.state = 'unavailable';
         }
+        // Kernel-level carrier flips the moment the cable moves; nmcli
+        // can lag by a second or two. Force the state to "disconnected"
+        // whenever the kernel reports no carrier so the UI reflects
+        // physical disconnection immediately.
+        var carrier = readSysInt('/sys/class/net/' + name + '/carrier');
+        if (carrier === 0) {
+            info.state = 'disconnected (no carrier)';
+        }
+        // Link speed via ethtool — skip the call entirely when the
+        // cable is unplugged, both for speed and because ethtool
+        // reports stale/unknown values while auto-negotiation tears
+        // down.
+        info.speed = null;
+        if (carrier !== 0) {
+            try {
+                var ethraw = execSync('ethtool ' + name + ' 2>/dev/null', { encoding: 'utf8', timeout: 1500 });
+                var speedMatch = ethraw.match(/^\s*Speed:\s*([^\s]+)/m);
+                if (speedMatch && speedMatch[1] !== 'Unknown!' && speedMatch[1] !== 'Unknown') {
+                    info.speed = speedMatch[1];
+                }
+            } catch (e) { /* ignore */ }
+        }
+        // Cumulative byte counters from sysfs — same source `ip -s link`
+        // reports. Missing counters (very rare) land as null so the
+        // client can show em-dash or blank.
+        info.rxBytes = readSysInt('/sys/class/net/' + name + '/statistics/rx_bytes');
+        info.txBytes = readSysInt('/sys/class/net/' + name + '/statistics/tx_bytes');
+        // IPv4 method on the currently-active connection for this
+        // device (auto | manual | shared | link-local | disabled).
+        // Only bothered when carrier is up — saves two nmcli calls
+        // when the cable is unplugged.
+        info.ipv4Method = null;
+        if (carrier !== 0) {
+            try {
+                var actRaw = execSync('nmcli -t -f NAME,DEVICE connection show --active 2>/dev/null', { encoding: 'utf8', timeout: 1500 });
+                var actLines = actRaw.split('\n');
+                var connName = null;
+                for (var ai = 0; ai < actLines.length; ai++) {
+                    var ln = actLines[ai];
+                    if (!ln) continue;
+                    // nmcli -t escapes colons in values as "\:"; split on
+                    // the last unescaped colon.
+                    var idx = -1;
+                    for (var p = ln.length - 1; p >= 0; p--) {
+                        if (ln.charAt(p) === ':' && (p === 0 || ln.charAt(p - 1) !== '\\')) { idx = p; break; }
+                    }
+                    if (idx === -1) continue;
+                    var dev = ln.substring(idx + 1);
+                    if (dev === name) {
+                        connName = ln.substring(0, idx).replace(/\\:/g, ':');
+                        break;
+                    }
+                }
+                if (connName) {
+                    var methodRaw = execSync(
+                        'nmcli -t -f ipv4.method connection show "' + connName.replace(/"/g, '\\"') + '" 2>/dev/null',
+                        { encoding: 'utf8', timeout: 1500 }
+                    );
+                    var mm = methodRaw.match(/ipv4\.method:(.+)/);
+                    if (mm) info.ipv4Method = mm[1].trim();
+                }
+            } catch (e) { /* ignore */ }
+        }
         ifaces.push(info);
     }
     return ifaces;

@@ -482,7 +482,51 @@ var Icons = (function() {
         ]
     };
 
+    // arrow_down icon (auto-generated from PNG)
+    var arrow_down = {
+        w: 5,
+        h: 7,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0xff,            0xfd,            0xbf,            0xfc,  // row 0
+            0x00,            0x00,            0xff,            0xfd,  // row 1
+            0xbf,            0xfc,            0x00,            0x00,  // row 2
+            0xff,            0xfd,            0xbf,            0xfc,  // row 3
+            0x00,            0x00,            0xff,            0xfd,  // row 4
+            0xbf,            0xfc,            0x00,            0x00,  // row 5
+            0xdb,            0xfd,            0xbf,            0xd8,  // row 6
+            0x00,            0x00,            0xff,            0x6d,  // row 7
+            0xb6,            0xfc,            0x00,            0x00,  // row 8
+            0xff,            0xfd,            0xbf,            0xfc,  // row 9
+            0x00,            0x00 
+        ]
+    };
+
+    // arrow_up icon (auto-generated from PNG)
+    var arrow_up = {
+        w: 5,
+        h: 7,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0xff,            0xfd,            0xbf,            0xfc,  // row 0
+            0x00,            0x00,            0xff,            0x6d,  // row 1
+            0xb6,            0xfc,            0x00,            0x00,  // row 2
+            0xdb,            0xfd,            0xbf,            0xd8,  // row 3
+            0x00,            0x00,            0xff,            0xfd,  // row 4
+            0xbf,            0xfc,            0x00,            0x00,  // row 5
+            0xff,            0xfd,            0xbf,            0xfc,  // row 6
+            0x00,            0x00,            0xff,            0xfd,  // row 7
+            0xbf,            0xfc,            0x00,            0x00,  // row 8
+            0xff,            0xfd,            0xbf,            0xfc,  // row 9
+            0x00,            0x00 
+        ]
+    };
+
     return {
+        arrow_up: arrow_up,
+        arrow_down: arrow_down,
         charging_status_bar: charging_status_bar,
         ethernet_statusbar: ethernet_statusbar,
         wifi_0: wifi_0,

@@ -1,39 +1,30 @@
 var MenuScene = (function() {
-    // Parent menu container anchor (top-left) and width. Items stack
-    // flush inside this container with 1px gray dividers between them.
-    var CONTAINER_X = 16;
-    var CONTAINER_Y = 24;
-    var CONTAINER_W = 224;            // 256 - 16 (left) - 16 (right)
+    // Layout mirrors the submenu — same container anchor, same selector
+    // geometry (including the scroll / no-scroll width switch), same
+    // scrollbar geometry.
+    var CONTAINER_X = 5;
+    var CONTAINER_Y = UI.STATUS_BAR_H + 12;    // 25 for the default 13px status bar
+    var CONTAINER_W = 224;
     var DIVIDER_COLOR = '#CCCCCC';
-    var ANIMATED_ICON_FRAME_MS = 200; // 5 fps redraw cadence
+    var ANIMATED_ICON_FRAME_MS = 200;
 
-    // Viewport: the menu area fits 5 lines (5*20 + 4 dividers = 104px)
-    // before the canvas bottom. When the list is longer, scroll.
+    // Viewport: the menu area fits 5 lines (5*20 + 4 dividers = 104px).
+    // When the list is longer, scroll.
     var VISIBLE_COUNT = 5;
     var VIEWPORT_H = VISIBLE_COUNT * 20 + (VISIBLE_COUNT - 1); // 104
-    var SCROLLBAR_X = 253;  // 3px-wide thumb centred here → cols 252..254
-
-    // Scrollbar geometry independent of the viewport: dotted line sits
-    // 2px below the status bar and 2px above the canvas bottom; the
-    // thumb has an extra 1px inset so its minimum distance from the
-    // status bar and canvas bottom is 3px.
-    var SCROLLBAR_Y = 15;
-    var SCROLLBAR_H = 127;   // 143 (canvas bottom 2px pad) - 15 + 1
+    var SCROLLBAR_X         = 253;
+    var SCROLLBAR_Y         = 15;
+    var SCROLLBAR_H         = 127;
     var SCROLLBAR_THUMB_PAD = 1;
 
-    // MenuSelectorFrame around the selected line. Positioned/sized
-    // independently of the MenuLine itself per spec.
-    var SELECTOR_X = 10;
-    var SELECTOR_W = 232;
-    var SELECTOR_H = 22;
-    var SELECTOR_CORNER_R = 3;
-    // Vertical offset: centres the 22px frame over the 20px line.
-    var SELECTOR_Y_OFFSET = -1;
-
-    // Gray divider spans the selector frame's straight top/bottom edge
-    // (selector width − 2× rounded-corner radius), aligned to it.
-    var DIVIDER_X = SELECTOR_X + SELECTOR_CORNER_R;
-    var DIVIDER_W = SELECTOR_W - 2 * SELECTOR_CORNER_R;
+    // MenuSelectorFrame around the selected line. Width depends on
+    // scrollbar visibility — matches the submenu treatment.
+    var SELECTOR_X            = 4;
+    var SELECTOR_W_WITH_SCROLL = 244;
+    var SELECTOR_W_NO_SCROLL   = 247;
+    var SELECTOR_H            = 22;
+    var SELECTOR_CORNER_R     = 3;
+    var SELECTOR_Y_OFFSET     = -1;
 
     var menuItems = [
         'Router',
@@ -272,14 +263,14 @@ var MenuScene = (function() {
 
         this.selectorFrame = new MenuSelectorFrame({
             x: SELECTOR_X,
-            y: 0,               // scene updates this each frame
-            width: SELECTOR_W,
+            y: 0,                         // scene updates each frame
+            width: SELECTOR_W_WITH_SCROLL, // scene updates each frame
             height: SELECTOR_H,
             anchorH: 'left',
             anchorV: 'top',
             strokeColor: '#000',
             showStroke: true,
-            showFill: false     // transparent interior; line content shows through
+            showFill: false
         });
 
         this.scrollbar = new UI.Scrollbar(menuItems.length, VISIBLE_COUNT, this.scrollOffset);
@@ -348,11 +339,18 @@ var MenuScene = (function() {
         canvas.clear('#fff');
         UI.drawStatusBar(canvas, '');
 
+        // Selector width tracks scrollbar visibility; the gray divider
+        // matches the selector's straight edge (width − 2×radius).
+        var total = this.items.length;
+        var hasScroll = total > VISIBLE_COUNT;
+        var selectorW = hasScroll ? SELECTOR_W_WITH_SCROLL : SELECTOR_W_NO_SCROLL;
+        var dividerX = SELECTOR_X + SELECTOR_CORNER_R;
+        var dividerW = selectorW - 2 * SELECTOR_CORNER_R;
+
         // Render only the slice of items currently in the viewport.
         // Dividers still sit between every visible pair (the "no
         // divider on first / last" rule is satisfied because we draw
         // a divider only between rendered items).
-        var total = this.items.length;
         var first = this.scrollOffset;
         var last = Math.min(total, first + VISIBLE_COUNT);
         var y = CONTAINER_Y;
@@ -362,7 +360,7 @@ var MenuScene = (function() {
             this.items[i].render(canvas, CONTAINER_X, y);
             y += MenuLine.H;
             if (i < last - 1) {
-                canvas.drawHLine(DIVIDER_X, y, DIVIDER_W, DIVIDER_COLOR);
+                canvas.drawHLine(dividerX, y, dividerW, DIVIDER_COLOR);
                 y += 1;
             }
         }
@@ -371,6 +369,7 @@ var MenuScene = (function() {
         // line backdrop in black); outline otherwise.
         var pressed = this.items[this.selectedIndex].state === MenuLine.STATE_PRESSED;
         this.selectorFrame.setPosition(SELECTOR_X, selectedLineY + SELECTOR_Y_OFFSET);
+        this.selectorFrame.setSize(selectorW, SELECTOR_H);
         this.selectorFrame.setShowFill(pressed);
         if (pressed) this.selectorFrame.setFillColor('#000');
         this.selectorFrame.render(canvas);

@@ -49,10 +49,9 @@ var SubMenuScene = (function() {
             'Fake-FlipCTL_2': true
         };
 
-        // Container top sits 14px below the status bar per spec.
-        // Breadcrumb is a single left-aligned "> Title" string, 4px
-        // from the canvas left and 4px below the status bar.
-        this.containerY   = UI.STATUS_BAR_H + 14;
+        // Container top sits 16px below the status bar (breadcrumb row
+        // spans the area between status bar and container).
+        this.containerY   = UI.STATUS_BAR_H + 16;
         this.breadcrumbX  = 4;
         this.breadcrumbY  = UI.STATUS_BAR_H + 2;
 

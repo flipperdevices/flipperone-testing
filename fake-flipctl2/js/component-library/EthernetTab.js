@@ -23,15 +23,16 @@ var EthernetTab = (function() {
     var DEFAULT_Y       = 28;
     var DEFAULT_W       = 248;
     var DEFAULT_H       = 22;
+    var CONNECTED_H     = 40;   // taller card when connected — room for RX/TX row
     var CORNER_RADIUS   = 3;
     var ICON_PAD_L      = 6;
     var ICON_PAD_T      = 4;
     var TEXT_GAP        = 4;
-    var STATUS_PAD_R    = 8;
+    var STATUS_PAD_R    = 10;
     // Vertical draw offsets inside the tab. Name (Born2bSporty) sits
     // 3px higher than the HaxrcorpFont16 IP / status text.
     var NAME_DRAW_Y     = 3;   // Born2bSporty "ETHn"
-    var INFO_DRAW_Y     = 6;   // HaxrcorpFont16 IP + status
+    var INFO_DRAW_Y     = 4;   // HaxrcorpFont16 role + speed/disconnected
     var DIM_COLOR       = '#888888';
 
     // Expansion: the top row keeps its collapsed layout; additional
@@ -41,6 +42,13 @@ var EthernetTab = (function() {
     var EXTRA_LINE_H    = 10;
     var EXTRA_PAD_B     = 4;   // gap below the last extra
     var EXTRA_PAD_L     = 10;  // left inset for extra info lines
+
+    // Bottom RX/TX info row (connected state only). Positioned so its
+    // bottom edge sits BOTTOM_INFO_PAD_B px above the frame bottom.
+    var BOTTOM_INFO_PAD_B   = 7;
+    var BOTTOM_INFO_PAD_L   = 5;   // left inset for the RX arrow
+    var BOTTOM_INFO_GAP     = 2;   // gap between arrow and value
+    var BOTTOM_INFO_COL_GAP = 5;   // gap between RX value and the up arrow
 
     function EthernetTab(options) {
         options = options || {};
@@ -56,7 +64,22 @@ var EthernetTab = (function() {
         this.ipv6       = options.ipv6 || '';
         this.gateway    = options.gateway || '';
         this.dns        = Array.isArray(options.dns) ? options.dns : [];
+        // Right-hand status area: a role label ("WAN"/"LAN") followed by
+        // a 7px gap and a status string. When connected and a link
+        // speed is supplied, the status string becomes the speed (e.g.
+        // "1000Mb/s"); otherwise it falls back to "Disconnected".
+        this.portRole   = options.portRole || '';
+        this.speed      = options.speed    || '';
+        // Optional bottom RX/TX row — already-formatted strings
+        // ("10.6 MB" etc.). Empty strings hide that side of the row.
+        this.rxLabel    = options.rxLabel  || '';
+        this.txLabel    = options.txLabel  || '';
+        // DHCP / addressing mode label shown right-aligned in the
+        // bottom row (e.g. "DHCP", "Static", "DHCP Server").
+        this.dhcpLabel  = options.dhcpLabel || '';
     }
+
+    var STATUS_ROLE_GAP = 7;  // px between portRole label and the status word
 
     EthernetTab.prototype._extraLines = function() {
         // Always surface the three detail rows when expanded — missing
@@ -71,9 +94,14 @@ var EthernetTab = (function() {
     };
 
     EthernetTab.prototype.getHeight = function() {
-        if (!this.expanded) return this.h;
-        var lines = this._extraLines();
-        return this.h + EXTRA_PAD_T + lines.length * EXTRA_LINE_H + EXTRA_PAD_B;
+        if (this.expanded) {
+            var lines = this._extraLines();
+            return this.h + EXTRA_PAD_T + lines.length * EXTRA_LINE_H + EXTRA_PAD_B;
+        }
+        // Connected tabs are taller to fit the RX/TX info row. If the
+        // host already passed a custom height, respect it.
+        if (this.connected && (this.h === DEFAULT_H)) return CONNECTED_H;
+        return this.h;
     };
 
     EthernetTab.prototype.render = function(canvas) {
@@ -124,17 +152,99 @@ var EthernetTab = (function() {
         Born2bSportyV2Medium.draw(canvas.ctx, nameStr, nameX, nameY, fg);
         var nameW = Born2bSportyV2Medium.textWidth(nameStr);
 
-        // Right-aligned status string.
+        // Right-aligned status: [portRole]  [status].
         var infoY     = this.y + INFO_DRAW_Y;
-        var statusStr = this.connected ? 'Connected' : 'Disconnected';
+        var statusStr = this.connected
+            ? (this.speed || 'Connected')
+            : 'Disconnected';
         var statusW   = HaxrcorpFont16.textWidth(statusStr);
         var statusX   = this.x + this.w - STATUS_PAD_R - statusW;
-        HaxrcorpFont16.draw(canvas.ctx, statusStr, statusX, infoY, fg);
 
-        // "IPv4: <ip>" label only when connected.
-        if (this.connected && this.ipv4) {
-            var labelX = nameX + nameW + TEXT_GAP;
-            HaxrcorpFont16.draw(canvas.ctx, 'IPv4: ' + this.ipv4, labelX, infoY, fg);
+        var roleW = 0, roleX = 0;
+        if (this.portRole) {
+            roleW = HaxrcorpFont16.textWidth(this.portRole);
+            roleX = statusX - STATUS_ROLE_GAP - roleW;
+        }
+
+        // Gray backdrop pill anchored to the TR corner of the frame —
+        // painted on the fill layer so the frame's stroke and the
+        // selector's chevron stay crisp on top. 17 rows tall starting
+        // 1 row inside the top stroke; right edge stops short of:
+        //   • selected:   the 6px chevron
+        //   • unselected: the 1px right stroke, with the top two rows
+        //     stair-cut to clear the rounded TR corner stroke pixels.
+        // Bottom-left corner is rounded with radius 4.
+        var pillLeftAnchor = this.portRole ? roleX : statusX;
+        var pillLeft       = pillLeftAnchor - 5;   // 5px left padding
+        var pillTop        = this.y + 1;
+        var pillH          = 17;
+        var pillBLr        = 4;
+        for (var py = 0; py < pillH; py++) {
+            var relY = py + 1;  // row offset inside frame
+            // Right edge.
+            var rowEndExcl;
+            if (this.selected) {
+                rowEndExcl = this.x + this.w - 6;
+            } else {
+                var ri = 0;
+                if (relY < CORNER_RADIUS) ri = CORNER_RADIUS - 1 - relY;
+                rowEndExcl = this.x + this.w - 1 - ri;
+            }
+            // Left edge — stair-cut on the bottom-left for a radius-4
+            // rounded corner. `li` grows 0..3 over the last 4 rows.
+            var li = 0;
+            if (py >= pillH - pillBLr) li = py - (pillH - pillBLr);
+            var rowStart = pillLeft + li;
+            var rowW = rowEndExcl - rowStart;
+            if (rowW > 0) canvas.drawRect(rowStart, pillTop + py, rowW, 1, '#CCCCCC');
+        }
+
+        HaxrcorpFont16.draw(canvas.ctx, statusStr, statusX, infoY, fg);
+        if (this.portRole) {
+            HaxrcorpFont16.draw(canvas.ctx, this.portRole, roleX, infoY, fg);
+        }
+
+        // Bottom RX/TX info row — only when the tab is connected and
+        // the host enlarged the frame (totalH > top-row height). Text
+        // sits so its bottom edge is BOTTOM_INFO_PAD_B px from the
+        // frame's bottom stroke.
+        if (this.connected && totalH > this.h) {
+            // HaxrcorpFont16 visible glyph bottom = drawY + 8 (glyph rows
+            // 2..8 inside an 11-row frame). Place visible bottom at
+            // (this.y + totalH - 1) - BOTTOM_INFO_PAD_B.
+            var bottomY = this.y + totalH - 1 - BOTTOM_INFO_PAD_B;
+            var rowY    = bottomY - 8;   // HaxrcorpFont16 draw-y for that visible bottom
+            var arrowH  = Icons.arrow_down ? Icons.arrow_down.h : 7;
+            var arrowY  = bottomY - (arrowH - 1);
+            var cursorX = this.x + BOTTOM_INFO_PAD_L;
+
+            if (this.rxLabel && Icons.arrow_down) {
+                canvas.drawSprite(Icons.arrow_down, cursorX, arrowY, fg);
+                cursorX += Icons.arrow_down.w + BOTTOM_INFO_GAP;
+                HaxrcorpFont16.draw(canvas.ctx, this.rxLabel, cursorX, rowY, fg);
+                cursorX += HaxrcorpFont16.textWidth(this.rxLabel) + BOTTOM_INFO_COL_GAP;
+            }
+            if (this.txLabel && Icons.arrow_up) {
+                canvas.drawSprite(Icons.arrow_up, cursorX, arrowY, fg);
+                cursorX += Icons.arrow_up.w + BOTTOM_INFO_GAP;
+                HaxrcorpFont16.draw(canvas.ctx, this.txLabel, cursorX, rowY, fg);
+            }
+
+            // Right cluster: [ipv4]  [dhcp]. Both right-aligned to
+            // the same STATUS_PAD_R margin; IPv4 sits 5px left of the
+            // DHCP label when both are present.
+            var rightCursor = this.x + this.w - STATUS_PAD_R;
+            if (this.dhcpLabel) {
+                var dhcpW = HaxrcorpFont16.textWidth(this.dhcpLabel);
+                rightCursor -= dhcpW;
+                HaxrcorpFont16.draw(canvas.ctx, this.dhcpLabel, rightCursor, rowY, fg);
+                rightCursor -= 5;
+            }
+            if (this.ipv4) {
+                var ipW = HaxrcorpFont16.textWidth(this.ipv4);
+                rightCursor -= ipW;
+                HaxrcorpFont16.draw(canvas.ctx, this.ipv4, rightCursor, rowY, fg);
+            }
         }
 
         // Extra details appear below the top row when expanded.
