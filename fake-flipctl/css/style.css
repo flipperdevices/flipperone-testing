@@ -12,9 +12,11 @@ html, body {
     align-items: center;
     justify-content: center;
     overflow: hidden;
+    cursor: none;
 }
 
 #screen {
     image-rendering: pixelated;
     image-rendering: crisp-edges;
+    cursor: none;
 }

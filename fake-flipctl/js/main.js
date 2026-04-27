@@ -9,6 +9,11 @@
     var lastRenderTs = 0;
     var IDLE_REDRAW_MS = 250;
 
+    // Scenes that drive their own redraws (e.g. pointer trails) call this
+    // to break out of the idle cap and paint on the next rAF tick.
+    window.App = window.App || {};
+    window.App.requestRender = function() { needsRender = true; };
+
     scenes.push(new MenuScene(scenes));
 
     // Poll the server every 2s and reload the page when the underlying

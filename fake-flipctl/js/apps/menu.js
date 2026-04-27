@@ -26,6 +26,7 @@ var MenuScene = (function() {
             'LCD Screen',
             'Connected Monitors',
             'Buttons Test',
+            'Touchpad testing',
             'Sound',
             'GPIO',
             'Switch to fake-flipctl2'
@@ -33,6 +34,7 @@ var MenuScene = (function() {
             'LCD Screen': function() { return new ScreenTestScene(); },
             'Connected Monitors': function() { return new MonitorsScene(); },
             'Buttons Test': function() { return new ButtonsTestScene(); },
+            'Touchpad testing': function() { return new TouchpadTestScene(); },
             'Sound': function() { return new SoundMenuScene(sm); },
             'Switch to fake-flipctl2': function() {
                 var xhr = new XMLHttpRequest();
