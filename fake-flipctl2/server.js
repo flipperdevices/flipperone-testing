@@ -194,6 +194,77 @@ function readStr(filePath) {
     }
 }
 
+// Find the thermal zone registered by the battery fuel-gauge driver
+// (bq28z610-0 on FlipperOne). We scan every /sys/class/thermal/thermal_zoneN
+// and match the `type` file against the PSU driver name — zone indices can
+// vary between kernels, so matching by type is more robust than hard-coding
+// a zone number. Returns { zone, type, tempC } or null.
+function getBatteryTemp() {
+    var base = '/sys/class/thermal';
+    var entries;
+    try { entries = fs.readdirSync(base); }
+    catch (e) { return null; }
+
+    // The PSU path ends with the driver instance (e.g. "bq28z610-0") and
+    // that's exactly the string exposed in thermal_zone*/type.
+    var psuName = PSU.split('/').pop();
+
+    for (var i = 0; i < entries.length; i++) {
+        var name = entries[i];
+        if (name.indexOf('thermal_zone') !== 0) continue;
+        var type = readStr(base + '/' + name + '/type');
+        if (!type) continue;
+        // Prefer exact match on the PSU driver name; fall back to any
+        // zone whose type starts with "bq" (battery gauge) if the rename
+        // changes between board revisions.
+        var isBattery = (type === psuName) || /^bq\d/i.test(type);
+        if (!isBattery) continue;
+        var milliC = readInt(base + '/' + name + '/temp');
+        if (milliC === null) continue;
+        return { zone: name, type: type, tempC: +(milliC / 1000).toFixed(1) };
+    }
+    return null;
+}
+
+// SoC package temperature. Scans /sys/class/thermal for the zone whose
+// `type` is `package-thermal` (the Rockchip SoC package sensor on FlipperOne);
+// falls back to any zone whose type contains "package". Zone indices can
+// vary between kernels, so matching by type is the robust approach.
+// Returns { zone, type, tempC } or null.
+function getCpuTemp() {
+    var base = '/sys/class/thermal';
+    var entries;
+    try { entries = fs.readdirSync(base); }
+    catch (e) { return null; }
+
+    var fallback = null;
+    for (var i = 0; i < entries.length; i++) {
+        var name = entries[i];
+        if (name.indexOf('thermal_zone') !== 0) continue;
+        var type = readStr(base + '/' + name + '/type');
+        if (!type) continue;
+        var exact = (type === 'package-thermal');
+        var fuzzy = /package/i.test(type);
+        if (!exact && !fuzzy) continue;
+        var milliC = readInt(base + '/' + name + '/temp');
+        if (milliC === null) continue;
+        var entry = { zone: name, type: type, tempC: +(milliC / 1000).toFixed(1) };
+        if (exact) return entry;
+        if (!fallback) fallback = entry;
+    }
+    return fallback;
+}
+
+// Battery power flow in watts. The bq28z610 gauge writes a smoothed
+// average to `power_avg` in microwatts. Sign convention: negative values
+// mean the pack is discharging (load draws from battery), positive means
+// charging.
+function getPowerUsage() {
+    var uW = readInt(PSU + '/power_avg');
+    if (uW === null) return null;
+    return { watts: +(uW / 1000000).toFixed(2) };
+}
+
 function getPowerInfo() {
     var result = { available: false };
     if (!fs.existsSync(PSU)) return result;
@@ -753,6 +824,24 @@ var server = http.createServer(function(req, res) {
         var power = getPowerInfo();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(power));
+        return;
+    }
+    if (req.url === '/api/battery/temp') {
+        var bt = getBatteryTemp();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(bt || { tempC: null }));
+        return;
+    }
+    if (req.url === '/api/cpu/temp') {
+        var ct = getCpuTemp();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(ct || { tempC: null }));
+        return;
+    }
+    if (req.url === '/api/power/usage') {
+        var pu = getPowerUsage();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(pu || { watts: null }));
         return;
     }
     if (req.url === '/api/modem') {

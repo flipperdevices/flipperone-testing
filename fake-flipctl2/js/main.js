@@ -48,26 +48,30 @@
 
     function loop(ts) {
         var keys = input.processQueue();
-        var scene = scenes.current();
 
         if (keys.length > 0) {
             needsRender = true;
         }
 
         for (var i = 0; i < keys.length; i++) {
-            if (scene && scene.handleInput) {
-                if (scene.handleInput(keys[i]) === 'pop') {
+            var active = scenes.current();
+            if (active && active.handleInput) {
+                if (active.handleInput(keys[i]) === 'pop') {
                     scenes.pop();
-                    scene = scenes.current();
                     needsRender = true;
                 }
             }
         }
 
         if (needsRender) {
+            // Re-fetch the current scene — handleInput may have pushed
+            // a new one (or pop above advanced the stack). Without this
+            // we'd paint the previous scene and wait for its first
+            // async requestRender to show the new one.
+            var active = scenes.current();
             canvas.clear('#000');
-            if (scene && scene.render) {
-                scene.render(canvas);
+            if (active && active.render) {
+                active.render(canvas);
             }
             needsRender = false;
         }

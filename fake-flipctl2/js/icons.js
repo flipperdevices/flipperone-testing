@@ -524,7 +524,110 @@ var Icons = (function() {
         ]
     };
 
+    // battery_vertical icon (auto-generated from PNG)
+    var battery_vertical = {
+        w: 9,
+        h: 16,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0xff,            0xf0,            0x00,            0x00,            0x00,            0x3f,            0xfc,  // row 0
+            0x00,            0x00,            0xff,            0xf0,            0x00,            0xff,            0xf0,  // row 1
+            0x3f,            0xfc,            0x00,            0x00,            0xfc,            0x00,            0x00,  // row 2
+            0x00,            0x00,            0x00,            0xfc,            0x00,            0x00,            0x03,  // row 3
+            0xff,            0xff,            0xff,            0xff,            0xff,            0x00,            0x00,  // row 4
+            0x00,            0x03,            0xf0,            0x00,            0x00,            0x00,            0x3f,  // row 5
+            0x00,            0x00,            0x00,            0x03,            0xf0,            0x00,            0x00,  // row 6
+            0x00,            0x3f,            0x00,            0x00,            0x00,            0x03,            0xf0,  // row 7
+            0x00,            0x00,            0x00,            0x3f,            0x00,            0x00,            0x00,  // row 8
+            0x03,            0xf0,            0x00,            0x00,            0x00,            0x3f,            0x00,  // row 9
+            0x00,            0x00,            0x03,            0xf0,            0x00,            0x00,            0x00,  // row 10
+            0x3f,            0x00,            0x00,            0x00,            0x03,            0xf0,            0x00,  // row 11
+            0x00,            0x00,            0x3f,            0x00,            0x00,            0x00,            0x03,  // row 12
+            0xf0,            0x00,            0x00,            0x00,            0x3f,            0x00,            0x00,  // row 13
+            0x00,            0x03,            0xf0,            0x00,            0x00,            0x00,            0x3f,  // row 14
+            0x00,            0x00,            0x00,            0x03,            0xf0,            0x00,            0x00,  // row 15
+            0x00,            0x3f,            0x00,            0x00,            0x00,            0x03,            0xf0,  // row 16
+            0x00,            0x00,            0x00,            0x3f,            0x00,            0x00,            0x00,  // row 17
+            0x03,            0xff,            0xff,            0xff,            0xff,            0xff,            0x00,  // row 18
+            0x00,            0x00,            0xfc,            0x00,            0x00,            0x00,            0x00,  // row 19
+            0x00,            0xfc,            0x00,            0x00 
+        ]
+    };
+
+    // cpu_15px icon (auto-generated from PNG)
+    var cpu_15px = {
+        w: 15,
+        h: 15,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0xff,            0xff,            0xff,            0x03,            0xf0,            0x3f,            0x03,            0xf0,            0x3f,            0xff,            0xff,            0xc0,  // row 0
+            0xff,            0xff,            0xff,            0x03,            0xf0,            0x3f,            0x03,            0xf0,            0x3f,            0xff,            0xff,            0xc0,  // row 1
+            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xc0,  // row 2
+            0xff,            0xff,            0xc0,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0xff,            0xff,            0xc0,  // row 3
+            0x00,            0x0f,            0xc0,            0xff,            0xff,            0xff,            0xff,            0xff,            0xc0,            0xfc,            0x00,            0x00,  // row 4
+            0xff,            0xff,            0xc0,            0xfc,            0x00,            0x00,            0x00,            0x0f,            0xc0,            0xff,            0xff,            0xc0,  // row 5
+            0x00,            0x0f,            0xc0,            0xfc,            0x00,            0x00,            0x00,            0x0f,            0xc0,            0xfc,            0x00,            0x00,  // row 6
+            0xff,            0xff,            0xc0,            0xfc,            0x00,            0x00,            0x00,            0x0f,            0xc0,            0xff,            0xff,            0xc0,  // row 7
+            0x00,            0x0f,            0xc0,            0xfc,            0x00,            0x00,            0x00,            0x0f,            0xc0,            0xfc,            0x00,            0x00,  // row 8
+            0xff,            0xff,            0xc0,            0xfc,            0x00,            0x00,            0x00,            0x0f,            0xc0,            0xff,            0xff,            0xc0,  // row 9
+            0x00,            0x0f,            0xc0,            0xff,            0xff,            0xff,            0xff,            0xff,            0xc0,            0xfc,            0x00,            0x00,  // row 10
+            0xff,            0xff,            0xc0,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0xff,            0xff,            0xc0,  // row 11
+            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xc0,  // row 12
+            0xff,            0xff,            0xff,            0x03,            0xf0,            0x3f,            0x03,            0xf0,            0x3f,            0xff,            0xff,            0xc0,  // row 13
+            0xff,            0xff,            0xff,            0x03,            0xf0,            0x3f,            0x03,            0xf0,            0x3f,            0xff,            0xff,            0xc0   // row 14
+
+        ]
+    };
+
+    // degree_symbol icon (auto-generated from PNG)
+    var degree_symbol = {
+        w: 4,
+        h: 4,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0xfc,            0x00,            0x3f,  // row 0
+            0x03,            0xff,            0xc0,  // row 1
+            0x03,            0xff,            0xc0,  // row 2
+            0xfc,            0x00,            0x3f   // row 3
+
+        ]
+    };
+
+    // power_usage icon (auto-generated from PNG)
+    var power_usage = {
+        w: 14,
+        h: 15,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0xfc,            0x00,            0x00,            0x00,            0x00,            0x00,            0xff,            0xff,            0xff,            0xff,            0xf0,  // row 0
+            0x00,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0x00,            0x0f,            0xff,            0xff,  // row 1
+            0xf0,            0x00,            0xfc,            0x0f,            0xff,            0xff,            0xff,            0xff,            0xff,            0xf0,            0x3f,  // row 2
+            0xff,            0xf0,            0x00,            0xfc,            0x0f,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,  // row 3
+            0xc0,            0xff,            0xf0,            0x00,            0xff,            0xff,            0xff,            0xfc,            0x0f,            0xff,            0xff,  // row 4
+            0xff,            0xff,            0x03,            0xf0,            0x00,            0xff,            0xff,            0xff,            0x03,            0xf0,            0x3f,  // row 5
+            0xff,            0xf0,            0x3f,            0x03,            0xf0,            0x00,            0xff,            0xff,            0xc0,            0xff,            0xf0,  // row 6
+            0x3f,            0xfc,            0x0f,            0xff,            0xfc,            0x00,            0x00,            0xff,            0xf0,            0x3f,            0xff,  // row 7
+            0xf0,            0x3f,            0xff,            0xff,            0xff,            0xfc,            0x00,            0x00,            0xfc,            0x0f,            0xff,  // row 8
+            0xfc,            0x00,            0x00,            0xff,            0xff,            0xff,            0xfc,            0x00,            0x00,            0x03,            0xff,  // row 9
+            0xff,            0xff,            0xff,            0xff,            0x03,            0xff,            0xff,            0xfc,            0x00,            0x00,            0x00,  // row 10
+            0x00,            0x00,            0xff,            0xff,            0xc0,            0xff,            0xff,            0xff,            0xfc,            0x00,            0x00,  // row 11
+            0xff,            0xf0,            0x3f,            0xff,            0xf0,            0x3f,            0xff,            0xff,            0xff,            0xfc,            0x00,  // row 12
+            0x00,            0xff,            0xf0,            0x3f,            0xfc,            0x0f,            0xff,            0xff,            0xff,            0xff,            0xfc,  // row 13
+            0x00,            0x00,            0xff,            0xf0,            0x3f,            0x03,            0xff,            0xff,            0xff,            0xff,            0xff,  // row 14
+            0x03,            0xf0,            0x00,            0xff,            0xff,            0xc0,            0xff,            0xff,            0xff,            0xfc,            0x00,  // row 15
+            0x3f,            0x03,            0xf0,            0x00 
+        ]
+    };
+
     return {
+        power_usage: power_usage,
+        degree_symbol: degree_symbol,
+        cpu_15px: cpu_15px,
+        battery_vertical: battery_vertical,
         arrow_up: arrow_up,
         arrow_down: arrow_down,
         charging_status_bar: charging_status_bar,
