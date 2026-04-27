@@ -38,6 +38,147 @@ var BASE = __dirname;
 var PSU = '/sys/class/power_supply/bq28z610-0';
 var QMI_DEV = '/dev/cdc-wdm0';
 
+// ── Touchpad raw event reader ──────────────────────────────────────────
+//
+// The Flipper One ships a touchpad evdev device named "Flipper One
+// Touchpad" exposing ABS_X (0..1024), ABS_Y (0..800), ABS_PRESSURE
+// (0..12288), plus BTN_TOUCH / BTN_TOOL_FINGER. We open it on server
+// startup, parse 24-byte struct input_event records, and maintain a
+// running snapshot the HTTP layer can hand out at request time.
+//
+// Multiple readers are allowed by the kernel as long as no consumer
+// has called EVIOCGRAB; on FlipperOne the cog/libinput stack normally
+// shares the device, so this background reader works alongside the
+// regular cursor pipeline. If the device can't be opened (e.g. dev
+// machine on macOS, or missing file), `available` stays false and the
+// /api/touchpad endpoint reports it so the UI can show a hint.
+var INPUT_EVENT_SIZE = 24;            // sec(8)+usec(8)+type(2)+code(2)+value(4)
+var EV_SYN = 0, EV_KEY = 1, EV_ABS = 3;
+var SYN_REPORT = 0, BTN_TOUCH = 330, ABS_X = 0, ABS_Y = 1, ABS_PRESSURE = 24;
+
+var touchpadState = {
+    available: false,
+    devName: null,
+    devPath: null,
+    touching: false,
+    x: 0, y: 0, pressure: 0,
+    touchdownX: 0, touchdownY: 0,
+    maxX: 1024, maxY: 800, maxPressure: 12288,
+    eventCount: 0,
+    lastEventAt: 0
+};
+
+function findTouchpadDevice() {
+    var root = '/sys/class/input';
+    var entries;
+    try { entries = fs.readdirSync(root); }
+    catch (e) { return null; }
+    for (var i = 0; i < entries.length; i++) {
+        var name = entries[i];
+        if (!/^event\d+$/.test(name)) continue;
+        var nameFile = root + '/' + name + '/device/name';
+        try {
+            var devName = fs.readFileSync(nameFile, 'utf8').trim();
+            if (devName.toLowerCase().indexOf('touchpad') !== -1) {
+                return { name: devName, path: '/dev/input/' + name };
+            }
+        } catch (e) { /* ignore */ }
+    }
+    return null;
+}
+
+function startTouchpadReader() {
+    var dev = findTouchpadDevice();
+    if (!dev) {
+        console.warn('[touchpad] no input device found; /api/touchpad will report unavailable');
+        return;
+    }
+    touchpadState.devName = dev.name;
+    touchpadState.devPath = dev.path;
+    touchpadState.available = true;
+
+    var stream;
+    try {
+        stream = fs.createReadStream(dev.path);
+    } catch (e) {
+        console.warn('[touchpad] failed to open ' + dev.path + ': ' + e.message);
+        touchpadState.available = false;
+        return;
+    }
+
+    var pendingTouchdown = false;
+    var leftover = Buffer.alloc(0);
+
+    stream.on('data', function(chunk) {
+        // Glue together what we have with the new chunk; the kernel
+        // hands us full-event-aligned reads almost always, but we
+        // play it safe and buffer any partial trailing record.
+        var buf = leftover.length === 0
+            ? chunk
+            : Buffer.concat([leftover, chunk]);
+
+        var off = 0;
+        while (off + INPUT_EVENT_SIZE <= buf.length) {
+            // Skip the 16-byte timeval; we only care about type/code/value.
+            var type  = buf.readUInt16LE(off + 16);
+            var code  = buf.readUInt16LE(off + 18);
+            var value = buf.readInt32LE (off + 20);
+            off += INPUT_EVENT_SIZE;
+
+            if (type === EV_KEY && code === BTN_TOUCH) {
+                if (value === 1 && !touchpadState.touching) {
+                    // BTN_TOUCH=1 arrives before the same-frame ABS_X/Y
+                    // values; defer capturing the touchdown position
+                    // until SYN_REPORT lands.
+                    pendingTouchdown = true;
+                }
+                touchpadState.touching = (value === 1);
+                if (value === 0) {
+                    touchpadState.pressure = 0;
+                }
+            } else if (type === EV_ABS) {
+                if (code === ABS_X)            touchpadState.x = value;
+                else if (code === ABS_Y)       touchpadState.y = value;
+                else if (code === ABS_PRESSURE) touchpadState.pressure = value;
+            } else if (type === EV_SYN && code === SYN_REPORT) {
+                if (pendingTouchdown) {
+                    touchpadState.touchdownX = touchpadState.x;
+                    touchpadState.touchdownY = touchpadState.y;
+                    pendingTouchdown = false;
+                }
+                touchpadState.eventCount++;
+                touchpadState.lastEventAt = Date.now();
+            }
+        }
+        leftover = (off < buf.length) ? buf.slice(off) : Buffer.alloc(0);
+    });
+
+    stream.on('error', function(e) {
+        console.warn('[touchpad] read error: ' + e.message);
+        touchpadState.available = false;
+    });
+
+    console.log('[touchpad] streaming from ' + dev.path + ' (' + dev.name + ')');
+}
+
+function getTouchpadInfo() {
+    return {
+        available: touchpadState.available,
+        device: touchpadState.devName,
+        touching: touchpadState.touching,
+        x: touchpadState.x,
+        y: touchpadState.y,
+        pressure: touchpadState.pressure,
+        touchdownX: touchpadState.touchdownX,
+        touchdownY: touchpadState.touchdownY,
+        maxX: touchpadState.maxX,
+        maxY: touchpadState.maxY,
+        maxPressure: touchpadState.maxPressure,
+        eventCount: touchpadState.eventCount,
+        lastEventAt: touchpadState.lastEventAt
+    };
+}
+
 // Bandwidth tracking: previous byte counters + timestamp
 var bwPrev = { rx: 0, tx: 0, ts: 0, iface: null };
 
@@ -844,6 +985,11 @@ var server = http.createServer(function(req, res) {
         res.end(JSON.stringify(pu || { watts: null }));
         return;
     }
+    if (req.url === '/api/touchpad') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(getTouchpadInfo()));
+        return;
+    }
     if (req.url === '/api/modem') {
         var modem = getModemInfo();
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -998,4 +1144,9 @@ var server = http.createServer(function(req, res) {
 
 server.listen(PORT, BIND, function() {
     console.log('flipctl server listening on http://' + BIND + ':' + PORT);
+    // Touchpad reader is Linux-only and silently no-ops on macOS dev hosts.
+    if (process.platform === 'linux') {
+        try { startTouchpadReader(); }
+        catch (e) { console.warn('[touchpad] startup failed: ' + e.message); }
+    }
 });

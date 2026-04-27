@@ -189,6 +189,7 @@ var MenuScene = (function() {
             'Screen',
             'Boot menu - UI demo',
             'Input',
+            'Touchpad',
             'Sound',
             'Figma live preview',
             'GPIO',
@@ -196,12 +197,29 @@ var MenuScene = (function() {
         ], {
             'Screen': function() { return new ScreenTestScene(); },
             'Boot menu - UI demo': function() { return new UIDemoScene(sm); },
+            'Touchpad': function() { return new TouchpadTestScene(); },
             'Sound': function() { return new SoundMenuScene(sm); },
             'Figma live preview': function() { return new FigmaLivePreviewScene(sm); },
             'Switch to fake-flipctl': function() {
                 fetch('/api/switch/flipctl', { method: 'POST' });
                 return null;
             }
+        });
+    }
+
+    function appsMenu(sm) {
+        // Placeholder apps — each renders a full-screen PNG mockup.
+        // Drop new PNGs into assets/apps/ and add an entry below.
+        return new SubMenuScene(sm, 'Apps', [
+            'HDMI',
+            'NMap',
+            'Yet another app',
+            'Router'
+        ], {
+            'HDMI':            function() { return new PlaceholderAppScene('/assets/apps/hdmi_screen.png',           'HDMI'); },
+            'NMap':            function() { return new PlaceholderAppScene('/assets/apps/nmap_set_up_00.png',        'NMap'); },
+            'Yet another app': function() { return new PlaceholderAppScene('/assets/apps/nmap_set_up_03.png',        'Yet another app'); },
+            'Router':          function() { return new PlaceholderAppScene('/assets/apps/router_app_placeholder.png','Router'); }
         });
     }
 
@@ -220,17 +238,18 @@ var MenuScene = (function() {
 
     var subMenus = {
         'Network': networkMenu,
-        // Files / Apps / Router have no backing scene yet — factories
+        // Files / Router have no backing scene yet — factories
         // return null so pressing ok/run is a no-op until wired up.
-        'Files':  function() { return null; },
-        'Apps':   function() { return null; },
+        'Files':   function() { return null; },
+        'Apps':    appsMenu,
         'Testing': testingMenu,
         'Settings': settingsMenu,
-        'Router': function() { return null; }
+        'Router':  function() { return null; }
     };
 
     function MenuScene(sceneManager) {
         this.sceneManager = sceneManager;
+        this.displayName = 'Main Menu';
         this.selectedIndex = 0;
         this.scrollOffset = 0;
         this.items = [];

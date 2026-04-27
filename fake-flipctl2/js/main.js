@@ -12,6 +12,18 @@
 
     window.requestRender = function() { needsRender = true; };
 
+    // Resolve a human-readable name for a scene — used by the App
+    // Switcher's title bars. Order of preference:
+    //   1. scene.displayName  — explicit constant (e.g. DesktopScene)
+    //   2. scene.breadcrumbTitle — set by SubMenuScene to its title
+    //   3. empty string — bar renders without a label.
+    function getSceneName(scene) {
+        if (!scene) return '';
+        if (typeof scene.displayName === 'string') return scene.displayName;
+        if (typeof scene.breadcrumbTitle === 'string') return scene.breadcrumbTitle;
+        return '';
+    }
+
     scenes.push(new DesktopScene(scenes));
 
     // Poll the server every 2s and reload the page when the underlying
@@ -55,8 +67,28 @@
 
         for (var i = 0; i < keys.length; i++) {
             var active = scenes.current();
+            var key = keys[i];
+
+            // Global Tab → App Switcher overlay. Suppressed inside
+            // Figma live preview because that scene runs an iframe
+            // that wants Tab for its own use; everywhere else, Tab
+            // toggles the switcher: closes it if it's already on
+            // top, opens it otherwise.
+            if (key === 'appsw' && !(active instanceof FigmaLivePreviewScene)) {
+                if (active instanceof AppSwitcherScene) {
+                    scenes.pop();
+                } else {
+                    // The switcher pulls its cards from the global
+                    // RunningApps registry; sceneManager is needed so
+                    // the OK action can launch the focused app.
+                    scenes.push(new AppSwitcherScene(scenes));
+                }
+                needsRender = true;
+                continue;
+            }
+
             if (active && active.handleInput) {
-                if (active.handleInput(keys[i]) === 'pop') {
+                if (active.handleInput(key) === 'pop') {
                     scenes.pop();
                     needsRender = true;
                 }
@@ -68,12 +100,22 @@
             // a new one (or pop above advanced the stack). Without this
             // we'd paint the previous scene and wait for its first
             // async requestRender to show the new one.
+            //
+            // Clear the flag *before* the scene paints. Scenes running
+            // an animation call window.requestRender() from within
+            // their render() to schedule the next frame; clearing
+            // after would clobber that and stop the animation cold.
             var active = scenes.current();
+            needsRender = false;
             canvas.clear('#000');
             if (active && active.render) {
                 active.render(canvas);
+                // Record the scene whose pixels are now on the canvas.
+                // Scenes that snapshot themselves on exit() consult this
+                // to skip captures when the visible pixels actually
+                // belong to a different (e.g. overlay) scene.
+                window._lastRenderedScene = active;
             }
-            needsRender = false;
         }
 
         requestAnimationFrame(loop);

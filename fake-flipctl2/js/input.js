@@ -7,6 +7,7 @@ var Input = (function() {
         'Enter': 'ok',
         'Escape': 'back',
         'Backspace': 'back',
+        'Tab': 'appsw',
         'k': 'ok',
         'i': 'up',
         'm': 'down',

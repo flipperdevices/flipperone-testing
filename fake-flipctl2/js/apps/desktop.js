@@ -1,8 +1,12 @@
 var DesktopScene = (function() {
     var BATTERY_TEMP_POLL_MS = 5000;
+    // Display name — picked up by main.js → getSceneName so the App
+    // Switcher's title bar shows "Desktop" when Tab is pressed here.
+    var DISPLAY_NAME = 'Desktop';
 
     function DesktopScene(sceneManager) {
         this.sceneManager = sceneManager;
+        this.displayName = DISPLAY_NAME;
 
         // Hostname — populated asynchronously via /api/hostname.
         // `hostnameRaw` is the raw kernel hostname string used for the
@@ -221,30 +225,55 @@ var DesktopScene = (function() {
         // Status bar — same style as the Main Menu (default dark theme).
         UI.drawStatusBar(canvas, '');
 
-        // Two horizontal divider rules below the status bar — top at 36 px,
-        // bottom at 59 px. 1 px tall, full canvas width, light gray.
-        canvas.drawRect(0, UI.STATUS_BAR_H + 36, canvas.w, 1, '#CCCCCC');
-        canvas.drawRect(0, UI.STATUS_BAR_H + 59, canvas.w, 1, '#CCCCCC');
-
         // Hostname row sitting between the two dividers, centered.
-        //   Label "Hostname" — gray (#6D6D6D); value — the raw hostname, black.
-        //   Both share the same baseline, 43 px below the status bar, and the
-        //   label+gap+value group is treated as a single block centered
-        //   horizontally on the canvas.
+        //   Short hostnames (≤ 40 chars) sit on a single line:
+        //     "Hostname  <value>" — label gray, value black.
+        //   Long hostnames wrap to two lines:
+        //     line 1: "Hostname"
+        //     line 2: <value>
+        //   When wrapped, every element below the row (lower divider,
+        //   ETH cards) shifts down by HOSTNAME_LINE_H so the whole
+        //   layout breathes. Stored in `hostnameShift` so the rest
+        //   of the render path can reuse it.
+        var HOSTNAME_LINE_H = 12;
+        var HOSTNAME_WRAP_THRESHOLD = 40;
         var hostnameY = UI.STATUS_BAR_H + 43;
         var hostnameLabel = 'Hostname';
-        var hostnameLabelW = HaxrcorpFont16.textWidth(hostnameLabel);
-        var hostnameGap = 4;
-        var hostnameValueW = this.hostnameRaw
-            ? HaxrcorpFont16.textWidth(this.hostnameRaw)
-            : 0;
-        var hostnameTotalW = hostnameLabelW
-            + (this.hostnameRaw ? hostnameGap + hostnameValueW : 0);
-        var hostnameLabelX = Math.floor((canvas.w - hostnameTotalW) / 2);
-        HaxrcorpFont16.draw(canvas.ctx, hostnameLabel, hostnameLabelX, hostnameY, '#6D6D6D');
-        if (this.hostnameRaw) {
-            var hostValueX = hostnameLabelX + hostnameLabelW + hostnameGap;
-            HaxrcorpFont16.draw(canvas.ctx, this.hostnameRaw, hostValueX, hostnameY, '#000');
+        var hostnameWraps = !!(this.hostnameRaw
+            && this.hostnameRaw.length > HOSTNAME_WRAP_THRESHOLD);
+        var hostnameShift = hostnameWraps ? HOSTNAME_LINE_H : 0;
+
+        // Two horizontal divider rules below the status bar — top at 36 px,
+        // bottom at 59 px (shifted by hostnameShift when the value wraps).
+        // 1 px tall, full canvas width, light gray.
+        canvas.drawRect(0, UI.STATUS_BAR_H + 36, canvas.w, 1, '#CCCCCC');
+        canvas.drawRect(0, UI.STATUS_BAR_H + 59 + hostnameShift, canvas.w, 1, '#CCCCCC');
+
+        if (hostnameWraps) {
+            // Two-line layout: label on top, value below, both centered.
+            var lblW = HaxrcorpFont16.textWidth(hostnameLabel);
+            HaxrcorpFont16.draw(canvas.ctx, hostnameLabel,
+                Math.floor((canvas.w - lblW) / 2), hostnameY, '#6D6D6D');
+            var valW = HaxrcorpFont16.textWidth(this.hostnameRaw);
+            HaxrcorpFont16.draw(canvas.ctx, this.hostnameRaw,
+                Math.floor((canvas.w - valW) / 2),
+                hostnameY + HOSTNAME_LINE_H, '#000');
+        } else {
+            // Single-line layout: label + gap + value, treated as one
+            // block centered on the canvas.
+            var hostnameLabelW = HaxrcorpFont16.textWidth(hostnameLabel);
+            var hostnameGap = 4;
+            var hostnameValueW = this.hostnameRaw
+                ? HaxrcorpFont16.textWidth(this.hostnameRaw)
+                : 0;
+            var hostnameTotalW = hostnameLabelW
+                + (this.hostnameRaw ? hostnameGap + hostnameValueW : 0);
+            var hostnameLabelX = Math.floor((canvas.w - hostnameTotalW) / 2);
+            HaxrcorpFont16.draw(canvas.ctx, hostnameLabel, hostnameLabelX, hostnameY, '#6D6D6D');
+            if (this.hostnameRaw) {
+                var hostValueX = hostnameLabelX + hostnameLabelW + hostnameGap;
+                HaxrcorpFont16.draw(canvas.ctx, this.hostnameRaw, hostValueX, hostnameY, '#000');
+            }
         }
 
         // Battery thermal block.
@@ -286,7 +315,10 @@ var DesktopScene = (function() {
         var ETH_LINE_H  = 12;   // line spacing within a card
         var ETH_CARD_H  = ETH_LINE_H * 2;
         var ETH_CARD_GAP = 5;   // visual gap between two cards
-        var ethStartY = UI.STATUS_BAR_H + 67;   // 8 px below the lower divider
+        // Same +hostnameShift as the lower divider so the spacing
+        // between divider and first ETH card stays at 8 px whether
+        // the hostname wrapped or not.
+        var ethStartY = UI.STATUS_BAR_H + 67 + hostnameShift;
         for (var ei = 0; ei < this.ethList.length; ei++) {
             var eth = this.ethList[ei];
             var line1Y = ethStartY + ei * (ETH_CARD_H + ETH_CARD_GAP);

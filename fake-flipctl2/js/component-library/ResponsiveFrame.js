@@ -21,6 +21,7 @@ var ResponsiveFrame = (function() {
         this.height = options.height !== undefined ? options.height : 22;
         this.fillColor = options.fillColor || '#ffffff';
         this.strokeColor = options.strokeColor || '#000000';
+        this.showFill = options.showFill !== undefined ? options.showFill : true;
         this.showStroke = options.showStroke !== undefined ? options.showStroke : true;
         this.cornerRadius = options.cornerRadius !== undefined ? options.cornerRadius : 3;
         this.corners = options.corners || { tl: true, tr: true, bl: true, br: true };
@@ -55,15 +56,20 @@ var ResponsiveFrame = (function() {
 
         // Body fill, row by row. Cut-corner pixels are never painted,
         // so whatever was on the canvas underneath shows through.
-        ctx.fillStyle = this.fillColor;
-        for (var dy = 0; dy < h; dy++) {
-            var li = 0, ri = 0;
-            if (dy < rTL)           li = Math.max(li, rTL - 1 - dy);
-            if (dy >= h - rBL)      li = Math.max(li, dy - (h - rBL));
-            if (dy < rTR)           ri = Math.max(ri, rTR - 1 - dy);
-            if (dy >= h - rBR)      ri = Math.max(ri, dy - (h - rBR));
-            var rowW = w - li - ri;
-            if (rowW > 0) ctx.fillRect(x + li, y + dy, rowW, 1);
+        // Skipped entirely when showFill is false — used by overlays
+        // that want to keep their underlay visible (e.g. AppSwitcher's
+        // screenshot inside a transparent frame).
+        if (this.showFill) {
+            ctx.fillStyle = this.fillColor;
+            for (var dy = 0; dy < h; dy++) {
+                var li = 0, ri = 0;
+                if (dy < rTL)           li = Math.max(li, rTL - 1 - dy);
+                if (dy >= h - rBL)      li = Math.max(li, dy - (h - rBL));
+                if (dy < rTR)           ri = Math.max(ri, rTR - 1 - dy);
+                if (dy >= h - rBR)      ri = Math.max(ri, dy - (h - rBR));
+                var rowW = w - li - ri;
+                if (rowW > 0) ctx.fillRect(x + li, y + dy, rowW, 1);
+            }
         }
 
         if (this.showStroke) {
@@ -115,6 +121,7 @@ ResponsiveFrame.tweakables = [
     { key: 'anchorH',      type: 'enum', options: ['left', 'center', 'right'],  default: 'left', label: 'horizontal' },
     { key: 'anchorV',      type: 'enum', options: ['top', 'center', 'bottom'],  default: 'top',  label: 'vertical' },
     { section: 'fill' },
+    { key: 'showFill',     type: 'bool',  default: true, label: 'show fill' },
     { key: 'fillColor',    type: 'color', default: '#ffffff' },
     { section: 'stroke' },
     { key: 'showStroke',   type: 'bool',  default: true, label: 'show stroke' },
