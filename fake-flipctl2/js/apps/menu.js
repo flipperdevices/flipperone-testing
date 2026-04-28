@@ -208,19 +208,37 @@ var MenuScene = (function() {
     }
 
     function appsMenu(sm) {
-        // Placeholder apps — each renders a full-screen PNG mockup.
-        // Drop new PNGs into assets/apps/ and add an entry below.
-        return new SubMenuScene(sm, 'Apps', [
-            'HDMI',
-            'NMap',
-            'Yet another app',
-            'Router'
-        ], {
-            'HDMI':            function() { return new PlaceholderAppScene('/assets/apps/hdmi_screen.png',           'HDMI'); },
-            'NMap':            function() { return new PlaceholderAppScene('/assets/apps/nmap_set_up_00.png',        'NMap'); },
-            'Yet another app': function() { return new PlaceholderAppScene('/assets/apps/nmap_set_up_03.png',        'Yet another app'); },
-            'Router':          function() { return new PlaceholderAppScene('/assets/apps/router_app_placeholder.png','Router'); }
+        // Placeholder apps. Single source of truth for each app's
+        // PNG mockup and the icon that travels with it (shown next
+        // to the entry in this submenu *and* in the App Switcher's
+        // title bar). Adding a new app: drop a PNG into assets/apps/,
+        // add an entry here, and (optionally) add its icon sprite.
+        var APPS = {
+            'HDMI':            { image: '/assets/apps/hdmi_screen.png',           icon: null },
+            'NMap':            { image: '/assets/apps/nmap_set_up_00.png',        icon: Icons.nmap_eye },
+            'Yet another app': { image: '/assets/apps/nmap_set_up_03.png',        icon: null },
+            'Router':          { image: '/assets/apps/router_app_placeholder.png',icon: null }
+        };
+        var order = ['HDMI', 'NMap', 'Yet another app', 'Router'];
+
+        var factories = {};
+        order.forEach(function(name) {
+            var def = APPS[name];
+            factories[name] = function() {
+                return new PlaceholderAppScene(def.image, name, def.icon);
+            };
         });
+
+        var subMenu = new SubMenuScene(sm, 'Apps', order, factories);
+
+        // Surface each app's icon in the menu row so the Apps list
+        // matches the App Switcher visually.
+        for (var i = 0; i < subMenu.items.length; i++) {
+            var entryName = subMenu.items[i].text;
+            subMenu.items[i].icon = APPS[entryName].icon;
+        }
+
+        return subMenu;
     }
 
     function settingsMenu(sm) {

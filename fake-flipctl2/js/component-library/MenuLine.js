@@ -96,7 +96,17 @@ var MenuLine = (function() {
         var textLeft = x + ICON_PAD;
         if (iconSource) {
             var iconX = x + ICON_PAD;
-            var iconY = y + ICON_PAD;
+            // Vertically center the icon in the line so short icons
+            // (e.g. nmap_eye at 9 px) don't ride high. For animated
+            // icons the visible "frame" height is sprite.h / frames,
+            // not the strip height. Stays at ICON_PAD for tall icons
+            // (14+ px) so existing menu rows don't budge.
+            var frameCount = iconSource.frames || 1;
+            var iconVisH = frameCount > 1
+                ? Math.floor(iconSource.h / frameCount)
+                : iconSource.h;
+            var iconY = y + Math.max(ICON_PAD,
+                Math.round((H - iconVisH) / 2));
             if (useAnimated) {
                 var frames = iconSource.frames || 1;
                 var elapsed = Date.now() - this._selectedAt;

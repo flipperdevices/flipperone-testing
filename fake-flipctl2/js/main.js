@@ -74,15 +74,40 @@
             // that wants Tab for its own use; everywhere else, Tab
             // toggles the switcher: closes it if it's already on
             // top, opens it otherwise.
-            if (key === 'appsw' && !(active instanceof FigmaLivePreviewScene)) {
-                if (active instanceof AppSwitcherScene) {
-                    scenes.pop();
-                } else {
-                    // The switcher pulls its cards from the global
-                    // RunningApps registry; sceneManager is needed so
-                    // the OK action can launch the focused app.
-                    scenes.push(new AppSwitcherScene(scenes));
+            // Tab opens the App Switcher from anywhere except Figma
+            // live preview. When the switcher is already on top, we
+            // do NOT auto-pop — instead we let the action fall
+            // through to AppSwitcherScene.handleInput, which now
+            // treats Tab the same as OK and launches the focused app.
+            //
+            // If no apps are currently running, there's nothing for
+            // the switcher to show, so Tab degrades into Back —
+            // dispatched through the active scene's handleInput
+            // (so each scene gets to decide what Back means).
+            if (key === 'appsw'
+                && !(active instanceof FigmaLivePreviewScene)
+                && !(active instanceof AppSwitcherScene)) {
+
+                // Capture a "transient" focused card whenever Tab is
+                // pressed from a non-app scene (Desktop, Main Menu,
+                // any submenu, etc). The switcher renders that
+                // snapshot at slot 0 — running apps queue behind it
+                // — and the entry is NOT written to RunningApps.
+                // From within a PlaceholderAppScene this is null;
+                // the switcher just shows the recents stack.
+                var transient = null;
+                if (!(active instanceof PlaceholderAppScene)) {
+                    var tSnap = document.createElement('canvas');
+                    tSnap.width  = canvas.w;
+                    tSnap.height = canvas.h;
+                    tSnap.getContext('2d').drawImage(canvas.el, 0, 0);
+                    transient = {
+                        name: getSceneName(active) || '',
+                        snapshot: tSnap
+                    };
                 }
+
+                scenes.push(new AppSwitcherScene(scenes, transient));
                 needsRender = true;
                 continue;
             }

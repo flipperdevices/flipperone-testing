@@ -24,7 +24,11 @@ var RunningApps = (function() {
     // already be a captured snapshot) — the foreground scene
     // re-renders its own content, but the switcher should keep
     // showing the most recent view of the app.
-    function open(name, imagePath) {
+    //
+    // `icon` is the bitmap sprite the App Switcher renders in the
+    // card's title bar (matches the icon shown next to the app's
+    // name in the Apps submenu).
+    function open(name, imagePath, icon) {
         if (!name) return;
 
         var existing = null;
@@ -38,10 +42,17 @@ var RunningApps = (function() {
         var entry;
         if (existing) {
             entry = existing;
-            // Refresh imagePath in case it changed; image stays as-is.
+            // Refresh imagePath / icon in case they changed; image
+            // stays as-is (the captured snapshot is what matters).
             if (imagePath) entry.imagePath = imagePath;
+            if (icon)      entry.icon = icon;
         } else {
-            entry = { name: name, imagePath: imagePath || null, image: null };
+            entry = {
+                name: name,
+                imagePath: imagePath || null,
+                icon: icon || null,
+                image: null
+            };
             if (entry.imagePath) {
                 // Pre-load the fallback PNG so the switcher has
                 // something to render before the first snapshot

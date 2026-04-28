@@ -14,9 +14,13 @@
  * to the App Switcher title bar via main.js → getSceneName.
  */
 var PlaceholderAppScene = (function() {
-    function PlaceholderAppScene(imagePath, displayName) {
+    function PlaceholderAppScene(imagePath, displayName, icon) {
         this.imagePath  = imagePath;
         this.displayName = displayName || '';
+        // Bitmap sprite shown in the App Switcher's title bar (and
+        // next to the entry in the Apps submenu). Optional — apps
+        // without one render their title bar as text only.
+        this.icon       = icon || null;
         // Image starts null and is created on enter() so leaving
         // and re-entering the scene picks up any updated PNG without
         // a stale browser cache.
@@ -30,7 +34,7 @@ var PlaceholderAppScene = (function() {
         // running app moves it to the front of the switcher rather
         // than duplicating it.
         if (typeof RunningApps !== 'undefined') {
-            RunningApps.open(this.displayName, this.imagePath);
+            RunningApps.open(this.displayName, this.imagePath, this.icon);
         }
 
         var self = this;

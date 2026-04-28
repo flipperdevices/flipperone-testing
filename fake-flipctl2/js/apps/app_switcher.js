@@ -38,19 +38,47 @@ var AppSwitcherScene = (function() {
     }
 
     // ── Position-indexed geometry ───────────────────────────────
-    // Cards at positions outside this map are not rendered (the
-    // carousel scrolls them off-screen).
+    // Carousel layout (most-recently-used first):
+    //   0  — focused / latest opened app
+    //  +1  — pre-latest, collapsed tab BELOW the focused card
+    //  +2  — pre-pre-latest, deeper tab below (behind +1)
+    //  -1  — peek slot ABOVE the focused card; this is where the
+    //        focused card slides when the user presses Down,
+    //        making room for whatever's at +1 to rise up into focus.
+    //
+    // Pressing Down decrements every card's position by 1 (so 0 →
+    // -1, 1 → 0, 2 → 1) — visually the stack scrolls upward as the
+    // older app at +1 takes the focus. Pressing Up increments by 1.
+    // Position -2 is not yet implemented; cards reaching it just
+    // disappear off-carousel.
     var POSITIONS = {};
-    POSITIONS[-2] = S(8, 0,   240, 100, 4, 4, 4, 4);  // peek above the peek
-    POSITIONS[-1] = S(5, 8,   246, 100, 4, 4, 4, 4);  // peek above
-    POSITIONS[ 0] = S(2, 22,  252, 100, 4, 4, 4, 4);  // selected / main
-    POSITIONS[ 1] = S(5, 122, 246,  14, 0, 0, 4, 4);  // tab below
-    // Same tab shape as +1 but narrower (240 px vs 246 px) and
-    // shifted 8 px lower so its top hides behind +1's body. Top
-    // corners square (0), bottom corners rounded (4) — matches
-    // the visual language of +1 since it reads as a continuation
-    // of the tab stack.
-    POSITIONS[ 2] = S(8, 130, 240,  14, 0, 0, 4, 4);  // tab behind the tab
+    // 12 px from left, 1 px from top; right edge runs off the
+    // canvas (12 + 252 = 264). Height stays at 100 — the focused
+    // card covers most of it; only the top ~14 rows peek out.
+    // Same color / corner-radius style as before.
+    // -2 is the deepest visible slot in the older direction. With
+    // the carousel oriented so older apps go to NEGATIVE positions,
+    // this is where the third-most-recent app lands at idle, and
+    // where the second-most-recent slides to after Down. Geometry
+    // anchors it 12 px from canvas bottom (top y=128, h=13) with
+    // 45 px left padding; right edge runs off-canvas like the
+    // other tabs.
+    // Carousel orientation (top → bottom = most-recent → most-old):
+    //   +1 — peek ABOVE the focused card (where the just-demoted
+    //        card slides after a Down press).
+    //    0 — focused / latest opened.
+    //   -1 — tab BELOW the focused card (next-older).
+    //   -2 — deepest tab anchored to the bottom of the screen.
+    // Top-left corner is square so the left-side stroke extends
+    // the full 4 px higher (all the way to the frame's top edge)
+    // — visually anchors the tab to the card above it.
+    POSITIONS[-2] = S(50, 128, 252, 13, 0, 4, 4, 4);  // tab anchored low (oldest visible)
+    POSITIONS[-1] = S(12, 115, 252, 13, 0, 0, 4, 4);  // tab below focused (older)
+    POSITIONS[ 0] = S(2, 15,  252, 100, 4, 4, 4, 4);  // selected / main
+    POSITIONS[ 1] = S(12, 1, 252, 100, 4, 4, 4, 4);   // peek above (just-demoted)
+    // Slot +2 has no geometry on purpose — cards that travel past
+    // +1 (e.g. via repeated Down presses) simply stop rendering
+    // and fade out instead of sliding off-screen.
 
     // Source state for the opening animation: a 1-px overscan
     // square-cornered rect that "zooms in" to position 0.
@@ -69,25 +97,54 @@ var AppSwitcherScene = (function() {
 
     var IMG_X = 0;
     var STROKE = '#000';
-    var ANIM_DURATION_MS = 110;
+    // Animation duration. ANIM_SPEED is a debug multiplier — set to
+    // a smaller value (e.g. 0.2) to slow every animation down by
+    // that factor for visual inspection. Production: 1.0.
+    var ANIM_DURATION_BASE_MS = 110;
+    var ANIM_SPEED = 1;
+    var ANIM_DURATION_MS = ANIM_DURATION_BASE_MS / ANIM_SPEED;
 
-    // Title bars — background color is position-indexed so deeper
-    // cards in the stack get progressively lighter shades of gray
-    // (the focused card is solid black). Any position not listed
-    // falls back to the default gray.
-    var TITLE_BAR_H  = 14;
+    // Title bars — background color and height are both position-
+    // indexed. Deeper cards get progressively lighter shades of gray
+    // (the focused card is solid black). The focused card is also a
+    // little taller (16 px vs the default 14 px) for emphasis. Any
+    // position not listed falls back to the defaults.
+    var TITLE_BAR_H_DEFAULT = 14;
+    var TITLE_BAR_H_BY_POSITION = {};
+    TITLE_BAR_H_BY_POSITION[ 0] = 16;
     var TITLE_BAR_BG_DEFAULT = '#6E6E6E';
     var TITLE_BAR_BG_BY_POSITION = {};
-    TITLE_BAR_BG_BY_POSITION[-2] = '#C3C3C3';
-    TITLE_BAR_BG_BY_POSITION[-1] = '#6E6E6E';
-    TITLE_BAR_BG_BY_POSITION[ 0] = '#000';
-    TITLE_BAR_BG_BY_POSITION[ 1] = '#6E6E6E';
-    TITLE_BAR_BG_BY_POSITION[ 2] = '#C3C3C3';
+    TITLE_BAR_BG_BY_POSITION[ 0] = '#000';      // focused
+    // -1, +1, -2 render as tabs (white card via the TAB_CONFIG
+    // path) rather than via this colored bar map.
     var TITLE_BAR_FG = '#FFF';
-    // Vertical center of the 7 px font in a 14 px bar would be 3,
-    // but the glyph mass sits a bit below true center — offset 2
-    // reads as visually centered.
-    var TITLE_TEXT_Y_OFFSET = 2;
+    // Title-bar typeface — Born2bSportyV2Medium for that chunky,
+    // OS-chrome look. Mathematical centering gives 0 for a 14-px
+    // bar and 1 for a 16-px bar, but the design calls for the text
+    // riding 2 px higher than that, so we subtract 2:
+    //   - 14 px bar → y_offset -2
+    //   - 16 px bar → y_offset -1
+    function titleTextYOffset(barH) {
+        return Math.floor((barH - 14) / 2) - 2;
+    }
+
+    // Per-position config for slots that render in the "tab" style
+    // (white body, gray 3-sided stroke, HaxrcorpFont16 gray label
+    // left-aligned). The `openEdge` is the side that abuts the
+    // focused stack and therefore omits its stroke. `labelDx /
+    // labelDy` are pixel nudges applied to the label position.
+    var TAB_CONFIG = {};
+    // -2: deepest tab at the bottom of the screen.
+    // -1: tab just below the focused card.
+    // +1: peek-above tab (where the just-demoted card lands).
+    // Each tab omits the stroke edge that abuts the focused stack:
+    //   slots BELOW focused (-1, -2) → omit the TOP stroke.
+    //   slot ABOVE focused (+1)      → omit the BOTTOM stroke.
+    // `color` drives both the label and the stroke; deeper slots
+    // get progressively lighter shades.
+    TAB_CONFIG[-2] = { openEdge: 'top',    labelDx: 0, labelDy: 0, color: '#A7A7A7' };
+    TAB_CONFIG[-1] = { openEdge: 'top',    labelDx: 1, labelDy: 0, color: '#666666' };
+    TAB_CONFIG[ 1] = { openEdge: 'bottom', labelDx: 0, labelDy: 1, color: '#666666' };
 
     function now() {
         return (typeof performance !== 'undefined' && performance.now)
@@ -97,11 +154,27 @@ var AppSwitcherScene = (function() {
     function lerp(a, b, t)   { return a + (b - a) * t; }
 
     function lerpState(a, b, t) {
+        // Lerp the four EDGES independently (not x/w and y/h), then
+        // derive width and height from the rounded edges. Rounding
+        // x and w separately can put their rounding errors out of
+        // phase — the visible right edge then jitters ±1 px even
+        // though the underlying lerp is monotonic. Rounding the
+        // left and right edges directly removes the second rounding
+        // error and makes each edge step through the pixel grid
+        // monotonically. Same trick for top/bottom.
+        var aL = a.x,         aR = a.x + a.w;
+        var aT = a.y,         aB = a.y + a.h;
+        var bL = b.x,         bR = b.x + b.w;
+        var bT = b.y,         bB = b.y + b.h;
+        var L = Math.round(lerp(aL, bL, t));
+        var R = Math.round(lerp(aR, bR, t));
+        var T = Math.round(lerp(aT, bT, t));
+        var B = Math.round(lerp(aB, bB, t));
         return {
-            x:   Math.round(lerp(a.x,   b.x,   t)),
-            y:   Math.round(lerp(a.y,   b.y,   t)),
-            w:   Math.round(lerp(a.w,   b.w,   t)),
-            h:   Math.round(lerp(a.h,   b.h,   t)),
+            x:   L,
+            y:   T,
+            w:   R - L,
+            h:   B - T,
             rTL: Math.round(lerp(a.rTL, b.rTL, t)),
             rTR: Math.round(lerp(a.rTR, b.rTR, t)),
             rBL: Math.round(lerp(a.rBL, b.rBL, t)),
@@ -136,46 +209,82 @@ var AppSwitcherScene = (function() {
         ctx.restore();
     }
 
-    function drawFrameStroke(canvas, s, color) {
+    // Draw the 1 px outline matching the body shape. `edges` is an
+    // optional object with boolean { top, bottom, left, right }
+    // flags (each defaults to true). Setting `top: false` skips
+    // the top horizontal line *and* its corner pixels — used by
+    // position +1, which reads as a tab "anchored upward" with no
+    // visible top edge.
+    function drawFrameStroke(canvas, s, color, edges) {
+        var top    = !edges || edges.top    !== false;
+        var bottom = !edges || edges.bottom !== false;
+        var left   = !edges || edges.left   !== false;
+        var right  = !edges || edges.right  !== false;
+
         var ctx = canvas.ctx;
         var x = s.x, y = s.y, w = s.w, h = s.h;
         var rTL = s.rTL, rTR = s.rTR, rBL = s.rBL, rBR = s.rBR;
         ctx.fillStyle = color;
 
-        var topLen = w - rTL - rTR;
-        if (topLen > 0) ctx.fillRect(x + rTL, y, topLen, 1);
-
-        var botLen = w - rBL - rBR;
-        if (botLen > 0) ctx.fillRect(x + rBL, y + h - 1, botLen, 1);
-
-        var leftLen = h - rTL - rBL;
-        if (leftLen > 0) ctx.fillRect(x, y + rTL, 1, leftLen);
-
-        var rightLen = h - rTR - rBR;
-        if (rightLen > 0) ctx.fillRect(x + w - 1, y + rTR, 1, rightLen);
+        if (top) {
+            var topLen = w - rTL - rTR;
+            if (topLen > 0) ctx.fillRect(x + rTL, y, topLen, 1);
+        }
+        if (bottom) {
+            var botLen = w - rBL - rBR;
+            if (botLen > 0) ctx.fillRect(x + rBL, y + h - 1, botLen, 1);
+        }
+        if (left) {
+            var leftLen = h - rTL - rBL;
+            if (leftLen > 0) ctx.fillRect(x, y + rTL, 1, leftLen);
+        }
+        if (right) {
+            var rightLen = h - rTR - rBR;
+            if (rightLen > 0) ctx.fillRect(x + w - 1, y + rTR, 1, rightLen);
+        }
 
         var i;
-        for (i = 0; i < rTL; i++) ctx.fillRect(x + i,             y + rTL - 1 - i, 1, 1);
-        for (i = 0; i < rTR; i++) ctx.fillRect(x + w - rTR + i,   y + i,           1, 1);
-        for (i = 0; i < rBL; i++) ctx.fillRect(x + i,             y + h - rBL + i, 1, 1);
-        for (i = 0; i < rBR; i++) ctx.fillRect(x + w - rBR + i,   y + h - 1 - i,   1, 1);
+        if (top) {
+            for (i = 0; i < rTL; i++) ctx.fillRect(x + i,           y + rTL - 1 - i, 1, 1);
+            for (i = 0; i < rTR; i++) ctx.fillRect(x + w - rTR + i, y + i,           1, 1);
+        }
+        if (bottom) {
+            for (i = 0; i < rBL; i++) ctx.fillRect(x + i,           y + h - rBL + i, 1, 1);
+            for (i = 0; i < rBR; i++) ctx.fillRect(x + w - rBR + i, y + h - 1 - i,   1, 1);
+        }
     }
 
-    function drawTitleBar(canvas, s, name, bgColor) {
+    function drawTitleBar(canvas, s, name, bgColor, barH, icon) {
         var ctx = canvas.ctx;
         ctx.save();
         ctx.beginPath();
         addBodyClipPath(ctx, s.x, s.y, s.w, s.h, s.rTL, s.rTR, s.rBL, s.rBR);
         ctx.clip();
         ctx.fillStyle = bgColor;
-        ctx.fillRect(s.x, s.y, s.w, TITLE_BAR_H);
+        ctx.fillRect(s.x, s.y, s.w, barH);
         ctx.restore();
 
+        // App icon — top-left aligned, 3 px padding from the left
+        // and top of the bar. drawSprite uses each pixel's
+        // grayscale value as opacity for the supplied tint, so a
+        // sprite authored as black-on-white naturally renders white
+        // on top of the dark bar (no separate inverted asset
+        // needed).
+        var labelStartX = null;
+        if (icon) {
+            var iconX = s.x + 3;
+            var iconY = s.y + 3;
+            canvas.drawSprite(icon, iconX, iconY, TITLE_BAR_FG);
+            labelStartX = iconX + icon.w + 3;   // 3 px gap to the label
+        }
+
         if (name) {
-            var tw = HaxrcorpFont16.textWidth(name);
-            var tx = s.x + Math.floor((s.w - tw) / 2);
-            var ty = s.y + TITLE_TEXT_Y_OFFSET;
-            HaxrcorpFont16.draw(canvas.ctx, name, tx, ty, TITLE_BAR_FG);
+            var ty = s.y + titleTextYOffset(barH);
+            // All title bars now left-align: when there's an icon
+            // the label sits 3 px after it; when there isn't, 3 px
+            // in from the frame's left edge — no centered fallback.
+            var tx = (labelStartX !== null) ? labelStartX : (s.x + 3);
+            Born2bSportyV2Medium.draw(canvas.ctx, name, tx, ty, TITLE_BAR_FG);
         }
     }
 
@@ -187,87 +296,212 @@ var AppSwitcherScene = (function() {
     //   3. Title bar (covers the image's top 14 px) — color pulled
     //      from TITLE_BAR_BG_BY_POSITION[card.position]
     //   4. Stroke — drawn only when the card is focused (position 0)
-    function drawCard(canvas, state, card) {
-        // The killing card has position 0 but is sliding off-screen;
-        // selection emphasis (black bar + stroke) belongs on the
-        // *surviving* card that's taking over slot 0, not on this
-        // outgoing one.
-        var selected = (card.position === 0 && !card.killing);
-        var titleBg  = card.killing
-            ? TITLE_BAR_BG_DEFAULT
-            : (TITLE_BAR_BG_BY_POSITION[card.position] || TITLE_BAR_BG_DEFAULT);
+    // Lerp a hex color #RRGGBB → channels lerped, return hex string.
+    function lerpColor(a, b, t) {
+        var ar = parseInt(a.slice(1, 3), 16), ag = parseInt(a.slice(3, 5), 16), ab = parseInt(a.slice(5, 7), 16);
+        var br = parseInt(b.slice(1, 3), 16), bg = parseInt(b.slice(3, 5), 16), bb = parseInt(b.slice(5, 7), 16);
+        var r = Math.round(lerp(ar, br, t));
+        var g = Math.round(lerp(ag, bg, t));
+        var bl = Math.round(lerp(ab, bb, t));
+        var pad = function(n) { return (n < 16 ? '0' : '') + n.toString(16); };
+        return '#' + pad(r) + pad(g) + pad(bl);
+    }
+
+    function drawCard(canvas, state, card, e) {
+        // Card-level alpha — fades the whole card in or out when it
+        // animates between a slot that has POSITIONS geometry and
+        // one that doesn't. Without this, a card pushed past +1
+        // (which has no geometry) would stay parked at +1's place
+        // throughout the animation and then snap out of existence
+        // at t=1; symmetrically, one returning would pop in. The
+        // fade lets it dissolve cleanly in either direction.
+        var cardAlpha = 1;
+        if (card.animFrom !== null) {
+            var posExists = POSITIONS[card.position] !== undefined;
+            var afpExists = POSITIONS[card.animFrom] !== undefined;
+            if (afpExists && !posExists)      cardAlpha = 1 - e;
+            else if (!afpExists && posExists) cardAlpha = e;
+        }
+        if (cardAlpha < 0.001) return;
+
+        var topCtx = canvas.ctx;
+        topCtx.save();
+        topCtx.globalAlpha *= cardAlpha;
 
         fillBody(canvas, state, '#FFF');
 
-        // card.image may be either an HTMLImageElement (loaded PNG)
-        // or an HTMLCanvasElement (captured snapshot). For images
-        // we wait until .complete && .naturalWidth > 0 to avoid
-        // drawing an unloaded source; canvases are always usable
-        // immediately, identified by them having a width property
-        // but no .naturalWidth.
+        // Interpolated |position|. For an idle card it's just the
+        // integer position; mid-animation it's the lerped value
+        // between animFrom and position.
+        var posAbs = card.animFrom !== null
+            ? Math.abs(lerp(card.animFrom, card.position, e))
+            : Math.abs(card.position);
+        var posClamped = Math.max(0, Math.min(1, posAbs));
+
+        // ── Image (fades with the focused style) ──────────────
         var img = card.image;
         var ready = img && (img.naturalWidth > 0
             || (img.tagName === 'CANVAS' && img.width > 0));
         if (ready) {
-            var ctx = canvas.ctx;
-            var imgY = state.y + 1;
+            var imgAlpha = 1 - posClamped;
+            if (imgAlpha > 0.001) {
+                var ictx = canvas.ctx;
+                // Raise the screenshot 10 px above the frame's
+                // interior top — the body clip mask will trim that
+                // overflow, so the visible result is the source
+                // image with its top 10 px cropped off.
+                var imgY = state.y + 1 - 10;
+                ictx.save();
+                ictx.beginPath();
+                addBodyClipPath(ictx, state.x, state.y, state.w, state.h,
+                    state.rTL, state.rTR, state.rBL, state.rBR);
+                ictx.clip();
+                // Multiply *into* the existing alpha (which is the
+                // card-level fade) instead of overwriting it.
+                ictx.globalAlpha = ictx.globalAlpha * imgAlpha;
+                ictx.drawImage(img, IMG_X, imgY);
+                ictx.restore();
+            }
+        }
+
+        // Killing override: snap to the default styling so the
+        // outgoing card slides off in a neutral state.
+        if (card.killing) {
+            drawTitleBar(canvas, state, card.name,
+                TITLE_BAR_BG_DEFAULT, TITLE_BAR_H_DEFAULT, card.icon);
+            topCtx.restore();
+            return;
+        }
+
+        // ── Deep zone (|pos| ≥ 2 and not a tab) — default
+        // position-indexed bar. No 0↔±1 crossfade applies; just
+        // paint the row's standard gray title bar. -2 is a tab
+        // (in TAB_CONFIG), so it skips this branch.
+        var posInTab = TAB_CONFIG[card.position] !== undefined;
+        var afpInTab = card.animFrom !== null && TAB_CONFIG[card.animFrom] !== undefined;
+        var deepZone = !posInTab && !afpInTab
+            && (Math.abs(card.position) >= 2)
+            && (card.animFrom === null || Math.abs(card.animFrom) >= 2);
+        if (deepZone) {
+            var dBg = TITLE_BAR_BG_BY_POSITION[card.position] || TITLE_BAR_BG_DEFAULT;
+            var dBarH = TITLE_BAR_H_BY_POSITION[card.position] || TITLE_BAR_H_DEFAULT;
+            drawTitleBar(canvas, state, card.name, dBg, dBarH, card.icon);
+            topCtx.restore();
+            return;
+        }
+
+        // ── 0 ↔ ±1 zone — crossfade focused style and tab style.
+        // Each style fades linearly with posClamped, so at slot 0
+        // we see only the focused look, at slot ±1 only the tab,
+        // and mid-animation both at complementary alphas. The bar
+        // background and text colors *also* interpolate, which
+        // smooths the transition further than a pure alpha xfade.
+        var focusedAlpha = 1 - posClamped;
+        var tabAlpha     = posClamped;
+        var ctx = canvas.ctx;
+
+        // Focused style: black title bar with Born2bSporty centered,
+        // 4-sided black stroke. As we approach ±1 the bg drifts to
+        // white and the stroke to gray, so even at low alpha the
+        // colors are blending toward the tab's palette.
+        if (focusedAlpha > 0.001) {
+            var fBg     = lerpColor('#000000', '#FFFFFF', posClamped);
+            var fStroke = lerpColor('#000000', '#666666', posClamped);
+            // Bar height stays at the focused 16; the body height
+            // itself is interpolating with the geometry, so a
+            // 16-px-tall bar tucked behind the body clip naturally
+            // shrinks with the card.
             ctx.save();
-            ctx.beginPath();
-            addBodyClipPath(ctx, state.x, state.y, state.w, state.h,
-                state.rTL, state.rTR, state.rBL, state.rBR);
-            ctx.clip();
-            ctx.drawImage(img, IMG_X, imgY);
+            ctx.globalAlpha = ctx.globalAlpha * focusedAlpha;
+            drawTitleBar(canvas, state, card.name, fBg, 16, card.icon);
+            drawFrameStroke(canvas, state, fStroke);
             ctx.restore();
         }
 
-        drawTitleBar(canvas, state, card.name, titleBg);
-        if (selected) drawFrameStroke(canvas, state, STROKE);
+        // Tab style: white card with HaxrcorpFont16 gray label and a
+        // 3-sided gray stroke. The exact look (open edge + label
+        // nudge) comes from TAB_CONFIG indexed by the card's tab
+        // slot. Slot 0 idle has tabAlpha = 0 and skips this block.
+        var tabCfg = TAB_CONFIG[card.position]
+            || (card.animFrom !== null ? TAB_CONFIG[card.animFrom] : null);
+        if (tabAlpha > 0.001 && tabCfg) {
+            var tabColor = tabCfg.color || '#666666';
+            ctx.save();
+            ctx.globalAlpha = ctx.globalAlpha * tabAlpha;
+            if (card.name) {
+                HaxrcorpFont16.draw(canvas.ctx, card.name,
+                    state.x + 3 + tabCfg.labelDx,
+                    state.y + tabCfg.labelDy,
+                    tabColor);
+            }
+            var edges = {};
+            edges[tabCfg.openEdge] = false;
+            drawFrameStroke(canvas, state, tabColor, edges);
+            ctx.restore();
+        }
+
+        topCtx.restore();   // pair with the cardAlpha save() at the top
     }
 
-    // Build the card carousel from the global RunningApps list.
-    // The first entry (most-recent) lands at position 0 (focused),
-    // the next at -1, and so on — matching the recents-stack mental
-    // model. Returns an empty array when no apps are running.
-    function buildCardsFromRunningApps() {
+    // Build the card carousel. If a `transient` card is supplied
+    // (snapshot of a non-app scene like Desktop / Menu / Submenu),
+    // it occupies slot 0 and pushes the running apps down to -1,
+    // -2, … . The transient is NOT in RunningApps — it lives only
+    // for this switcher session and dismisses without launching.
+    // Without a transient, apps[0] (most-recent) takes slot 0.
+    //
+    // If there are no running apps, the transient is dropped on the
+    // floor — the switcher should fall through to its empty-state
+    // "No running apps" message instead of presenting the current
+    // scene as if it were the only card. The carousel only earns
+    // its place when there's something to switch *between*.
+    function buildCardsFromRunningApps(transient) {
         var apps = (typeof RunningApps !== 'undefined')
             ? RunningApps.list()
             : [];
+        if (apps.length === 0) return [];
         var cards = [];
+        var startIdx = 0;
+        if (transient) {
+            cards.push({
+                name:      transient.name,
+                imagePath: null,
+                image:     transient.snapshot,
+                icon:      null,
+                position:  0,
+                animFrom:  null,
+                transient: true     // not in RunningApps, can't be killed
+            });
+            startIdx = 1;          // running apps queue behind it (slot -1, -2, …)
+        }
         for (var i = 0; i < apps.length; i++) {
             cards.push({
                 name:      apps[i].name,
                 imagePath: apps[i].imagePath,
-                image:     apps[i].image,    // pre-loaded by RunningApps.open
-                position:  -i,
+                image:     apps[i].image,
+                icon:      apps[i].icon,
+                position:  -(i + startIdx),
                 animFrom:  null
             });
         }
         return cards;
     }
 
-    function AppSwitcherScene(sceneManager) {
+    function AppSwitcherScene(sceneManager, transient) {
         // SceneManager handle, used by the OK action to launch the
         // focused app (pop self, push a fresh PlaceholderAppScene).
         this.sceneManager = sceneManager || null;
-        // Carousel of cards. Populated in enter() — by then the
-        // previous scene's exit() has run and any snapshot it took
-        // is already stored in RunningApps. Each card carries:
-        //   name      — string shown in its title bar
-        //   imagePath — path used when re-launching from the switcher
-        //   image     — HTMLImageElement (loaded PNG) or
-        //               HTMLCanvasElement (captured snapshot)
-        //   position  — current slot index (integer)
-        //   animFrom  — slot index the card is animating *from*, or
-        //               null at rest.
-        //   killing   — flag: card is mid-kill animation, sliding off
-        //               to the left and about to be removed.
+        // Optional snapshot of the non-app scene that opened the
+        // switcher; rendered as the focused card and dismisses
+        // (rather than launches) when the user picks it.
+        this._transient = transient || null;
         this.cards = [];
         this.phase = PHASE_OPENING;
         this._animStart = 0;
     }
 
     AppSwitcherScene.prototype.enter = function() {
-        this.cards = buildCardsFromRunningApps();
+        this.cards = buildCardsFromRunningApps(this._transient);
         this._animStart = now();
     };
     AppSwitcherScene.prototype.exit = function() {};
@@ -319,7 +553,22 @@ var AppSwitcherScene = (function() {
 
         var newList = (typeof RunningApps !== 'undefined') ? RunningApps.list() : [];
         var newPosByName = {};
+        // Most-recent app keeps slot 0; older ones go to -1, -2, …
         for (var k = 0; k < newList.length; k++) newPosByName[newList[k].name] = -k;
+
+        // If killing this app drains RunningApps, every surviving
+        // card is a transient (current scene snapshot). The carousel
+        // is collapsing to "no running apps" — drop those transients
+        // *now* rather than carrying them through the kill animation,
+        // so the user sees only App 01 sliding off, with no Desktop
+        // frame parked above. The killed card itself is kept so its
+        // slide-out still plays; render's t>=1 cleanup empties the
+        // list and triggers the empty-state repaint.
+        if (newList.length === 0) {
+            this.cards = this.cards.filter(function(c) {
+                return c === focused || !c.transient;
+            });
+        }
 
         for (var j = 0; j < this.cards.length; j++) {
             var c = this.cards[j];
@@ -334,7 +583,7 @@ var AppSwitcherScene = (function() {
     };
 
     AppSwitcherScene.prototype.handleInput = function(action) {
-        if (action === 'appsw' || action === 'back') {
+        if (action === 'back') {
             // If the user has just killed every running app, the
             // stack underneath is unlikely to be a useful place to
             // return to (it's typically the menu chain that led to
@@ -353,7 +602,7 @@ var AppSwitcherScene = (function() {
         // a fast double-press could double up the position shift.
         if (this.phase !== PHASE_REST) return;
 
-        // OK launches the focused app. Strategy:
+        // OK / Run / Tab(=appsw) all launch the focused app. Strategy:
         //   1. Pop the switcher.
         //   2. Pop any PlaceholderAppScene already on the stack — so
         //      Back from the launched app returns to the menu (its
@@ -362,9 +611,16 @@ var AppSwitcherScene = (function() {
         // RunningApps.open() inside the new scene's enter() bumps the
         // existing recents entry back to the top, so the registry
         // stays consistent with what the user just selected.
-        if (action === 'ok' || action === 'run') {
+        if (action === 'ok' || action === 'run' || action === 'appsw') {
             var ok = this._findFocused();
-            if (ok && this.sceneManager && typeof PlaceholderAppScene !== 'undefined') {
+            if (!ok) return;
+            // Transient (current Desktop / Menu / Submenu) just
+            // dismisses the switcher — the user is staying where
+            // they were.
+            if (ok.transient) {
+                return 'pop';
+            }
+            if (this.sceneManager && typeof PlaceholderAppScene !== 'undefined') {
                 this.sceneManager.pop();
                 while (this.sceneManager.current() instanceof PlaceholderAppScene) {
                     this.sceneManager.pop();
@@ -374,15 +630,23 @@ var AppSwitcherScene = (function() {
             return;
         }
 
-        // Esc kills the focused app — only when there's something to
-        // kill. With an empty stack the press is a no-op.
+        // Esc kills the focused app — only when there's a real
+        // running app in the focus slot. Transient (Desktop / Menu)
+        // can't be "killed", and an empty focus is a no-op.
         if (action === 'esc') {
-            this._killFocused();
+            var killTarget = this._findFocused();
+            if (killTarget && !killTarget.transient) {
+                this._killFocused();
+            }
             return;
         }
 
-        var delta = (action === 'up')   ?  1
-                  : (action === 'down') ? -1
+        // Carousel orientation: older apps live at NEGATIVE
+        // positions. Down brings the next-older into focus (so
+        // every card's position += 1, including the focused one
+        // sliding toward +1). Up reverses.
+        var delta = (action === 'down') ?  1
+                  : (action === 'up')   ? -1
                   : 0;
         if (delta === 0) return;
 
@@ -483,17 +747,35 @@ var AppSwitcherScene = (function() {
             var card = renderOrder[i];
             var state = getCardState(card, this.phase, e);
             if (!state) continue;
-            drawCard(canvas, state, card);
+            drawCard(canvas, state, card, e);
         }
 
-        // "Kill" left-button — surfaces what Esc does. Drawn last so
-        // it sits on top of any +1/+2 card visuals at the bottom of
-        // the screen. Hidden during the kill animation so it doesn't
-        // visually flicker as the killed card slides past it; comes
-        // back as soon as we settle into REST.
-        var hasFocus = this._findFocused() !== null;
+        // Kill affordance — surfaces what Esc does. We keep the
+        // standard left-button chrome (white fill, top-right
+        // rounded, 1 px black border) and just centre the kill_app
+        // icon inside it instead of a text label. Hidden during
+        // the kill animation so it doesn't visually flicker as
+        // the killed card slides past; comes back at REST.
+        // Hide the kill button when the focus is on the transient
+        // current-scene card (Desktop / Menu / Submenu) — there's
+        // nothing for Esc to do there.
+        var focusedForKill = this._findFocused();
+        var hasFocus = focusedForKill !== null && !focusedForKill.transient;
         if (hasFocus && this.phase !== PHASE_KILLING) {
-            canvas.drawLeftButton('Kill', 0, 48, false, false);
+            var KILL_BTN_X = 0;
+            var KILL_BTN_W = 48;
+            // Draw the empty button shell (no text), then overlay
+            // the icon centered inside it.
+            canvas.drawLeftButton('', KILL_BTN_X, KILL_BTN_W, false, false);
+            if (Icons.kill_app) {
+                var btnY     = canvas.h - 14;     // BTN_H = 14
+                var iconX    = KILL_BTN_X + Math.floor((KILL_BTN_W - Icons.kill_app.w) / 2);
+                // Mathematically centred is +1 in a 14-px button;
+                // a 1-px nudge down (so +2) reads as visually
+                // centred against the button's top border.
+                var iconY    = btnY + Math.floor((14 - Icons.kill_app.h) / 2) + 1;
+                canvas.drawSprite(Icons.kill_app, iconX, iconY, '#000');
+            }
         }
 
         // Auto-advance phase on animation completion.
@@ -508,6 +790,24 @@ var AppSwitcherScene = (function() {
             } else if (this.phase === PHASE_KILLING) {
                 // Drop killed cards from the carousel for good.
                 this.cards = this.cards.filter(function(c) { return !c.killing; });
+                // If the only survivors are transient (Desktop / Menu /
+                // Submenu snapshot), there's nothing left to switch
+                // *between* — flush them too so the empty-state path
+                // shows "No running apps" on the next frame. Force a
+                // render: at this point `animating` is already false
+                // (t >= 1), so without an explicit request the screen
+                // would freeze on the last animation frame which still
+                // shows the transient card.
+                var realLeft = false;
+                for (var n = 0; n < this.cards.length; n++) {
+                    if (!this.cards[n].transient) { realLeft = true; break; }
+                }
+                if (!realLeft) {
+                    this.cards = [];
+                    if (typeof window.requestRender === 'function') {
+                        window.requestRender();
+                    }
+                }
                 for (var m = 0; m < this.cards.length; m++) {
                     this.cards[m].animFrom = null;
                 }
