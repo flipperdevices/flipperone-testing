@@ -750,32 +750,17 @@ var AppSwitcherScene = (function() {
             drawCard(canvas, state, card, e);
         }
 
-        // Kill affordance — surfaces what Esc does. We keep the
-        // standard left-button chrome (white fill, top-right
-        // rounded, 1 px black border) and just centre the kill_app
-        // icon inside it instead of a text label. Hidden during
-        // the kill animation so it doesn't visually flicker as
-        // the killed card slides past; comes back at REST.
-        // Hide the kill button when the focus is on the transient
-        // current-scene card (Desktop / Menu / Submenu) — there's
-        // nothing for Esc to do there.
+        // Kill affordance — surfaces what Esc does. Standard left-button
+        // chrome (white fill, top-right rounded, 1 px black border) with
+        // the literal label "Kill". Hidden during the kill animation so
+        // it doesn't visually flicker as the killed card slides past;
+        // comes back at REST. Hidden too when the focus is on the
+        // transient current-scene card (Desktop / Menu / Submenu) —
+        // there's nothing for Esc to do there.
         var focusedForKill = this._findFocused();
         var hasFocus = focusedForKill !== null && !focusedForKill.transient;
         if (hasFocus && this.phase !== PHASE_KILLING) {
-            var KILL_BTN_X = 0;
-            var KILL_BTN_W = 48;
-            // Draw the empty button shell (no text), then overlay
-            // the icon centered inside it.
-            canvas.drawLeftButton('', KILL_BTN_X, KILL_BTN_W, false, false);
-            if (Icons.kill_app) {
-                var btnY     = canvas.h - 14;     // BTN_H = 14
-                var iconX    = KILL_BTN_X + Math.floor((KILL_BTN_W - Icons.kill_app.w) / 2);
-                // Mathematically centred is +1 in a 14-px button;
-                // a 1-px nudge down (so +2) reads as visually
-                // centred against the button's top border.
-                var iconY    = btnY + Math.floor((14 - Icons.kill_app.h) / 2) + 1;
-                canvas.drawSprite(Icons.kill_app, iconX, iconY, '#000');
-            }
+            canvas.drawLeftButton('Kill', 0, 48, false, false);
         }
 
         // Auto-advance phase on animation completion.
