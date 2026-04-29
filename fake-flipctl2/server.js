@@ -855,17 +855,21 @@ function getWifiInfo() {
                 break;
             }
         }
-        if (!wifiName) return { connected: false, quality: 0, ssid: '' };
+        if (!wifiName) {
+            return { connected: false, quality: 0, ssid: '', iface: '', ip4: [], ip6: [] };
+        }
 
         // Connected. Find the device bound to this connection, then query
         // kernel-side link signal via `iw`.
         var ssid = wifiName;
         var quality = 0;
+        var iface = null;
+        var ip4 = [];
+        var ip6 = [];
         try {
             var dev = execSync(
                 'nmcli -t -f GENERAL.DEVICE,GENERAL.TYPE,GENERAL.CONNECTION d show',
                 { encoding: 'utf8', timeout: 2000 });
-            var iface = null;
             var blocks = dev.split(/\n(?=GENERAL\.DEVICE:)/);
             var escName = wifiName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             for (var b = 0; b < blocks.length; b++) {
@@ -890,6 +894,27 @@ function getWifiInfo() {
             }
         } catch (e) { /* iw missing; fall back */ }
 
+        // IP addresses for the bound interface — same source the
+        // ethernet endpoint uses (`nmcli -t device show <iface>`),
+        // so the desktop's renderer can reuse `drawEthCard` without
+        // any schema fork. Failure leaves ip4/ip6 empty arrays; the
+        // client treats that as "no addresses yet" and skips the
+        // card on render.
+        if (iface) {
+            try {
+                var ipout = execSync('nmcli -t device show ' + iface + ' 2>/dev/null',
+                    { encoding: 'utf8', timeout: 2000 });
+                var ipLines = ipout.split('\n');
+                for (var li = 0; li < ipLines.length; li++) {
+                    var lp = ipLines[li].split(':');
+                    var key = lp[0];
+                    var val = lp.slice(1).join(':');
+                    if (key.match(/^IP4\.ADDRESS/))      ip4.push(val);
+                    else if (key.match(/^IP6\.ADDRESS/)) ip6.push(val);
+                }
+            } catch (e) { /* keep arrays empty */ }
+        }
+
         // Fallback: grab signal from the scan list if iw didn't work.
         if (quality === 0) {
             try {
@@ -908,9 +933,16 @@ function getWifiInfo() {
             } catch (e) { /* keep defaults */ }
         }
 
-        return { connected: true, quality: quality, ssid: ssid };
+        return {
+            connected: true,
+            quality: quality,
+            ssid: ssid,
+            iface: iface || '',
+            ip4: ip4,
+            ip6: ip6
+        };
     } catch (e) { /* nmcli missing or failed */ }
-    return { connected: false, quality: 0, ssid: '' };
+    return { connected: false, quality: 0, ssid: '', iface: '', ip4: [], ip6: [] };
 }
 
 function getAirplaneMode() {

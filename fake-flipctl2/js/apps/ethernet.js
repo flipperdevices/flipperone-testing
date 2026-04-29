@@ -155,7 +155,308 @@ var EthernetScene = (function() {
         this.modeIndex = MODE_DEFAULT;
         this.modeArrowPressed = null;   // 'left' | 'right' | null
         this._autoSelected = false;
+        // Verbose-detail modal — null when closed; an instance of
+        // IfaceDetailModal otherwise. While set, all input is routed
+        // to the modal and the modal paints over the page after the
+        // normal render finishes.
+        this._modal = null;
     }
+
+    // ── Verbose interface modal ─────────────────────────────────────
+    // Rendered as an overlay inside a ResponsiveFrame, popping over
+    // the Ethernet page when the user presses OK on a tab. Shows the
+    // full `ip addr show`-like dump for one interface: state, speed,
+    // method, all IPv4 / IPv6 addresses, gateways, DNS, RX/TX. Up
+    // / Down scroll, Back / Esc close.
+    //
+    // The modal pulls its data from the closure-level `data` array
+    // every render so it stays in sync with the page's 2-second
+    // poll — no separate fetch loop, no stale state.
+    var MODAL_X        = 4;
+    var MODAL_Y        = 18;
+    var MODAL_W        = 248;
+    var MODAL_H        = 122;
+    var MODAL_PAD_X    = 6;
+    var MODAL_PAD_Y    = 6;
+    var MODAL_LINE_H   = 12;
+    var MODAL_DIVIDER_H = 4;     // total height (line at center)
+    var MODAL_DIVIDER_COLOR = '#E5E5E5';
+    var MODAL_LABEL_GAP = 4;     // gap between "Label:" and value
+    var MODAL_INDENT   = 8;      // indent for array values under a section header
+    var MODAL_METRIC_GAP = 12;   // horizontal gap between Speed / RX / TX segments
+    var MODAL_ICON_GAP = 2;      // gap between RX/TX arrow and its value
+    var MODAL_SCROLL_STEP = MODAL_LINE_H;
+    var MODAL_SCROLLBAR_X = MODAL_X + MODAL_W - 4;
+
+    // nmcli's GENERAL.STATE comes back as "<code> (<label>)", e.g.
+    // "100 (connected)" or "30 (disconnected)". The numeric NM-DEVICE-
+    // STATE code is internal noise — strip it. Strings without that
+    // shape pass through (we already produce "disconnected (no carrier)"
+    // server-side when the kernel reports no carrier, and that should
+    // stay readable as-is).
+    function cleanState(state) {
+        if (!state) return 'unknown';
+        var s = String(state);
+        var m = s.match(/^\s*\d+\s*\(([^)]+)\)\s*$/);
+        if (m) return m[1];
+        return s;
+    }
+
+    // Compose the rows for one interface. Each row is {kind, ...} with
+    // its own height — the renderer accumulates them in pixel space so
+    // dividers (slim) and text rows (taller) can coexist cleanly.
+    //
+    //   header   — name + cleaned status, full-width
+    //   metrics  — single line: speed, ↓ RX, ↑ TX (any subset)
+    //   kv       — "Label:" (gray) + " value" (black) on the same line
+    //   sub      — section label "IPv4:" / "IPv6:" / "DNS:" in gray
+    //   value    — array entry under the most recent `sub`, indented
+    //   divider  — 1 px horizontal rule, gray, padded above and below
+    function buildDetailRows(iface, displayName) {
+        var rows = [];
+        rows.push({ kind: 'header', text: displayName + '  ' + cleanState(iface.state) });
+
+        // Combined link-stats line: Speed, ↓RX, ↑TX. Each segment is
+        // optional; the row is omitted entirely when all three are
+        // missing (e.g. cable unplugged, no carrier).
+        var hasSpeed = !!iface.speed;
+        var hasRx = iface.rxBytes !== null && iface.rxBytes !== undefined;
+        var hasTx = iface.txBytes !== null && iface.txBytes !== undefined;
+        if (hasSpeed || hasRx || hasTx) {
+            rows.push({ kind: 'divider' });
+            rows.push({
+                kind: 'metrics',
+                speed: hasSpeed ? formatSpeed(iface.speed) : '',
+                rx:    hasRx    ? formatBytes(iface.rxBytes) : '',
+                tx:    hasTx    ? formatBytes(iface.txBytes) : ''
+            });
+        }
+
+        var method = formatDhcp(iface.ipv4Method);
+        if (method) {
+            rows.push({ kind: 'divider' });
+            rows.push({ kind: 'kv', label: 'Method:', value: method });
+        }
+
+        // Helper: emit either a single inline "Label: value" row when
+        // the section has just one entry, or "Label:" header + indented
+        // list when it has multiple. The single-entry case avoids the
+        // unnecessary tabulation break for the common one-address case.
+        function pushList(label, arr) {
+            if (!Array.isArray(arr) || arr.length === 0) return;
+            if (arr.length === 1) {
+                rows.push({ kind: 'kv', label: label, value: arr[0] });
+            } else {
+                rows.push({ kind: 'sub', text: label });
+                for (var ii = 0; ii < arr.length; ii++) {
+                    rows.push({ kind: 'value', text: arr[ii] });
+                }
+            }
+        }
+
+        var hasIp4 = Array.isArray(iface.ip4) && iface.ip4.length > 0;
+        var hasGw4 = !!iface.gateway4;
+        if (hasIp4 || hasGw4) {
+            rows.push({ kind: 'divider' });
+            pushList('IPv4:', iface.ip4);
+            if (hasGw4) rows.push({ kind: 'kv', label: 'Gateway4:', value: iface.gateway4 });
+        }
+
+        var hasIp6 = Array.isArray(iface.ip6) && iface.ip6.length > 0;
+        var hasGw6 = !!iface.gateway6;
+        if (hasIp6 || hasGw6) {
+            rows.push({ kind: 'divider' });
+            pushList('IPv6:', iface.ip6);
+            if (hasGw6) rows.push({ kind: 'kv', label: 'Gateway6:', value: iface.gateway6 });
+        }
+
+        if (Array.isArray(iface.dns) && iface.dns.length) {
+            rows.push({ kind: 'divider' });
+            pushList('DNS:', iface.dns);
+        }
+        return rows;
+    }
+
+    function rowHeight(row) {
+        return row.kind === 'divider' ? MODAL_DIVIDER_H : MODAL_LINE_H;
+    }
+
+    // Display name maps "end0" → "ETH0", same as the desktop card.
+    function ifaceDisplayName(iface) {
+        var n = (iface && iface.name) || '';
+        return n.replace(/^end(\d+)$/i, 'ETH$1').toUpperCase();
+    }
+
+    function IfaceDetailModal(scene, ifaceIndex) {
+        this.scene = scene;
+        this.ifaceIndex = ifaceIndex;
+        this.scrollOffsetPx = 0;     // in pixels, snapped to row tops
+        this.frame = new ResponsiveFrame({
+            x: MODAL_X, y: MODAL_Y,
+            width: MODAL_W, height: MODAL_H,
+            anchorH: 'left', anchorV: 'top',
+            cornerRadius: 4,
+            strokeColor: '#000',
+            fillColor: '#fff',
+            showStroke: true, showFill: true
+        });
+        this.viewportH = MODAL_H - MODAL_PAD_Y * 2;
+    }
+
+    IfaceDetailModal.prototype._currentIface = function() {
+        var arr = Array.isArray(data) ? data : [];
+        return arr[this.ifaceIndex] || null;
+    };
+
+    IfaceDetailModal.prototype._totalHeight = function(rows) {
+        var h = 0;
+        for (var i = 0; i < rows.length; i++) h += rowHeight(rows[i]);
+        return h;
+    };
+
+    IfaceDetailModal.prototype.handleInput = function(action) {
+        if (action === 'back' || action === 'esc') {
+            this.scene.closeModal();
+            return;
+        }
+        var iface = this._currentIface();
+        if (!iface) return;
+        var rows = buildDetailRows(iface, ifaceDisplayName(iface));
+        var max = Math.max(0, this._totalHeight(rows) - this.viewportH);
+        if (action === 'down' && this.scrollOffsetPx < max) {
+            this.scrollOffsetPx = Math.min(max, this.scrollOffsetPx + MODAL_SCROLL_STEP);
+            if (window.requestRender) window.requestRender();
+        } else if (action === 'up' && this.scrollOffsetPx > 0) {
+            this.scrollOffsetPx = Math.max(0, this.scrollOffsetPx - MODAL_SCROLL_STEP);
+            if (window.requestRender) window.requestRender();
+        }
+    };
+
+    IfaceDetailModal.prototype.render = function(canvas) {
+        this.frame.render(canvas);
+
+        var iface = this._currentIface();
+        if (!iface) {
+            var msg = 'Interface unavailable';
+            var w = HaxrcorpFont16.textWidth(msg);
+            HaxrcorpFont16.draw(canvas.ctx, msg,
+                MODAL_X + Math.floor((MODAL_W - w) / 2),
+                MODAL_Y + Math.floor((MODAL_H - 7) / 2),
+                '#999');
+            return;
+        }
+
+        var rows = buildDetailRows(iface, ifaceDisplayName(iface));
+        var totalH = this._totalHeight(rows);
+        var maxScroll = Math.max(0, totalH - this.viewportH);
+        if (this.scrollOffsetPx > maxScroll) this.scrollOffsetPx = maxScroll;
+
+        var ctx = canvas.ctx;
+        // Clip to the inner content area so partial rows at the top
+        // and bottom don't bleed past the frame border.
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(MODAL_X + 1, MODAL_Y + 1, MODAL_W - 2, MODAL_H - 2);
+        ctx.clip();
+
+        var contentX = MODAL_X + MODAL_PAD_X;
+        var contentY = MODAL_Y + MODAL_PAD_Y;
+        var contentRight = MODAL_X + MODAL_W - MODAL_PAD_X;
+        var rowY = 0;
+        for (var r = 0; r < rows.length; r++) {
+            var row = rows[r];
+            var rh = rowHeight(row);
+            // Skip rows entirely above or below the viewport. Cheap;
+            // the clip would handle visibility anyway, but this saves
+            // pixel-pushing on tall lists.
+            var visibleTop    = contentY + rowY - this.scrollOffsetPx;
+            var visibleBottom = visibleTop + rh;
+            if (visibleBottom < contentY) {
+                rowY += rh;
+                continue;
+            }
+            if (visibleTop >= contentY + this.viewportH) break;
+
+            var y = visibleTop;
+            if (row.kind === 'divider') {
+                // 1 px gray rule centered in the divider's vertical band.
+                canvas.drawHLine(contentX, y + Math.floor(rh / 2),
+                                 contentRight - contentX, MODAL_DIVIDER_COLOR);
+            } else if (row.kind === 'header') {
+                // Header uses Born2bSportyV2Medium for the same chunky
+                // OS-chrome weight the App Switcher / menu selectors
+                // use, so the interface name + state reads as a card
+                // title rather than just another body line. Drawn 2 px
+                // higher than the row's nominal y — the font's cap row
+                // sits 2 px lower in its frame than HaxrcorpFont16's,
+                // so without the nudge the title would look bottom-
+                // heavy against the divider beneath it.
+                Born2bSportyV2Medium.draw(ctx, row.text, contentX, y - 2, '#000');
+            } else if (row.kind === 'kv') {
+                HaxrcorpFont16.draw(ctx, row.label, contentX, y, '#6D6D6D');
+                var lblW = HaxrcorpFont16.textWidth(row.label);
+                HaxrcorpFont16.draw(ctx, row.value,
+                    contentX + lblW + MODAL_LABEL_GAP, y, '#000');
+            } else if (row.kind === 'sub') {
+                HaxrcorpFont16.draw(ctx, row.text, contentX, y, '#6D6D6D');
+            } else if (row.kind === 'value') {
+                HaxrcorpFont16.draw(ctx, row.text, contentX + MODAL_INDENT, y, '#000');
+            } else if (row.kind === 'metrics') {
+                drawMetricsRow(canvas, contentX, y, row);
+            }
+            rowY += rh;
+        }
+        ctx.restore();
+
+        // Scrollbar — only when content overflows. Pixel-space:
+        // totalItems = totalH, visibleItems = viewportH, currentIndex
+        // = scrollOffsetPx (the helper just computes thumb geometry
+        // from a ratio so units don't have to be "items").
+        if (totalH > this.viewportH) {
+            var sb = new UI.Scrollbar(totalH, this.viewportH, this.scrollOffsetPx);
+            sb.render(canvas, MODAL_SCROLLBAR_X, MODAL_Y + 4, MODAL_H - 8, 1);
+        }
+    };
+
+    // Single-line layout for Speed + ↓RX + ↑TX. Each segment is
+    // optional; missing ones are simply skipped, so e.g. an interface
+    // with no carrier still renders cleanly with nothing in the row
+    // (which is why we omit the row at build time, but defensive
+    // here too — a poll that returns half a metric won't break us).
+    //
+    // Arrow icons sit 2 px below the text baseline so the 7-px sprite
+    // reads as visually centred against the 7-px HaxrcorpFont16 cap
+    // row (the font rasterises with two empty top rows; the icons
+    // don't, so without the nudge the arrows ride high).
+    var ARROW_DY = 2;
+    function drawMetricsRow(canvas, x, y, row) {
+        var ctx = canvas.ctx;
+        var cursor = x;
+        if (row.speed) {
+            HaxrcorpFont16.draw(ctx, row.speed, cursor, y, '#000');
+            cursor += HaxrcorpFont16.textWidth(row.speed) + MODAL_METRIC_GAP;
+        }
+        if (row.rx && Icons && Icons.arrow_down) {
+            canvas.drawSprite(Icons.arrow_down, cursor, y + ARROW_DY, '#000');
+            cursor += Icons.arrow_down.w + MODAL_ICON_GAP;
+            HaxrcorpFont16.draw(ctx, row.rx, cursor, y, '#000');
+            cursor += HaxrcorpFont16.textWidth(row.rx) + MODAL_METRIC_GAP;
+        }
+        if (row.tx && Icons && Icons.arrow_up) {
+            canvas.drawSprite(Icons.arrow_up, cursor, y + ARROW_DY, '#000');
+            cursor += Icons.arrow_up.w + MODAL_ICON_GAP;
+            HaxrcorpFont16.draw(ctx, row.tx, cursor, y, '#000');
+        }
+    }
+
+    EthernetScene.prototype.showModal = function(modal) {
+        this._modal = modal;
+        if (window.requestRender) window.requestRender();
+    };
+    EthernetScene.prototype.closeModal = function() {
+        this._modal = null;
+        if (window.requestRender) window.requestRender();
+    };
 
     EthernetScene.prototype.enter = function() {
         loading = true;
@@ -191,7 +492,24 @@ var EthernetScene = (function() {
     };
 
     EthernetScene.prototype.handleInput = function(action) {
+        // Modal (verbose interface view) captures all input while open.
+        if (this._modal) {
+            this._modal.handleInput(action);
+            return;
+        }
+
         var rows = this._rowCount();
+
+        // OK / Run on a tab opens the verbose modal for that interface.
+        // Index 0 is the Mode row (no detail view); only tabs at 1..N
+        // map to a real entry in `data`.
+        if ((action === 'ok' || action === 'run')
+            && this.selectedIndex >= 1
+            && Array.isArray(data)
+            && data[this.selectedIndex - 1]) {
+            this.showModal(new IfaceDetailModal(this, this.selectedIndex - 1));
+            return;
+        }
 
         // Mode row reacts to left/right to cycle through the values.
         if ((action === 'left' || action === 'right') && this.selectedIndex === 0) {
@@ -342,6 +660,13 @@ var EthernetScene = (function() {
             });
             tab.render(canvas);
             tabY += tab.getHeight() + TAB_GAP;
+        }
+
+        // Modal overlay (verbose detail view) — painted last so it
+        // sits above the tabs and the breadcrumb. The page underneath
+        // keeps polling so the modal's data stays fresh.
+        if (this._modal) {
+            this._modal.render(canvas);
         }
     };
 
