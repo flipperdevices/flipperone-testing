@@ -24,6 +24,10 @@ var DesktopScene = (function() {
         // List of active Ethernet interfaces (display name + addresses).
         // Populated from /api/ethernet on enter and on each poll tick.
         this.ethList = [];
+        // Connected Wi-Fi card. Same shape as an ethList entry
+        // ({name, ip4, ip6}) so the same renderer paints both.
+        // null when not connected or no IPv4 yet.
+        this.wifi = null;
         this._tempTimer = null;
     }
 
@@ -82,6 +86,7 @@ var DesktopScene = (function() {
         this._fetchStat('/api/cpu/temp',     'tempC', 'cpuTempC');
         this._fetchStat('/api/power/usage',  'watts', 'powerWatts');
         this._fetchEthernet();
+        this._fetchWifi();
     };
 
     // Pull /api/ethernet, keep one snapshot per connected interface,
@@ -127,6 +132,46 @@ var DesktopScene = (function() {
             }
             if (changed) {
                 self.ethList = snaps;
+                if (typeof window.requestRender === 'function') window.requestRender();
+            }
+        };
+        xhr.send();
+    };
+
+    // Pull /api/wifi and turn it into a single ETH-card-shaped snapshot
+    // ({name, ip4, ip6}) so `drawEthCard` paints it without changes.
+    // Display name is hard-wired to "WIFI" — only one wireless interface
+    // is ever active on Flipper One, so the kernel device name (wlan0,
+    // wlp2s0, etc.) would just be noise. The card is shown only when:
+    //   - we're connected (NetworkManager state = activated), AND
+    //   - at least one IPv4 address is present.
+    // Same gate as ETH — link can be up but unaddressed mid-DHCP and we
+    // don't want a flicker card during association.
+    DesktopScene.prototype._fetchWifi = function() {
+        var self = this;
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', '/api/wifi', true);
+        xhr.timeout = 3000;
+        xhr.onload = function() {
+            if (xhr.status !== 200) return;
+            var data;
+            try { data = JSON.parse(xhr.responseText); } catch (e) { return; }
+            var stripCidr = function(s) { return (s || '').replace(/\/\d+$/, ''); };
+            var snap = null;
+            if (data && data.connected
+                && Array.isArray(data.ip4) && data.ip4.length > 0) {
+                snap = {
+                    name: 'WIFI',
+                    ip4: stripCidr(data.ip4[0]),
+                    ip6: data.ip6 && data.ip6.length ? stripCidr(data.ip6[0]) : ''
+                };
+            }
+            // Re-render only on real changes (presence or address shift).
+            var prev = self.wifi;
+            var changed = (snap === null) !== (prev === null)
+                || (snap && prev && (snap.ip4 !== prev.ip4 || snap.ip6 !== prev.ip6));
+            if (changed) {
+                self.wifi = snap;
                 if (typeof window.requestRender === 'function') window.requestRender();
             }
         };
@@ -190,8 +235,14 @@ var DesktopScene = (function() {
     }
 
     // Renders a power-flow block: optional label, power_usage icon, and
-    // "<N.NN> W" text (signed; negative = discharging, two decimals to
-    // match `awk '{printf "%.2f W"}' …`).
+    // signed "<±N.NN> W" text. Convention:
+    //   +  → power flowing INTO the battery (charging)
+    //   −  → power flowing OUT of the battery (discharging)
+    //   0  → idle / balanced (a leading space keeps the column width
+    //        identical to the signed forms so the value doesn't jitter
+    //        horizontally when it crosses zero).
+    // Two decimals to match the kernel sysfs reading (`power_now` in µW
+    // → W, formatted via `awk '{printf "%.2f W"}' …`).
     function drawPowerCard(canvas, labelX, labelY, iconX, iconY, label, icon, watts) {
         if (label) {
             HaxrcorpFont16.draw(canvas.ctx, label, labelX, labelY, '#6D6D6D');
@@ -199,9 +250,8 @@ var DesktopScene = (function() {
         canvas.drawSprite(icon, iconX, iconY, '#000');
         if (watts === null) return;
 
-        // Display magnitude only — the icon (and battery state elsewhere)
-        // already conveys discharge vs charge direction.
-        var str = Math.abs(watts).toFixed(2) + ' W';
+        var sign = watts > 0 ? '+' : (watts < 0 ? '-' : ' ');
+        var str  = sign + Math.abs(watts).toFixed(2) + ' W';
         var textX = iconX + icon.w + 3;
         var textY = iconY + Math.floor((icon.h - 7) / 2) - 1;
         HaxrcorpFont16.draw(canvas.ctx, str, textX, textY, '#000');
@@ -305,25 +355,31 @@ var DesktopScene = (function() {
         drawPowerCard(canvas,
             163, UI.STATUS_BAR_H + 4,            // label position
             powerIconX, UI.STATUS_BAR_H + 16,    // icon position
-            'Power usage', Icons.power_usage, this.powerWatts);
+            'Power flow', Icons.power_usage, this.powerWatts);
 
-        // ETH connection cards — one per connected interface, stacked
-        // vertically below the lower divider. Each card is two lines
-        // ("<NAME> IPv4: <ipv4>" / "IPv6: <ipv6>") centered horizontally.
-        // Interface names ("ETH0"/"ETH1") and the IP values render in
-        // black; "IPv4:" and "IPv6:" labels are gray (#6D6D6D).
+        // Connection cards — one per active link, stacked vertically below
+        // the lower divider. Ethernet interfaces come first (ETH0/ETH1…),
+        // followed by the Wi-Fi card if connected (label "WIFI"). Each
+        // card is two lines ("<NAME> IPv4: <ipv4>" / "IPv6: <ipv6>")
+        // centered horizontally. Interface names and IP values render in
+        // black; "IPv4:"/"IPv6:" labels are gray (#6D6D6D).
         var ETH_LINE_H  = 12;   // line spacing within a card
         var ETH_CARD_H  = ETH_LINE_H * 2;
         var ETH_CARD_GAP = 5;   // visual gap between two cards
+        // Build the card list so the renderer doesn't have to know
+        // which slot index belongs to ETH vs WIFI — they're all just
+        // {name, ip4, ip6} entries.
+        var connCards = this.ethList.slice();
+        if (this.wifi) connCards.push(this.wifi);
         // Same +hostnameShift as the lower divider so the spacing
-        // between divider and first ETH card stays at 8 px whether
-        // the hostname wrapped or not.
-        var ethStartY = UI.STATUS_BAR_H + 67 + hostnameShift;
-        for (var ei = 0; ei < this.ethList.length; ei++) {
-            var eth = this.ethList[ei];
-            var line1Y = ethStartY + ei * (ETH_CARD_H + ETH_CARD_GAP);
+        // between divider and first card stays at 8 px whether the
+        // hostname wrapped or not.
+        var connStartY = UI.STATUS_BAR_H + 67 + hostnameShift;
+        for (var ci = 0; ci < connCards.length; ci++) {
+            var conn = connCards[ci];
+            var line1Y = connStartY + ci * (ETH_CARD_H + ETH_CARD_GAP);
             var line2Y = line1Y + ETH_LINE_H;
-            drawEthCard(canvas, eth, line1Y, line2Y);
+            drawEthCard(canvas, conn, line1Y, line2Y);
         }
     };
 
