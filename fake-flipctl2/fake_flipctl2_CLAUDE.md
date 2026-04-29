@@ -17,7 +17,7 @@ A web application that simulates the Flipper One LCD screen user interface. It r
 - Static file server on port **8899** (binds `0.0.0.0`), requires root
 - Serves JSON API endpoints (all return `application/json`):
   - **`/api/modem`** — aggregates `mmcli -m 0 -J`, `qmicli --nas-get-serving-system`, `--nas-get-cell-location-info`, `--nas-get-signal-strength` for RM530N-GL modem via `/dev/cdc-wdm0`; also reads sysfs byte counters on the modem net interface for live bandwidth
-  - **`/api/wifi`** — parses `nmcli -t -f ACTIVE,SIGNAL dev wifi` for active SSID signal; returns `{ connected, quality (0-100) }`
+  - **`/api/wifi`** — queries the active NetworkManager connection (`nmcli c show --active`) for an `802-11-wireless` link, then resolves the bound `iface` and pulls SSID + signal via `iw dev <iface> link` (with a scan-list fallback). Returns `{ connected, quality (0-100), ssid, iface, ip4: string[], ip6: string[] }` — `ip4`/`ip6` come from `nmcli -t device show <iface>` (same source `/api/ethernet` uses), so the Desktop's Wi-Fi card can reuse `drawEthCard` without a schema fork. Empty `ip4`/`ip6` and `connected: false` when there's no active wireless.
   - **`/api/power`** — reads sysfs `/sys/class/power_supply/bq28z610-0` (voltage, current, capacity, charge, temp, time estimates)
   - **`/api/disk`** — reads `df` for `/dev/mmcblk0p2` usage (eMMC)
   - **`/api/routing`** — current routing info
@@ -220,16 +220,19 @@ fake-flipctl2/
     │   └── controls.js            # Builds UI from each component's .tweakables schema
     ├── icons/
     │   └── icons.js               # 6-bit grayscale icon data (network, system, testing, wifi_0..100, etc.)
+    ├── running_apps.js            # Recents stack — open()/close()/list()/setSnapshot(); read by AppSwitcherScene
     └── apps/
-        ├── desktop.js             # Desktop startup scene with Menu button
+        ├── desktop.js             # Desktop startup scene + Power flow + Wi-Fi card (see "Desktop additions")
         ├── menu.js                # Main menu (Network, Testing, Settings — no breadcrumb, no bottom buttons; keyboard-only navigation)
         ├── animated_icons.js      # Vertical sprite strips (e.g. settings_animated) played on SELECTED menu items
         ├── submenu.js             # Generic submenu handler
+        ├── app_switcher.js        # Cover-flow Tab overlay — see "App Switcher" section
+        ├── placeholder_app.js     # Generic full-PNG app scene; registers with RunningApps on enter, captures snapshot on exit
         ├── modem5g.js             # 5G modem info via /api/modem
         ├── diskspace.js           # Disk space via /api/disk
         ├── power.js               # Battery info via /api/power
         ├── routing.js             # Routing info via /api/routing
-        ├── ethernet.js            # Ethernet info via /api/ethernet
+        ├── ethernet.js            # Ethernet list + verbose IfaceDetailModal (see "Ethernet verbose detail modal")
         ├── sound.js               # Sound menu: files, devices, volume, driver restart (via /api/sound/*)
         ├── update.js              # OTA update via /api/update/check + /api/update/apply
         ├── screentest.js          # Display test pattern scene
@@ -1741,6 +1744,251 @@ fake-flipctl/
 - **Recommendation**: Use for UI icons up to ~20×20 pixels
 
 For larger assets (>32×32), consider dedicated sprite assets with better compression.
+
+---
+
+# Recent additions
+
+## App Switcher (Tab overlay)
+
+`js/apps/app_switcher.js` — cover-flow scene that pops over whatever
+is currently on top when the user presses **Tab** (mapped to `'appsw'`
+in `input.js`).
+
+### Activation rules (in `main.js`)
+
+- **Tab from any non-`AppSwitcherScene` and non-`FigmaLivePreviewScene`
+  scene** opens the switcher. Figma is excluded because its iframe
+  consumes Tab for its own use.
+- **Tab from inside the switcher** (already on top) launches the
+  focused app instead of toggling.
+
+### Transient current-scene card
+
+When Tab is pressed from a *non-app* scene (Desktop / Menu / Submenu —
+anything that's not a `PlaceholderAppScene`), `main.js` snapshots the
+canvas and passes it to the switcher as a `transient` card:
+
+```js
+var tSnap = document.createElement('canvas');
+tSnap.width = canvas.w; tSnap.height = canvas.h;
+tSnap.getContext('2d').drawImage(canvas.el, 0, 0);
+scenes.push(new AppSwitcherScene(scenes, {
+    name: getSceneName(active) || '', snapshot: tSnap
+}));
+```
+
+The transient occupies slot 0 (focused), running apps queue at
+−1, −2, … . Picking it just pops the switcher (the user is staying
+where they were); Esc on it is a no-op (you can't "kill" Desktop).
+The transient is *not* added to `RunningApps`.
+
+If `RunningApps.list().length === 0`, the transient is dropped on the
+floor in `buildCardsFromRunningApps` and the switcher falls into the
+empty-state branch ("No running apps" centered).
+
+### Carousel layout (`POSITIONS` map)
+
+| Slot | Role | Visual |
+|------|------|--------|
+| 0    | focused | 252 × 100 selected card with full screenshot |
+| +1   | peek above | 252 × 100 white tab — where the demoted card lands after Down |
+| −1   | tab below | 13 px tab, label `#666666` |
+| −2   | deeper tab below | 13 px tab, lighter `#A7A7A7`, anchored to the canvas bottom |
+
+Cards beyond ±2 fade out via `cardAlpha` rather than sliding off-screen.
+Mid-animation the focused style and tab style cross-fade linearly
+(`focusedAlpha = 1 − |posClamped|`, `tabAlpha = posClamped`) so 0 ↔ ±1
+transitions blend rather than snapping.
+
+Z-order is set per-frame by `zKey(card, e) = |lerp(animFrom, position, e)|`
+— interpolated absolute position. Closest to focus paints last (on top).
+
+### Phase state machine
+
+`PHASE_OPENING` (zoom-in) → `PHASE_REST` → `PHASE_SCROLLING` /
+`PHASE_KILLING` → `PHASE_REST`. Each animated phase runs for
+`ANIM_DURATION_MS = 110`. Pixel-perfect lerping is done by
+interpolating the four edges (L/R/T/B) independently and deriving
+`w`, `h` from them — lerping `x` and `w` separately produces ±1 px
+right-edge jitter from out-of-phase rounding.
+
+### Kill flow
+
+- **Esc** on a real running card kills it: card slides off-screen
+  left, `RunningApps.close(name)` runs, any `PlaceholderAppScene` for
+  the same name is spliced out of the scene stack, survivors shift up
+  by 1.
+- **Esc** on a transient is a no-op.
+- If killing the last running app would leave only transients behind,
+  the transients are spliced out *immediately* (so the user doesn't
+  see Desktop parked above the dying app), then at animation end
+  `cards = []` and a `requestRender()` paints the empty-state. Without
+  the explicit request the loop wouldn't repaint — at `t >= 1`
+  `animating` is already `false` and the screen would freeze on the
+  last animation frame.
+- Back from the empty switcher routes to `popToRoot()` rather than
+  back to the menu chain that launched the now-dead apps.
+
+### Kill button
+
+Bottom-left button, label **`Kill`**:
+`canvas.drawLeftButton('Kill', 0, 48, false, false)`. Hidden during
+`PHASE_KILLING` (so it doesn't flicker against the slide-out) and when
+the focused card is a transient.
+
+### RunningApps registry
+
+`js/running_apps.js` — single source of truth for "what's running."
+
+| Method | Behaviour |
+|--------|-----------|
+| `open(name, imagePath, icon)` | Add new entry or bump existing one to the top. Re-launches keep the existing `image` (captured snapshot is what matters). |
+| `close(name)` | Remove an entry; calls `requestRender()`. |
+| `setSnapshot(name, canvas)` | Replace an entry's `image` with a captured canvas — called from `PlaceholderAppScene.exit()` so the switcher card always shows the user's last view of the app. |
+| `list()` | Shallow copy, most-recent first. |
+
+The exit-time snapshot is gated by `window._lastRenderedScene === this`
+— without that guard, when the user picks a different app from the
+switcher (which fires `pop()` then `push(newApp)` on the previous
+scene before any render), the canvas pixels still belong to the
+switcher and we'd save *its* frame as the previous app's "last seen"
+thumbnail.
+
+---
+
+## Desktop additions
+
+`js/apps/desktop.js` extras layered onto the original layout.
+
+### Power flow
+
+Battery power-flow row labelled **`Power flow`**, signed value
+`±N.NN W`:
+
+```js
+var sign = watts > 0 ? '+' : (watts < 0 ? '-' : ' ');
+var str  = sign + Math.abs(watts).toFixed(2) + ' W';
+```
+
+- `+` = power flowing **into** the battery (charging)
+- `−` = power flowing **out of** the battery (discharging)
+- ` ` (leading space at zero) keeps the column width identical across
+  signed and idle states, so the value doesn't jitter horizontally
+  when it crosses zero.
+
+Server-side `getPowerUsage()` reads `/sys/class/power_supply/<dev>/power_avg`
+in µW, divides by 1 000 000, retains sign — convention is preserved
+end-to-end (the kernel reports negative for discharging on Flipper One).
+
+### Wi-Fi connection card
+
+A `WIFI` card sits below the ETH card stack on Desktop, rendered with
+the same `drawEthCard()` function (same two-line `<NAME>  IPv4: …` /
+`IPv6: …` layout, same colours). Data comes from the extended
+`/api/wifi` schema (see API endpoints). Display name is hard-wired to
+`WIFI` — only one wireless interface is ever active, no need for
+`WLAN0` / `wlp2s0` noise.
+
+The card renders only when **both** `connected: true` *and*
+`ip4.length > 0`. The link can be up but unaddressed mid-DHCP, and a
+flicker card during association is exactly the noise we don't want.
+
+`_fetchWifi()` follows the same change-detection pattern as
+`_fetchEthernet()` — only triggers `requestRender()` when the snapshot
+differs from the previous (`ip4`, `ip6`, presence flips), so steady
+state doesn't burn frames.
+
+---
+
+## Ethernet verbose detail modal
+
+`js/apps/ethernet.js` — pressing **OK** on an interface tab opens an
+overlay modal (`IfaceDetailModal`) showing the full `ip addr show`
+dump for that interface. Esc / Back closes. The Mode row (index 0)
+ignores OK as before — only the real interface tabs open the modal.
+
+### Frame & layout
+
+- `ResponsiveFrame` at `(4, 18, 248×122)`, white fill, 1 px black
+  stroke, 4 px corner radius. Sits below the 13 px status bar so the
+  system chrome stays visible.
+- 6 px inner padding; content area 236 × 110 px.
+- **Pixel-based scrolling.** `scrollOffsetPx` advances by
+  `MODAL_LINE_H = 12 px` per Up / Down. `UI.Scrollbar` thumb computed
+  from `totalHeightPx / viewportHeightPx`, drawn only when content
+  overflows. Pixel-space scrolling lets text rows (12 px) and divider
+  rows (4 px) coexist without index gymnastics.
+
+### Row kinds
+
+Each row carries its own height; the renderer accumulates in pixel
+space and clips to the inner content rect.
+
+| Kind | Height | Visual |
+|------|--------|--------|
+| `header` | 12 px | Interface name + cleaned status, **`Born2bSportyV2Medium`**, drawn at `y − 2` so the chunkier glyphs don't crowd the divider beneath |
+| `metrics` | 12 px | Single line: `Speed`, `↓ RX`, `↑ TX`. Arrows are `Icons.arrow_down` / `Icons.arrow_up` (5 × 7), nudged 2 px down to centre against the 7-px text cap row |
+| `kv` | 12 px | `Label:` (gray `#6D6D6D`) + value (black) on one line |
+| `sub` | 12 px | Section label `IPv4:` / `IPv6:` / `DNS:` (gray) — only emitted when the section has 2+ entries |
+| `value` | 12 px | Indented (8 px) array entry under the most recent `sub` |
+| `divider` | 4 px | 1 px `#E5E5E5` rule centred in a 4-px band, separates blocks |
+
+### Inline-vs-list collapse
+
+The `pushList(label, arr)` helper emits a single `kv` row when the
+array has exactly one entry (`IPv4:  192.168.1.10/24`), and `sub` +
+`value` rows when there are multiple. A typical home-router setup
+(one IPv4, one IPv6, one DNS) renders as three clean inline rows
+instead of six.
+
+### State string cleanup
+
+nmcli's `GENERAL.STATE` returns `"100 (connected)"` / `"30 (disconnected)"`
+— the leading numeric NM-DEVICE-STATE code is internal noise.
+`cleanState()` strips it via `/^\s*\d+\s*\(([^)]+)\)\s*$/`. Server-side
+carrier overrides like `"disconnected (no carrier)"` (no leading
+number) pass through unchanged.
+
+### Block order
+
+```
+header
+divider
+metrics                         # Speed / ↓RX / ↑TX, omitted if all missing
+divider
+Method:  DHCP Client            # omitted if no method
+divider
+IPv4 + Gateway4                 # block omitted if neither present
+divider
+IPv6 + Gateway6
+divider
+DNS                             # 1 entry → inline; 2+ → sub + values
+```
+
+Empty blocks skip both content and the preceding divider, so a
+disconnected interface doesn't end up with a stack of bare rule lines.
+
+### Modal pattern
+
+Same shape as `SubMenuScene._modal` — input routes through the modal
+first when set, normal scene continues to render and poll underneath.
+Polling keeps modal data fresh on the 2-second cadence, and
+`scrollOffsetPx` is clamped against the latest poll's row count each
+render.
+
+```js
+EthernetScene.prototype.showModal  = function(modal) { ... };
+EthernetScene.prototype.closeModal = function() { ... };
+
+// In handleInput
+if (this._modal) { this._modal.handleInput(action); return; }
+
+// In render, after the page paints
+if (this._modal) { this._modal.render(canvas); }
+```
+
+---
 
 ## References
 
