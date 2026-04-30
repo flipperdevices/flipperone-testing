@@ -29,6 +29,11 @@ var DesktopScene = (function() {
         // null when not connected or no IPv4 yet.
         this.wifi = null;
         this._tempTimer = null;
+
+        // Bottom-bar "Menu" button — visual affordance for the X
+        // key (`edit` action) which opens the Main Menu via _onMenu().
+        // Slot 1 matches the original Desktop layout (left of centre).
+        this.menuBtn = new UI.MiddleButton('Menu', 1, 48, 2, 'edit');
     }
 
     DesktopScene.prototype._fetchHostname = function() {
@@ -110,11 +115,23 @@ var DesktopScene = (function() {
             var list = Array.isArray(data) ? data : [];
             var stripCidr = function(s) { return (s || '').replace(/\/\d+$/, ''); };
             var snaps = [];
+            // Friendly-name map for the Desktop card. Only the kernel
+            // network ports (end0/end1) surface here — the USB-gadget
+            // interface (flipusb0) is intentionally hidden on Desktop;
+            // it's still visible on the Ethernet detail page.
+            function friendlyName(rawName) {
+                var n = String(rawName || '');
+                if (/^end\d+$/i.test(n)) return n.replace(/^end/i, 'ETH').toUpperCase();
+                return n.toUpperCase();
+            }
             for (var i = 0; i < list.length; i++) {
                 var f = list[i];
                 if (!f || !Array.isArray(f.ip4) || f.ip4.length === 0) continue;
+                // Skip USB-gadget Ethernet on Desktop — only "real"
+                // physical ports earn a card here.
+                if (/^flipusb\d*$/i.test(String(f.name || ''))) continue;
                 snaps.push({
-                    name: (f.name || '').replace(/^end(\d+)$/i, 'ETH$1').toUpperCase(),
+                    name: friendlyName(f.name),
                     ip4: stripCidr(f.ip4[0]),
                     ip6: f.ip6 && f.ip6.length ? stripCidr(f.ip6[0]) : ''
                 });
@@ -196,8 +213,10 @@ var DesktopScene = (function() {
     };
 
     DesktopScene.prototype.handleInput = function(action) {
-        // ok / run open the Main Menu.
-        if (action === 'ok' || action === 'run') {
+        // The "Menu" bottom-bar button is bound to the X key (`edit`
+        // action), matching the original Desktop layout — keeps OK/Run
+        // free for any future "primary" action on the dashboard.
+        if (action === 'edit') {
             this._onMenu();
             return;
         }
@@ -365,22 +384,28 @@ var DesktopScene = (function() {
         // black; "IPv4:"/"IPv6:" labels are gray (#6D6D6D).
         var ETH_LINE_H  = 12;   // line spacing within a card
         var ETH_CARD_H  = ETH_LINE_H * 2;
-        var ETH_CARD_GAP = 5;   // visual gap between two cards
+        var ETH_CARD_GAP = 2;   // visual gap between two cards (was 5)
         // Build the card list so the renderer doesn't have to know
         // which slot index belongs to ETH vs WIFI — they're all just
         // {name, ip4, ip6} entries.
         var connCards = this.ethList.slice();
         if (this.wifi) connCards.push(this.wifi);
         // Same +hostnameShift as the lower divider so the spacing
-        // between divider and first card stays at 8 px whether the
-        // hostname wrapped or not.
-        var connStartY = UI.STATUS_BAR_H + 67 + hostnameShift;
+        // between divider and first card stays consistent whether
+        // the hostname wrapped or not. Offset shrunk 67 → 65 to
+        // tighten the gap below the divider by 2 px.
+        var connStartY = UI.STATUS_BAR_H + 65 + hostnameShift;
         for (var ci = 0; ci < connCards.length; ci++) {
             var conn = connCards[ci];
             var line1Y = connStartY + ci * (ETH_CARD_H + ETH_CARD_GAP);
             var line2Y = line1Y + ETH_LINE_H;
             drawEthCard(canvas, conn, line1Y, line2Y);
         }
+
+        // Bottom-bar Menu button — drawn last so it sits above any
+        // connection card that the worst-case stack might extend
+        // close to the canvas bottom.
+        this.menuBtn.render(canvas);
     };
 
     // Renders a single interface card. Two lines, each centered:
