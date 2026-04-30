@@ -542,12 +542,24 @@ function getRoutingInfo() {
     return routes;
 }
 
-var ETH_IFACES = ['end0', 'end1'];
+// `flipusb0` is the USB-gadget Ethernet device created on builds
+// that ship the cdc_ether/g_ether kernel module. NetworkManager
+// usually treats it as `unmanaged`, so its IPs (typically a
+// link-local 169.254.x.x set by a startup script) won't appear
+// via `nmcli device show` — the fallback `ip -j addr show <iface>`
+// pass below picks them up.
+var ETH_IFACES = ['end0', 'end1', 'flipusb0'];
 
 function getEthernetInfo() {
     var ifaces = [];
     for (var i = 0; i < ETH_IFACES.length; i++) {
         var name = ETH_IFACES[i];
+        // Skip interfaces the kernel doesn't have. flipusb0 only
+        // exists on builds where the USB-gadget driver creates it;
+        // we don't want a phantom "unavailable" tab cluttering the
+        // page on builds without it.
+        if (!fs.existsSync('/sys/class/net/' + name)) continue;
+
         var info = { name: name, state: null, ip4: [], ip6: [], gateway4: null, gateway6: null, dns: [] };
         try {
             var out = execSync('nmcli -t device show ' + name + ' 2>/dev/null', { encoding: 'utf8', timeout: 3000 });
@@ -600,6 +612,45 @@ function getEthernetInfo() {
         // client can show em-dash or blank.
         info.rxBytes = readSysInt('/sys/class/net/' + name + '/statistics/rx_bytes');
         info.txBytes = readSysInt('/sys/class/net/' + name + '/statistics/tx_bytes');
+
+        // Fallback for unmanaged interfaces (flipusb0 and friends):
+        // when nmcli yielded no addresses but the kernel DOES have
+        // them bound (e.g. assigned by a startup script), pull them
+        // straight from `ip -j addr show <iface>`. We only run this
+        // when nmcli came back empty AND the kernel sees the iface
+        // up — saves a fork on the common managed case.
+        // The iproute2 JSON output uses {local, prefixlen} pairs;
+        // we glue them back to the "addr/cidr" string nmcli would
+        // have produced so downstream consumers (the Desktop card,
+        // the verbose modal) don't have to know the difference.
+        if (info.ip4.length === 0 && carrier !== 0) {
+            try {
+                var ipraw = execSync('ip -j addr show ' + name + ' 2>/dev/null',
+                    { encoding: 'utf8', timeout: 1500 });
+                var ipdata = JSON.parse(ipraw);
+                if (Array.isArray(ipdata) && ipdata[0]
+                        && Array.isArray(ipdata[0].addr_info)) {
+                    var addrs = ipdata[0].addr_info;
+                    for (var ki = 0; ki < addrs.length; ki++) {
+                        var a = addrs[ki];
+                        if (!a || !a.local) continue;
+                        var cidr = a.local + '/' + a.prefixlen;
+                        if (a.family === 'inet')       info.ip4.push(cidr);
+                        else if (a.family === 'inet6') info.ip6.push(cidr);
+                    }
+                    // nmcli might have reported "unmanaged" / empty
+                    // here. If we just found addresses, the link is
+                    // effectively connected — relabel so isConnected()
+                    // on the client and the modal status both read
+                    // "connected" rather than the unmanaged state.
+                    if (info.ip4.length > 0
+                        && (!info.state || info.state.indexOf('connected') === -1)) {
+                        info.state = 'connected';
+                    }
+                }
+            } catch (e) { /* ip missing or no JSON support — skip */ }
+        }
+
         // IPv4 method on the currently-active connection for this
         // device (auto | manual | shared | link-local | disabled).
         // Only bothered when carrier is up — saves two nmcli calls

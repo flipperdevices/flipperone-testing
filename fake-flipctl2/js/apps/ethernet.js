@@ -6,26 +6,24 @@ var EthernetScene = (function() {
     var TAB_GAP       = 3;
     var BREADCRUMB_X  = 4;
 
-    // Mode switch row sits above ETH0. Compact HaxrcorpFont16 row —
-    // label on the left, cycling value on the right (arrows appear
-    // only while the row is selected, mirroring the MenuLine toggle).
-    var MODE_Y        = 28;
-    var MODE_H        = 14;
-    var MODE_PAD_L    = 4;
-    var MODE_PAD_R    = 4;
-    var MODE_ARROW_PRESSED_MS = 120;
-    var MODE_VALUES   = ['Manual'];
-    var MODE_DEFAULT  = 0;
-
-    // Per-mode role labels for (ETH0, ETH1). Dual WAN = both ports act
-    // as independent WAN interfaces.
-    var ROLE_BY_MODE = {
-        'Manual': ['WAN', 'WAN']
-    };
-
-    // ETH tabs stack below the mode row — 1px more than TAB_GAP so the
-    // switch's selector shadow has breathing room before ETH0.
-    var TAB_Y         = MODE_Y + MODE_H + TAB_GAP + 1;  // = 46
+    // Tabs start just below the breadcrumb (no Mode row anymore).
+    // TAB_H_CONNECTED mirrors EthernetTab.CONNECTED_H — duplicated
+    // as a scene-level constant so the layout math doesn't have to
+    // build a tab to know its height.
+    //
+    // TAB_Y is hand-set, with the invariant that the worst case
+    // (every interface connected) still fits inside CANVAS_H:
+    //
+    //   TAB_Y + MAX_TABS × TAB_H_CONNECTED + (MAX_TABS − 1) × TAB_GAP ≤ CANVAS_H
+    //   26    + 3 × 34                      + 2 × 3                    = 134 ≤ 144 ✓
+    //
+    // 10 px slack lands at the bottom. To bump TAB_Y further down,
+    // reduce TAB_H_CONNECTED to keep the invariant; otherwise the
+    // last tab will clip against the canvas bottom (no scrolling).
+    var CANVAS_H              = 144;
+    var TAB_H_CONNECTED       = 34;
+    var MAX_TABS              = 3;        // ETH0, ETH1, USB-ETH
+    var TAB_Y                 = 26;
 
     var data = null;
     var loading = true;
@@ -150,10 +148,8 @@ var EthernetScene = (function() {
     function EthernetScene(sceneManager) {
         this.sceneManager = sceneManager;
         this.breadcrumbTitle = 'Ethernet';
-        // Selection: 0 = Mode switch, 1..N = ethernet tabs.
+        // Selection: 0..N-1 over the ethernet tabs (no Mode row).
         this.selectedIndex = 0;
-        this.modeIndex = MODE_DEFAULT;
-        this.modeArrowPressed = null;   // 'left' | 'right' | null
         this._autoSelected = false;
         // Verbose-detail modal — null when closed; an instance of
         // IfaceDetailModal otherwise. While set, all input is routed
@@ -281,9 +277,14 @@ var EthernetScene = (function() {
         return row.kind === 'divider' ? MODAL_DIVIDER_H : MODAL_LINE_H;
     }
 
-    // Display name maps "end0" → "ETH0", same as the desktop card.
+    // Display name maps the kernel device name to a short user-facing
+    // label:
+    //   end0 / end1   →  ETH0 / ETH1   (kernel network ports)
+    //   flipusb0      →  USB ETH       (USB-gadget Ethernet)
+    //   anything else →  uppercase passthrough
     function ifaceDisplayName(iface) {
         var n = (iface && iface.name) || '';
+        if (/^flipusb\d*$/i.test(n)) return 'USB ETH';
         return n.replace(/^end(\d+)$/i, 'ETH$1').toUpperCase();
     }
 
@@ -463,7 +464,6 @@ var EthernetScene = (function() {
         error = false;
         data = null;
         this.selectedIndex = 0;
-        this.modeArrowPressed = null;
         this._autoSelected = false;
         fetchEthernet();
         // 2s poll keeps dbus-daemon overhead low; the server reads the
@@ -487,8 +487,7 @@ var EthernetScene = (function() {
     };
 
     EthernetScene.prototype._rowCount = function() {
-        // 1 (mode switch) + N (ethernet tabs).
-        return 1 + (Array.isArray(data) ? data.length : 0);
+        return Array.isArray(data) ? data.length : 0;
     };
 
     EthernetScene.prototype.handleInput = function(action) {
@@ -501,31 +500,15 @@ var EthernetScene = (function() {
         var rows = this._rowCount();
 
         // OK / Run on a tab opens the verbose modal for that interface.
-        // Index 0 is the Mode row (no detail view); only tabs at 1..N
-        // map to a real entry in `data`.
+        // Disconnected tabs are non-actionable — the modal would just
+        // show "no addresses, no speed" anyway, and the chevron is
+        // suppressed in the tab's render to make this visually
+        // explicit. Bail without consuming the action.
         if ((action === 'ok' || action === 'run')
-            && this.selectedIndex >= 1
             && Array.isArray(data)
-            && data[this.selectedIndex - 1]) {
-            this.showModal(new IfaceDetailModal(this, this.selectedIndex - 1));
-            return;
-        }
-
-        // Mode row reacts to left/right to cycle through the values.
-        if ((action === 'left' || action === 'right') && this.selectedIndex === 0) {
-            var n = MODE_VALUES.length;
-            if (action === 'right') this.modeIndex = (this.modeIndex + 1) % n;
-            else                    this.modeIndex = (this.modeIndex - 1 + n) % n;
-            // Brief tap feedback on the pressed chevron.
-            var self = this;
-            this.modeArrowPressed = action;
-            if (window.requestRender) window.requestRender();
-            setTimeout(function() {
-                if (self.modeArrowPressed === action) {
-                    self.modeArrowPressed = null;
-                    if (window.requestRender) window.requestRender();
-                }
-            }, MODE_ARROW_PRESSED_MS);
+            && data[this.selectedIndex]
+            && isConnected(data[this.selectedIndex])) {
+            this.showModal(new IfaceDetailModal(this, this.selectedIndex));
             return;
         }
 
@@ -536,54 +519,6 @@ var EthernetScene = (function() {
         } else if (action === 'back' || action === 'esc') {
             return 'pop';
         }
-    };
-
-    EthernetScene.prototype._renderModeRow = function(canvas) {
-        var labelY = MODE_Y + Math.floor((MODE_H - 11) / 2);   // center HaxrcorpFont16 (11-row frame)
-        var selected = this.selectedIndex === 0;
-        var valueColor = selected ? '#000' : '#999';
-        var value = MODE_VALUES[this.modeIndex];
-        var rightEdge = TAB_X + TAB_W - MODE_PAD_R;
-
-        // Selector frame when selected. Uses MenuSelectorFrame (no
-        // chevron) — the row is a toggle, not a drill-in card.
-        if (selected) {
-            var sel = new MenuSelectorFrame({
-                x: TAB_X,
-                y: MODE_Y - 1,
-                width: TAB_W,
-                height: MODE_H + 2,
-                anchorH: 'left', anchorV: 'top',
-                cornerRadius: 3,
-                strokeColor: '#000',
-                showStroke: true,
-                showFill: false
-            });
-            sel.render(canvas);
-        }
-
-        HaxrcorpFont16.draw(canvas.ctx, 'Mode', TAB_X + MODE_PAD_L, labelY, '#000');
-
-        if (!selected) {
-            // Collapsed: just the value, right-aligned.
-            var w = HaxrcorpFont16.textWidth(value);
-            HaxrcorpFont16.draw(canvas.ctx, value, rightEdge - w, labelY, valueColor);
-            return;
-        }
-
-        // Selected: `<value>` with arrows and tap-feedback colours.
-        var ltW = HaxrcorpFont16.textWidth('<');
-        var gtW = HaxrcorpFont16.textWidth('>');
-        var valW = HaxrcorpFont16.textWidth(value);
-        var spacing = 4;
-        var gtX = rightEdge - gtW;
-        var valX = gtX - spacing - valW;
-        var ltX = valX - spacing - ltW;
-        var ltColor = this.modeArrowPressed === 'left'  ? '#222222' : valueColor;
-        var gtColor = this.modeArrowPressed === 'right' ? '#222222' : valueColor;
-        HaxrcorpFont16.draw(canvas.ctx, '<',   ltX,  labelY, ltColor);
-        HaxrcorpFont16.draw(canvas.ctx, value, valX, labelY, valueColor);
-        HaxrcorpFont16.draw(canvas.ctx, '>',   gtX,  labelY, gtColor);
     };
 
     EthernetScene.prototype.render = function(canvas) {
@@ -619,44 +554,45 @@ var EthernetScene = (function() {
         var ifaces = Array.isArray(data) ? data : [];
 
         // Auto-highlight the first connected interface on first data.
-        // Tab indices start at 1 (Mode switch is index 0).
         if (!this._autoSelected && ifaces.length > 0) {
             for (var a = 0; a < ifaces.length; a++) {
-                if (isConnected(ifaces[a])) { this.selectedIndex = 1 + a; break; }
+                if (isConnected(ifaces[a])) { this.selectedIndex = a; break; }
             }
             this._autoSelected = true;
         }
 
         // Clamp selection to valid range.
-        var rows = 1 + ifaces.length;
-        if (this.selectedIndex >= rows) this.selectedIndex = 0;
+        if (this.selectedIndex >= ifaces.length) this.selectedIndex = 0;
 
-        // Mode switch first, tabs below.
-        this._renderModeRow(canvas);
-
-        var modeName = MODE_VALUES[this.modeIndex];
-        var roleMap = ROLE_BY_MODE[modeName] || [];
-        // Each tab grows to 40 px when connected (RX/TX row). Track
-        // cursor so subsequent tabs sit below the previous one.
+        // Stack tabs flush below the breadcrumb. The page is sized
+        // (TAB_Y derived from MAX_TABS × TAB_H_CONNECTED + gaps) so
+        // the worst case fits exactly — no scrolling, no clipping.
         var tabY = TAB_Y;
         for (var i = 0; i < ifaces.length; i++) {
             var iface = ifaces[i];
             var connected = isConnected(iface);
+            // Custom label only when the kernel name doesn't follow the
+            // ETH<n> shape (i.e. for flipusb0 → "USB ETH"). Leaving the
+            // option `null` lets EthernetTab fall back to its default
+            // `ETH<portNumber>` for the regular ports.
+            var customName = ifaceDisplayName(iface);
+            var defaultName = 'ETH' + i;
             var tab = new EthernetTab({
                 x: TAB_X,
                 y: tabY,
                 width: TAB_W,
                 height: TAB_H,              // base height — component expands itself when connected
                 portNumber: i,
+                displayName: customName !== defaultName ? customName : null,
                 connected: connected,
                 ipv4: firstIpv4(iface),
                 ipv6: firstIpv6(iface),
-                portRole: roleMap[i] || '',
+                portRole: '',                // mode toggle removed → no WAN/LAN role
                 speed: formatSpeed(iface.speed),
                 rxLabel: connected ? formatBytes(iface.rxBytes) : '',
                 txLabel: connected ? formatBytes(iface.txBytes) : '',
                 dhcpLabel: connected ? formatDhcp(iface.ipv4Method) : '',
-                selected: (i + 1) === this.selectedIndex
+                selected: i === this.selectedIndex
             });
             tab.render(canvas);
             tabY += tab.getHeight() + TAB_GAP;

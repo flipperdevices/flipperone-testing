@@ -23,7 +23,7 @@ var EthernetTab = (function() {
     var DEFAULT_Y       = 28;
     var DEFAULT_W       = 248;
     var DEFAULT_H       = 22;
-    var CONNECTED_H     = 40;   // taller card when connected — room for RX/TX row
+    var CONNECTED_H     = 34;   // taller card when connected — room for RX/TX row
     var CORNER_RADIUS   = 3;
     var ICON_PAD_L      = 6;
     var ICON_PAD_T      = 4;
@@ -45,7 +45,9 @@ var EthernetTab = (function() {
 
     // Bottom RX/TX info row (connected state only). Positioned so its
     // bottom edge sits BOTTOM_INFO_PAD_B px above the frame bottom.
-    var BOTTOM_INFO_PAD_B   = 7;
+    // Bumped 4 → 5 — lifts IPv6 + DHCP one more pixel off the frame's
+    // bottom border so the row breathes against the rounded corners.
+    var BOTTOM_INFO_PAD_B   = 5;
     var BOTTOM_INFO_PAD_L   = 5;   // left inset for the RX arrow
     var BOTTOM_INFO_GAP     = 2;   // gap between arrow and value
     var BOTTOM_INFO_COL_GAP = 5;   // gap between RX value and the up arrow
@@ -89,6 +91,12 @@ var EthernetTab = (function() {
         this.w        = options.width  !== undefined ? options.width  : DEFAULT_W;
         this.h        = options.height !== undefined ? options.height : DEFAULT_H;
         this.portNumber = options.portNumber || 0;
+        // Optional override for the port label. When unset, the tab
+        // renders the default `ETH<portNumber>`. Used to surface
+        // non-numbered links (e.g. USB-gadget Ethernet → "USB")
+        // without polluting `portNumber`, which is also used for
+        // role lookups elsewhere.
+        this.displayName = options.displayName || null;
         this.connected  = !!options.connected;
         this.ipv4       = options.ipv4 || '';
         this.selected   = !!options.selected;
@@ -152,7 +160,11 @@ var EthernetTab = (function() {
                 strokeColor: '#000000',
                 showStroke: true,
                 showFill: true,
-                fillColor: '#ffffff'
+                fillColor: '#ffffff',
+                // Disconnected tabs aren't actionable — pressing OK
+                // is a no-op (gated in the scene). Drop the drill-in
+                // chevron so the tab visually conveys that.
+                showChevron: this.connected
             });
             sel.render(canvas);
         } else {
@@ -180,7 +192,7 @@ var EthernetTab = (function() {
         // Port name ("ETH0"/"ETH1") in Born2bSporty, right after the icon.
         var nameX = iconX + Icons.ethernet.w + TEXT_GAP;
         var nameY = this.y + NAME_DRAW_Y;
-        var nameStr = 'ETH' + this.portNumber;
+        var nameStr = this.displayName || ('ETH' + this.portNumber);
         Born2bSportyV2Medium.draw(canvas.ctx, nameStr, nameX, nameY, fg);
         var nameW = Born2bSportyV2Medium.textWidth(nameStr);
 
@@ -235,10 +247,17 @@ var EthernetTab = (function() {
         var pillTop  = this.y + 1;
         var pillH    = 17;
         var pillBLr  = 4;
+        // Pill clip: when the tab is selected AND connected, the right
+        // side is occluded by the 6-px selector chevron — the pill
+        // stops 6 px short of the frame's right edge to make room.
+        // Disconnected tabs suppress the chevron (the tab isn't
+        // actionable), so the pill follows the rounded corner like
+        // the unselected case.
+        var hasChevron = this.selected && this.connected;
         for (var py = 0; py < pillH; py++) {
             var relY = py + 1;
             var rowEndExcl;
-            if (this.selected) {
+            if (hasChevron) {
                 rowEndExcl = this.x + this.w - 6;
             } else {
                 var ri = 0;
