@@ -74,7 +74,7 @@ var AppSwitcherScene = (function() {
     // — visually anchors the tab to the card above it.
     POSITIONS[-2] = S(50, 128, 252, 13, 0, 4, 4, 4);  // tab anchored low (oldest visible)
     POSITIONS[-1] = S(12, 115, 252, 13, 0, 0, 4, 4);  // tab below focused (older)
-    POSITIONS[ 0] = S(2, 15,  252, 100, 4, 4, 4, 4);  // selected / main
+    POSITIONS[ 0] = S(2, 15,  258, 100, 4, 4, 4, 4);  // selected / main (right edge runs 4 px past the canvas, same convention as ±1 tabs)
     POSITIONS[ 1] = S(12, 1, 252, 100, 4, 4, 4, 4);   // peek above (just-demoted)
     // Slot +2 has no geometry on purpose — cards that travel past
     // +1 (e.g. via repeated Down presses) simply stop rendering
@@ -89,13 +89,30 @@ var AppSwitcherScene = (function() {
     // sits past the left edge (x = -260 → right edge at -8).
     var KILLED_STATE  = S(-260, 22, 252, 100, 4, 4, 4, 4);
 
+    // Off-screen-bottom source used by the wrap-hint slide-in. y is
+    // anchored at the canvas height (144) since drawCard's wrap-hint
+    // override now leaves y untouched (only grows h by +6). With
+    // WRAP_HINT_START.y = 144, the card's top edge starts exactly
+    // at the canvas bottom — fully off-screen — and lerps up to
+    // POSITIONS[-2].y at the slide-in's end. Corners pre-set to the
+    // wrap-hint shape (TL rounded, others square) so the lerped
+    // stroke geometry doesn't morph mid-slide; drawCard overrides
+    // corners after the lerp anyway, but matching here keeps the
+    // lerp results sensible if anything ever reads them.
+    var WRAP_HINT_START = S(50, 144, 252, 13, 4, 0, 0, 0);
+
     // ── Phase state machine ─────────────────────────────────────
     var PHASE_OPENING   = 'opening';
     var PHASE_REST      = 'rest';
     var PHASE_SCROLLING = 'scrolling';
     var PHASE_KILLING   = 'killing';
 
-    var IMG_X = 0;
+    // Screenshot draw offset. Aligns the image's left edge with the
+    // focused frame body's left edge (state.x = 2 for POSITIONS[0]),
+    // so the left side of the snapshot isn't cropped by the body
+    // clip mask. The right edge runs past the canvas — that's
+    // already off-screen and clipped naturally.
+    var IMG_X = 2;
     var STROKE = '#000';
     // Animation duration. ANIM_SPEED is a debug multiplier — set to
     // a smaller value (e.g. 0.2) to slow every animation down by
@@ -254,7 +271,7 @@ var AppSwitcherScene = (function() {
         }
     }
 
-    function drawTitleBar(canvas, s, name, bgColor, barH, icon) {
+    function drawTitleBar(canvas, s, name, bgColor, barH, icon, textDy) {
         var ctx = canvas.ctx;
         ctx.save();
         ctx.beginPath();
@@ -273,13 +290,60 @@ var AppSwitcherScene = (function() {
         var labelStartX = null;
         if (icon) {
             var iconX = s.x + 3;
-            var iconY = s.y + 3;
-            canvas.drawSprite(icon, iconX, iconY, TITLE_BAR_FG);
+            // Vertically centre the icon inside the title bar so
+            // assets of different heights (e.g. 14-px square menu
+            // icons vs. 9-px nmap_eye) all read centred against
+            // the bar. Hardcoding +3 used to make 14-tall icons
+            // sit 2 px below centre and bleed 1 px below the bar
+            // onto the screenshot below.
+            var iconY = s.y + Math.floor((barH - icon.h) / 2);
+            // Optional per-icon nudge. Two channels of overrides so
+            // the App Switcher title-bar position can be tuned
+            // independently of the MenuLine row position (some
+            // icons read fine inline in a menu but ride high or
+            // low against the title bar's distinct background):
+            //   - `titleBarOffsetX` / `titleBarOffsetY` — preferred
+            //     here. When defined they take precedence.
+            //   - `offsetX` / `offsetY`               — fallback,
+            //     reused from MenuLine if no title-bar-specific
+            //     override is given.
+            // The label anchor (`labelStartX`) keeps using the
+            // icon's *unshifted* right edge so subsequent text
+            // still sits 3 px past where the icon would have ended
+            // without the nudge — otherwise nudging an icon right
+            // would push the label right with it.
+            var dx = (icon.titleBarOffsetX !== undefined)
+                     ? icon.titleBarOffsetX
+                     : (icon.offsetX || 0);
+            var dy = (icon.titleBarOffsetY !== undefined)
+                     ? icon.titleBarOffsetY
+                     : (icon.offsetY || 0);
+            var drawX = iconX + dx;
+            var drawY = iconY + dy;
+            // Pick the right renderer for the icon's storage format.
+            // Same convention MenuLine uses:
+            //   - 6-bit grayscale (`grayscale: true`) → drawSprite
+            //     uses the gray value as opacity for the supplied
+            //     tint, so anti-aliased edges survive.
+            //   - 1-bit binary (legacy, one hex value per row, no
+            //     `grayscale` flag) → drawIcon. Routing these
+            //     through drawSprite goes via _drawBinarySprite,
+            //     which expects a flat byte array, NOT the per-row
+            //     hex format icons.js stores them in — that mismatch
+            //     made router / minimal render as garbled pixels.
+            if (icon.grayscale) {
+                canvas.drawSprite(icon, drawX, drawY, TITLE_BAR_FG);
+            } else {
+                canvas.drawIcon(icon, drawX, drawY, TITLE_BAR_FG);
+            }
             labelStartX = iconX + icon.w + 3;   // 3 px gap to the label
         }
 
         if (name) {
-            var ty = s.y + titleTextYOffset(barH);
+            // Optional `textDy` nudge lets specific call sites (e.g.
+            // the focused 0-slot card) push the label down a pixel
+            // without affecting tab- or kill-style titles.
+            var ty = s.y + titleTextYOffset(barH) + (textDy || 0);
             // All title bars now left-align: when there's an icon
             // the label sits 3 px after it; when there isn't, 3 px
             // in from the frame's left edge — no centered fallback.
@@ -316,11 +380,31 @@ var AppSwitcherScene = (function() {
         // at t=1; symmetrically, one returning would pop in. The
         // fade lets it dissolve cleanly in either direction.
         var cardAlpha = 1;
-        if (card.animFrom !== null) {
+        // `pinnedPosAbs` short-circuits the position lerp in the
+        // posAbs computation below when the card is doing a pure
+        // fade-in or fade-out. Without it, lerping `animFrom` →
+        // `position` from e.g. +2 to -2 walks through 0 at the
+        // midpoint, which makes posClamped dip to 0 and momentarily
+        // trips the focused-zone title-bar styling (dark fill). The
+        // card *renders* at only one geometric side throughout the
+        // fade, so we pin posAbs to that side too.
+        var pinnedPosAbs = null;
+        if (card._fromState) {
+            // Slide animation (e.g. wrap-hint) — full opacity, and
+            // pin posAbs to the destination so the title-bar style
+            // doesn't crossfade through the focused zone while the
+            // card is mid-slide.
+            pinnedPosAbs = Math.abs(card.position);
+        } else if (card.animFrom !== null) {
             var posExists = POSITIONS[card.position] !== undefined;
             var afpExists = POSITIONS[card.animFrom] !== undefined;
-            if (afpExists && !posExists)      cardAlpha = 1 - e;
-            else if (!afpExists && posExists) cardAlpha = e;
+            if (afpExists && !posExists) {
+                cardAlpha    = 1 - e;
+                pinnedPosAbs = Math.abs(card.animFrom);
+            } else if (!afpExists && posExists) {
+                cardAlpha    = e;
+                pinnedPosAbs = Math.abs(card.position);
+            }
         }
         if (cardAlpha < 0.001) return;
 
@@ -328,14 +412,49 @@ var AppSwitcherScene = (function() {
         topCtx.save();
         topCtx.globalAlpha *= cardAlpha;
 
+        // Wrap-hint shape override: when this card is the most-recent
+        // app raised to slot -2 as a loop-boundary indicator (see
+        // AppSwitcherScene._raiseWrapHint), it draws as a rectangle
+        // with ONLY the top-left corner rounded and stroke on top
+        // and left edges only — anchors visually to the bottom-left
+        // of the canvas. The override applies the moment the flag
+        // is set, including throughout the fade-in animation, so
+        // the user never sees the standard -2 tab shape flicker
+        // first. `_wrapToTop` clears the flag before its scroll
+        // animation, so that lerp uses the standard geometry.
+        //
+        // Also nudges the card 2 px taller and 2 px down vs the raw
+        // POSITIONS[-2] tab so the wrap hint sits more prominently
+        // at the canvas bottom. The bottom 1 px overflows the
+        // canvas, but the bottom edge has no stroke (override drops
+        // bottom + right strokes) so there's nothing to clip.
+        var isWrapHint = card.wrapHint === true
+                         && card.position === -2;
+        if (isWrapHint) {
+            state = {
+                x:   state.x,
+                y:   state.y,
+                w:   state.w,
+                h:   state.h + 6,
+                rTL: 4, rTR: 0, rBL: 0, rBR: 0
+            };
+        }
+
         fillBody(canvas, state, '#FFF');
 
         // Interpolated |position|. For an idle card it's just the
         // integer position; mid-animation it's the lerped value
-        // between animFrom and position.
-        var posAbs = card.animFrom !== null
-            ? Math.abs(lerp(card.animFrom, card.position, e))
-            : Math.abs(card.position);
+        // between animFrom and position — UNLESS this is a pure
+        // fade-in/out (`pinnedPosAbs` set above), in which case the
+        // card stays styled at its rendered side throughout.
+        var posAbs;
+        if (pinnedPosAbs !== null) {
+            posAbs = pinnedPosAbs;
+        } else if (card.animFrom !== null) {
+            posAbs = Math.abs(lerp(card.animFrom, card.position, e));
+        } else {
+            posAbs = Math.abs(card.position);
+        }
         var posClamped = Math.max(0, Math.min(1, posAbs));
 
         // ── Image (fades with the focused style) ──────────────
@@ -413,7 +532,11 @@ var AppSwitcherScene = (function() {
             // shrinks with the card.
             ctx.save();
             ctx.globalAlpha = ctx.globalAlpha * focusedAlpha;
-            drawTitleBar(canvas, state, card.name, fBg, 16, card.icon);
+            // +1 px on the title text so the focused card's label
+            // reads visually centred against the 16-px bar — the
+            // bar's mathematical centre lands too high for
+            // Born2bSporty's optical baseline.
+            drawTitleBar(canvas, state, card.name, fBg, 16, card.icon, 1);
             drawFrameStroke(canvas, state, fStroke);
             ctx.restore();
         }
@@ -429,13 +552,22 @@ var AppSwitcherScene = (function() {
             ctx.save();
             ctx.globalAlpha = ctx.globalAlpha * tabAlpha;
             if (card.name) {
+                // Wrap-hint label: nudge 1 px down on top of
+                // tabCfg.labelDy so the text reads centred against
+                // the now-taller card silhouette.
+                var labelDy = tabCfg.labelDy + (isWrapHint ? 1 : 0);
                 HaxrcorpFont16.draw(canvas.ctx, card.name,
                     state.x + 3 + tabCfg.labelDx,
-                    state.y + tabCfg.labelDy,
+                    state.y + labelDy,
                     tabColor);
             }
             var edges = {};
             edges[tabCfg.openEdge] = false;
+            // Wrap-hint shape: stroke ONLY top + left (drop bottom
+            // and right), matching the "anchor in the bottom-left
+            // corner of the screen" silhouette the user sees when
+            // parked at the oldest app.
+            if (isWrapHint) edges = { bottom: false, right: false };
             drawFrameStroke(canvas, state, tabColor, edges);
             ctx.restore();
         }
@@ -455,24 +587,125 @@ var AppSwitcherScene = (function() {
     // "No running apps" message instead of presenting the current
     // scene as if it were the only card. The carousel only earns
     // its place when there's something to switch *between*.
+    // Cyclical-carousel slot for `idx` given current `focusedIdx` and
+    // total card count `n`. The carousel layout for N=4 is:
+    //   diff 0 → focused (0)
+    //   diff 1 → peek-below (-1)
+    //   diff 2 → deeper-below (-2)
+    //   diff N − 1 → peek-above wrap target (+1)  ← what the user
+    //       would land on if they pressed Up; "previous-cyclical".
+    // For larger N the middle diffs (3..N−2) land at -3, -4, … which
+    // have no POSITIONS geometry and fade out via cardAlpha.
+    function cyclicalPosition(idx, focusedIdx, n) {
+        if (n <= 1) return 0;
+        // Linear position relative to focus — cards above focus
+        // (lower idx) land at positive positions, cards below at
+        // negative. Cards array is ordered most-recent → oldest,
+        // so cards[focusedIdx] is at 0, cards[focusedIdx + 1] at
+        // -1, cards[focusedIdx - 1] at +1, etc.
+        var pos = focusedIdx - idx;
+        // The wrap-target peek-above (+1) only kicks in when the
+        // truly-oldest card (idx = N - 1) would otherwise land at
+        // a slot with no POSITIONS geometry (-3 or worse). Happens
+        // at the most-recent focus state for N >= 4. For N <= 3
+        // every card fits naturally, so no wrap.
+        if (pos === -(n - 1) && pos < -2) return 1;
+        return pos;
+    }
+
+    // Index of the "most-recent app" in the cards array. With a
+    // transient at cards[0], the most-recent app sits at cards[1];
+    // otherwise it's cards[0]. Returns -1 if the array contains
+    // only a transient (no real apps to be a wrap-hint).
+    function mostRecentAppIdx(cards) {
+        if (!cards || cards.length === 0) return -1;
+        if (cards[0] && cards[0].transient) {
+            return cards.length > 1 ? 1 : -1;
+        }
+        return 0;
+    }
+
+    // Apply the cyclical position model to `cards` for the given
+    // focus index, capturing the previous position into `animFrom`
+    // first so the caller can drive a SCROLLING animation. Also
+    // applies the at-oldest wrap-hint override:
+    //   - The most-recent app card lands at -2 with wrap-hint
+    //     shape (TL-rounded silhouette, top+left strokes).
+    //   - If a *different* card lands at -2 cyclically (only
+    //     happens for non-transient N >= 4), that card is flagged
+    //     `hidden` so it doesn't overlap the wrap-hint.
+    //   - The most-recent's `_fromState` is set to WRAP_HINT_START
+    //     when its previous position wasn't already -2, so the
+    //     existing slide-in animation plays.
+    // For any other focus state, wrapHint / hidden / _fromState
+    // are explicitly cleared.
+    function applyCyclicalLayout(cards, focusedIdx) {
+        var n = cards.length;
+        for (var j = 0; j < n; j++) {
+            var c = cards[j];
+            c.animFrom   = c.position;
+            c.position   = cyclicalPosition(j, focusedIdx, n);
+            c.wrapHint   = false;
+            c.hidden     = false;
+            c._fromState = null;
+        }
+
+        // Wrap-hint at oldest fires for N >= 3. At N = 2 the only
+        // "other" card lands at the visible +1 peek-above slot so
+        // a wrap-hint adds no information; at N >= 3 the most-
+        // recent's linear position is +2 (off-canvas) or worse,
+        // which would just fade out without the loop-boundary
+        // indicator. Layouts:
+        //   N = 2 oldest: cards[0] at +1, cards[1] at 0 (no override).
+        //   N = 3 oldest: cards[0] at -2 wrap-hint, cards[1] at +1,
+        //                 cards[2] at 0.
+        //   N = 4 oldest: cards[0] at -2 wrap-hint, cards[1]
+        //                 at +2 (fade), cards[2] at +1, cards[3] at 0.
+        if (n < 3 || focusedIdx !== n - 1) return;
+
+        var mri = mostRecentAppIdx(cards);
+        // Bail when the most-recent IS the currently-focused card
+        // (defensive — shouldn't happen at N >= 4 oldest, but
+        // covers degenerate cards arrangements).
+        if (mri < 0 || mri === focusedIdx) return;
+        var mr = cards[mri];
+        mr.position = -2;
+        mr.wrapHint = true;
+        // Slide-up-from-below animation only when the previous
+        // position had no geometry (off-carousel). When the card
+        // was visibly somewhere else, lerp directly from there to
+        // -2 instead — avoids the visual "teleport off-screen,
+        // re-appear from below" jump.
+        if (mr.animFrom !== -2 && POSITIONS[mr.animFrom] === undefined) {
+            mr._fromState = WRAP_HINT_START;
+        }
+
+        // Hide any other card whose cyclical position landed at -2
+        // (collides with the wrap-hint slot). Happens for N >= 4
+        // without a transient — cards[1] would otherwise sit there.
+        for (var k = 0; k < n; k++) {
+            if (k === mri) continue;
+            if (cards[k].position === -2) {
+                cards[k].hidden = true;
+            }
+        }
+    }
+
     function buildCardsFromRunningApps(transient) {
         var apps = (typeof RunningApps !== 'undefined')
             ? RunningApps.list()
             : [];
         if (apps.length === 0) return [];
         var cards = [];
-        var startIdx = 0;
         if (transient) {
             cards.push({
                 name:      transient.name,
                 imagePath: null,
                 image:     transient.snapshot,
                 icon:      null,
-                position:  0,
                 animFrom:  null,
                 transient: true     // not in RunningApps, can't be killed
             });
-            startIdx = 1;          // running apps queue behind it (slot -1, -2, …)
         }
         for (var i = 0; i < apps.length; i++) {
             cards.push({
@@ -480,10 +713,21 @@ var AppSwitcherScene = (function() {
                 imagePath: apps[i].imagePath,
                 image:     apps[i].image,
                 icon:      apps[i].icon,
-                position:  -(i + startIdx),
                 animFrom:  null
             });
         }
+        // Apply cyclical positions with focus on cards[0] (the
+        // transient if present, otherwise the most-recent app).
+        // The last card in the array (oldest, or most-old running
+        // app behind the transient) lands at +1 — the wrap-target
+        // peek-above slot. focusedIdx === 0 never triggers the
+        // wrap-hint override, so cards[0] doesn't get the
+        // wrapHint / hidden flags set on initial load.
+        cards.forEach(function(c) { c.position = 0; });   // seed for animFrom capture
+        applyCyclicalLayout(cards, 0);
+        // Wipe animFrom on initial build so the OPENING animation
+        // doesn't try to lerp anything into place.
+        cards.forEach(function(c) { c.animFrom = null; });
         return cards;
     }
 
@@ -496,12 +740,18 @@ var AppSwitcherScene = (function() {
         // (rather than launches) when the user picks it.
         this._transient = transient || null;
         this.cards = [];
+        // Cyclical-carousel index of the focused card. Starts at 0
+        // (cards[0] = transient if present, otherwise most-recent
+        // app). Up shifts -1 mod N, Down shifts +1 mod N. Each shift
+        // recomputes every card's position via cyclicalPosition().
+        this.focusedIdx = 0;
         this.phase = PHASE_OPENING;
         this._animStart = 0;
     }
 
     AppSwitcherScene.prototype.enter = function() {
         this.cards = buildCardsFromRunningApps(this._transient);
+        this.focusedIdx = 0;
         this._animStart = now();
     };
     AppSwitcherScene.prototype.exit = function() {};
@@ -513,6 +763,32 @@ var AppSwitcherScene = (function() {
             }
         }
         return null;
+    };
+
+    // First non-transient card in the carousel — represents the
+    // most-recent running app (cards are stored most-recent-first;
+    // an optional transient sits at index 0).
+    AppSwitcherScene.prototype._mostRecentApp = function() {
+        for (var i = 0; i < this.cards.length; i++) {
+            if (!this.cards[i].transient) return this.cards[i];
+        }
+        return null;
+    };
+
+    // True iff the focused card is the OLDEST app — i.e. there's a
+    // card at position 0, no card sits at position -1 (so a normal
+    // Down would do nothing), AND the focused isn't a transient
+    // (the transient itself doesn't trigger the wrap visualization).
+    AppSwitcherScene.prototype._isAtOldest = function() {
+        var focused = this._findFocused();
+        if (!focused || focused.transient) return false;
+        if (this.cards.length < 2) return false;
+        for (var i = 0; i < this.cards.length; i++) {
+            if (this.cards[i].position === -1 && !this.cards[i].killing) {
+                return false;
+            }
+        }
+        return true;
     };
 
     // Slide the focused card off-screen to the left, drop it from
@@ -552,30 +828,48 @@ var AppSwitcherScene = (function() {
         }
 
         var newList = (typeof RunningApps !== 'undefined') ? RunningApps.list() : [];
-        var newPosByName = {};
-        // Most-recent app keeps slot 0; older ones go to -1, -2, …
-        for (var k = 0; k < newList.length; k++) newPosByName[newList[k].name] = -k;
 
         // If killing this app drains RunningApps, every surviving
         // card is a transient (current scene snapshot). The carousel
         // is collapsing to "no running apps" — drop those transients
         // *now* rather than carrying them through the kill animation,
-        // so the user sees only App 01 sliding off, with no Desktop
-        // frame parked above. The killed card itself is kept so its
-        // slide-out still plays; render's t>=1 cleanup empties the
-        // list and triggers the empty-state repaint.
+        // so the user sees only the focused card sliding off, with
+        // no Desktop frame parked above. The killed card itself is
+        // kept so its slide-out still plays; render's t>=1 cleanup
+        // empties the list and triggers the empty-state repaint.
         if (newList.length === 0) {
             this.cards = this.cards.filter(function(c) {
                 return c === focused || !c.transient;
             });
         }
 
-        for (var j = 0; j < this.cards.length; j++) {
-            var c = this.cards[j];
-            if (c === focused) continue;
-            c.animFrom = c.position;
-            if (c.name in newPosByName) c.position = newPosByName[c.name];
+        // Cyclical re-layout for the survivors. The card cyclically
+        // *after* the killed one becomes the new focus (so e.g.
+        // killing the most-recent slides up to second-most-recent;
+        // killing the oldest wraps focus to the most-recent). We
+        // run applyCyclicalLayout against a temporary array of just
+        // the survivors so the wrap-hint override (at-oldest
+        // visualization) re-applies correctly.
+        var oldN      = this.cards.length;
+        var killedIdx = this.cards.indexOf(focused);
+        var survivors = [];
+        for (var ci = 0; ci < oldN; ci++) {
+            if (this.cards[ci] !== focused) survivors.push(this.cards[ci]);
         }
+        var newN = survivors.length;
+        var newFocusedIdx = 0;
+        if (newN > 0) {
+            // Index of "next cyclical" survivor. In the post-splice
+            // array, survivors that came after `killedIdx` shift down
+            // by one — so the next-cyclical card lands at index
+            // `killedIdx` if there are survivors past the killed
+            // slot, otherwise at 0 (wrap to the start).
+            newFocusedIdx = (killedIdx < newN) ? killedIdx : 0;
+        }
+        if (newN > 0) {
+            applyCyclicalLayout(survivors, newFocusedIdx);
+        }
+        this.focusedIdx = newFocusedIdx;
 
         this.phase = PHASE_KILLING;
         this._animStart = now();
@@ -650,26 +944,150 @@ var AppSwitcherScene = (function() {
                   : 0;
         if (delta === 0) return;
 
-        // Allow the shift only if some card will land at position 0
-        // after it — i.e. there's a card currently at -delta to take
-        // the focus. Without this guard, scrolling past the last
-        // card would leave the carousel selection-less.
-        var hasIncoming = false;
-        for (var i = 0; i < this.cards.length; i++) {
-            if (this.cards[i].position === -delta) { hasIncoming = true; break; }
-        }
-        if (!hasIncoming) return;
+        var n = this.cards.length;
+        if (n <= 1) return;
 
-        // Capture each card's current position into animFrom and
-        // commit the destination immediately. Render then lerps
-        // between POSITIONS[animFrom] and POSITIONS[position].
+        // Cyclical scroll: Down moves focus forward (next-older
+        // becomes focused, wrapping at the boundary), Up moves it
+        // backward. The layout helper handles the position
+        // recompute plus the at-oldest wrap-hint override (most-
+        // recent slides up to -2, conflicting card hidden).
+        this.focusedIdx = (this.focusedIdx + delta + n) % n;
+        applyCyclicalLayout(this.cards, this.focusedIdx);
+
+        this.phase = PHASE_SCROLLING;
+        this._animStart = now();
+        if (typeof window.requestRender === 'function') window.requestRender();
+    };
+
+    // Reset every card to its initial-state slot (cards[i].position =
+    // -i). Most-recent ends at 0, oldest at -(N − 1). With the wrap
+    // hint visualization in effect, cards[0] (or cards[1] when a
+    // transient is present) starts at -2 and animates up to 0;
+    // others animate from wherever they were parked.
+    AppSwitcherScene.prototype._wrapToTop = function() {
         for (var j = 0; j < this.cards.length; j++) {
-            this.cards[j].animFrom = this.cards[j].position;
-            this.cards[j].position += delta;
+            var c = this.cards[j];
+            c.animFrom = c.position;
+            c.position = -j;          // works in both transient (j=0 → 0)
+                                       // and non-transient (j=0 → 0) layouts
+            // Clear the wrap-hint flag — the special TR-rounded
+            // shape only applies while resting at -2 as the loop
+            // boundary indicator. Once the card animates away we
+            // want the standard tab shape during the lerp.
+            c.wrapHint = false;
         }
         this.phase = PHASE_SCROLLING;
         this._animStart = now();
         if (typeof window.requestRender === 'function') window.requestRender();
+    };
+
+    // One step of cyclical Up scrolling: rotates `cards` so that
+    // the next array index (wrapping at the boundary) takes focus.
+    // The new focused card animates from POSITIONS[+1] (the
+    // peek-above slot) down to focused 0, even if it was actually
+    // at -(N-1) before — that "from above" anchor is what gives
+    // the wrap a normal-scroll feel instead of a teleport.
+    //
+    // For N apps focused at cards[i]: the new focused becomes
+    // cards[(i - 1 + N) % N]. Every other card's new position is
+    //   -((j - newIdx + N) % N)
+    // — i.e. distance from the new focus measured downward,
+    // wrapping past the boundary.
+    AppSwitcherScene.prototype._wrapUpOnce = function() {
+        var n = this.cards.length;
+        if (n <= 1) return;
+
+        var focusedIdx = -1;
+        for (var k = 0; k < n; k++) {
+            if (this.cards[k].position === 0 && !this.cards[k].killing) {
+                focusedIdx = k;
+                break;
+            }
+        }
+        if (focusedIdx === -1) return;
+
+        var newIdx = (focusedIdx - 1 + n) % n;
+
+        for (var j = 0; j < n; j++) {
+            var c = this.cards[j];
+            c.animFrom = c.position;
+            var newPos = -((j - newIdx + n) % n);
+            // The new-focus card slides in from the peek-above slot
+            // (animFrom=+1 → position=0) so the user sees it
+            // descend into focus, regardless of where it actually
+            // was before the wrap.
+            if (j === newIdx) {
+                c.animFrom = 1;
+            }
+            c.position = newPos;
+            c.wrapHint = false;     // any leftover wrap-hint flag is stale now
+        }
+
+        this.phase = PHASE_SCROLLING;
+        this._animStart = now();
+        if (typeof window.requestRender === 'function') window.requestRender();
+    };
+
+    // Move the most-recent app's card from its current off-carousel
+    // slot (+(N − 1), no geometry) to the visible -2 tab so the user
+    // sees the loop boundary while parked at the oldest. Animated as
+    // a fade-in via the cardAlpha path: animFrom has no POSITIONS
+    // entry → fromState = undefined → cardAlpha ramps 0 → 1.
+    AppSwitcherScene.prototype._raiseWrapHint = function() {
+        var mr = this._mostRecentApp();
+        var focused = this._findFocused();
+        if (!mr || mr === focused) return false;
+        if (mr.position === -2) return false;
+        // When the most-recent card is currently sitting at +1
+        // (peek-above slot — happens for N = 2 apps, possibly with
+        // a transient prepended), moving it down to -2 would erase
+        // its peek-above visual instantly. Spawn a one-shot ghost
+        // duplicate at +1 that slides down a short distance behind
+        // the focused card while the wrap hint rises up. The ghost
+        // is filtered out of `this.cards` once SCROLLING completes
+        // (see render's auto-advance).
+        var GHOST_SLIDE_PX = 20;   // travel distance from the rest +1 anchor
+        var GHOST_LIFT_PX  = 2;    // shift the whole slide 2 px up vs POSITIONS[+1]
+        if (mr.position === 1 && POSITIONS[1]) {
+            var slot1 = POSITIONS[1];
+            this.cards.push({
+                name:  mr.name,
+                image: mr.image,
+                icon:  mr.icon,
+                position:   1,
+                animFrom:   1,
+                _fromState: { x: slot1.x, y: slot1.y - GHOST_LIFT_PX,
+                              w: slot1.w, h: slot1.h,
+                              rTL: slot1.rTL, rTR: slot1.rTR,
+                              rBL: slot1.rBL, rBR: slot1.rBR },
+                _toState:   { x: slot1.x,
+                              y: slot1.y - GHOST_LIFT_PX + GHOST_SLIDE_PX,
+                              w: slot1.w, h: slot1.h,
+                              rTL: slot1.rTL, rTR: slot1.rTR,
+                              rBL: slot1.rBL, rBR: slot1.rBR },
+                _ghost: true
+            });
+        }
+        mr.animFrom = mr.position;
+        mr.position = -2;
+        // Slide-in source: a state below the canvas, NOT a position
+        // index. `_fromState` overrides POSITIONS[animFrom] in
+        // getCardState so the card lerps geometry from below the
+        // screen up to POSITIONS[-2], visibly "rising into view"
+        // instead of fading in in place. drawCard also reads this
+        // flag to skip the cardAlpha fade — the slide IS the
+        // animation now.
+        mr._fromState = WRAP_HINT_START;
+        // Tag the card so drawCard renders the loop-boundary shape
+        // (rectangle, only top + left strokes, TL-rounded only)
+        // instead of the standard -2 tab geometry. Cleared in
+        // _wrapToTop when the carousel cycles back.
+        mr.wrapHint = true;
+        this.phase = PHASE_SCROLLING;
+        this._animStart = now();
+        if (typeof window.requestRender === 'function') window.requestRender();
+        return true;
     };
 
     // Sort key: |interpolated position|. Smallest = closest to
@@ -682,6 +1100,11 @@ var AppSwitcherScene = (function() {
     // slide *over* the surviving cards as they slide off-screen.
     function zKey(card, e) {
         if (card.killing) return -1;
+        // Ghosts (e.g. the +1 slide-out spawned by _raiseWrapHint)
+        // use the same `|position|` zKey as everything else, so
+        // they sit naturally behind the focused card — at position
+        // +1 the descending sort puts them ahead of the position-0
+        // focus in render order, drawn first → focus draws on top.
         if (card.animFrom !== null) {
             return Math.abs(lerp(card.animFrom, card.position, e));
         }
@@ -703,8 +1126,12 @@ var AppSwitcherScene = (function() {
                 : null;
         }
         if ((phase === PHASE_SCROLLING || phase === PHASE_KILLING) && card.animFrom !== null) {
-            var fromState = POSITIONS[card.animFrom];
-            var toState   = POSITIONS[card.position];
+            // Explicit `_fromState` / `_toState` (e.g. the wrap-hint
+            // slide-in, the +1 ghost slide-out) override the POSITIONS
+            // lookups — useful when the source or destination isn't
+            // a position index but an off-canvas anchor state.
+            var fromState = card._fromState || POSITIONS[card.animFrom];
+            var toState   = card._toState   || POSITIONS[card.position];
             if (fromState && toState) return lerpState(fromState, toState, t);
             return toState || fromState || null;
         }
@@ -747,6 +1174,17 @@ var AppSwitcherScene = (function() {
             var card = renderOrder[i];
             var state = getCardState(card, this.phase, e);
             if (!state) continue;
+            // Hide the cyclical wrap target at +1 when the focus is
+            // on the most-recent app. The card remains in `cards[]`
+            // so an Up press still cycles to it — just don't paint
+            // it on the LCD. focusedIdx === 0 covers both transient
+            // (cards[0] = transient) and non-transient (cards[0] =
+            // most-recent app) layouts.
+            if (this.focusedIdx === 0 && card.position === 1) continue;
+            // Cards explicitly hidden by the at-oldest wrap-hint
+            // override (the cyclical card that would otherwise sit
+            // at -2 and overlap the wrap-hint silhouette).
+            if (card.hidden) continue;
             drawCard(canvas, state, card, e);
         }
 
@@ -769,8 +1207,15 @@ var AppSwitcherScene = (function() {
                 this.phase = PHASE_REST;
             } else if (this.phase === PHASE_SCROLLING) {
                 this.phase = PHASE_REST;
+                // Drop any one-shot ghost cards left over from
+                // legacy wrap-hint code (none spawn in the cyclical
+                // model, but the filter is cheap and keeps any
+                // future ghost-style overlays cleanly removed).
+                this.cards = this.cards.filter(function(c) { return !c._ghost; });
                 for (var k = 0; k < this.cards.length; k++) {
-                    this.cards[k].animFrom = null;
+                    this.cards[k].animFrom   = null;
+                    this.cards[k]._fromState = null;
+                    this.cards[k]._toState   = null;
                 }
             } else if (this.phase === PHASE_KILLING) {
                 // Drop killed cards from the carousel for good.

@@ -13,7 +13,14 @@ var UI = (function() {
     var wifiConnected = false;
     var wifiQuality = 0;     // 0-100
     var wifiSSID = '';
-    var ethernetConnected = false;
+    // Ethernet status-bar state. `'none'` → nothing connected (no
+    // icon). `'real'` → at least one physical port (end0 / end1) is
+    // up; show the standard ethernet icon. `'usb'` → ONLY the USB
+    // gadget interface (flipusb0) is up; show the dedicated USB-ETH
+    // icon so the user knows the link is back-channel rather than a
+    // routable connection. Tri-state instead of a bool because the
+    // icon depends on which kind of link is actually carrying data.
+    var ethernetStatus = 'none';
     var airplaneEnabled = false;
 
     function pollBattery() {
@@ -79,20 +86,33 @@ var UI = (function() {
             if (xhr.status !== 200) return;
             var data;
             try { data = JSON.parse(xhr.responseText); } catch (e) { return; }
-            // /api/ethernet returns an array of interfaces; connected if any
-            // interface state contains "connected" but not "disconnected".
-            var connected = false;
+            // /api/ethernet returns an array of interfaces; classify
+            // by whether any *physical* port (end0 / end1) is up vs
+            // whether only the USB-gadget interface (flipusb0) is up.
+            // The two cases pick different status-bar icons — see
+            // `ethernetStatus` for the convention.
+            var hasReal = false;
+            var hasUsb  = false;
             if (Array.isArray(data)) {
                 for (var i = 0; i < data.length; i++) {
-                    var s = data[i] && data[i].state;
-                    if (s && s.indexOf('connected') !== -1 && s.indexOf('disconnected') === -1) {
-                        connected = true;
-                        break;
+                    var iface = data[i];
+                    if (!iface || !iface.state) continue;
+                    var s = iface.state;
+                    var isConn = s.indexOf('connected') !== -1
+                                 && s.indexOf('disconnected') === -1;
+                    if (!isConn) continue;
+                    if (/^flipusb\d*$/i.test(String(iface.name || ''))) {
+                        hasUsb = true;
+                    } else {
+                        hasReal = true;
                     }
                 }
             }
-            if (ethernetConnected !== connected) {
-                ethernetConnected = connected;
+            var nextStatus = hasReal ? 'real'
+                            : hasUsb ? 'usb'
+                            : 'none';
+            if (ethernetStatus !== nextStatus) {
+                ethernetStatus = nextStatus;
                 if (window.requestRender) window.requestRender();
             }
         };
@@ -279,9 +299,15 @@ var UI = (function() {
             canvas.drawSprite(wifiIcon(wifiQuality), leftX, top, fg);
             leftX += 7 + 2;
         }
-        if (ethernetConnected) {
+        if (ethernetStatus === 'real') {
             canvas.drawSprite(Icons.ethernet_statusbar, leftX, top, fg);
             leftX += Icons.ethernet_statusbar.w + 2;
+        } else if (ethernetStatus === 'usb' && Icons.usb_ethetrnet_status_bar) {
+            // Only the USB-gadget link is up — surface the dedicated
+            // icon so the bar visually signals "back-channel only".
+            // (Icon name preserves the asset's existing spelling.)
+            canvas.drawSprite(Icons.usb_ethetrnet_status_bar, leftX, top, fg);
+            leftX += Icons.usb_ethetrnet_status_bar.w + 2;
         }
 
         // Battery sprite (16x9) + percentage, right-aligned.

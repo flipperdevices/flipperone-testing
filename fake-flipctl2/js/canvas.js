@@ -181,6 +181,27 @@ var FlipCanvas = (function() {
         }
     };
 
+    // Bresenham line — used by scenes that paint per-pixel paths
+    // (e.g. the touchpad test's stroke trail). Endpoints inclusive,
+    // integer coordinates only; the input is `| 0`-coerced first
+    // since pointer events arrive as floats post-CSS-unscale.
+    FlipCanvas.prototype.drawLine = function(x0, y0, x1, y1, color) {
+        this.ctx.fillStyle = color || '#fff';
+        x0 = x0 | 0; y0 = y0 | 0; x1 = x1 | 0; y1 = y1 | 0;
+        var dx = Math.abs(x1 - x0);
+        var dy = Math.abs(y1 - y0);
+        var sx = x0 < x1 ? 1 : -1;
+        var sy = y0 < y1 ? 1 : -1;
+        var err = dx - dy;
+        while (true) {
+            this.ctx.fillRect(x0, y0, 1, 1);
+            if (x0 === x1 && y0 === y1) break;
+            var e2 = err << 1;
+            if (e2 > -dy) { err -= dy; x0 += sx; }
+            if (e2 <  dx) { err += dx; y0 += sy; }
+        }
+    };
+
     FlipCanvas.prototype.drawText = function(text, x, y, color, scale) {
         BitmapFont.draw(this.ctx, text, x, y, color || '#fff', scale);
     };

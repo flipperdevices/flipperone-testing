@@ -213,10 +213,11 @@ var DesktopScene = (function() {
     };
 
     DesktopScene.prototype.handleInput = function(action) {
-        // The "Menu" bottom-bar button is bound to the X key (`edit`
-        // action), matching the original Desktop layout — keeps OK/Run
-        // free for any future "primary" action on the dashboard.
-        if (action === 'edit') {
+        // Menu opens on the X key (`edit` action) — that's the binding
+        // surfaced by the visible bottom-bar button — and also on OK /
+        // Run as a primary-action alias so the central button still
+        // does the obvious thing on the dashboard.
+        if (action === 'edit' || action === 'ok' || action === 'run') {
             this._onMenu();
             return;
         }

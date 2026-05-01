@@ -666,7 +666,68 @@ var Icons = (function() {
         ]
     };
 
+    // usb_ethetrnet_status_bar icon (auto-generated from PNG)
+    var usb_ethetrnet_status_bar = {
+        w: 13,
+        h: 7,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0xff,            0xff,            0xc0,            0xff,            0xff,            0xff,            0xfc,            0x0f,            0xff,            0xfc,  // row 0
+            0x00,            0x00,            0xff,            0xf0,            0x3f,            0xfc,            0x00,            0x00,            0xff,            0xf0,  // row 1
+            0x3f,            0xfc,            0x00,            0x00,            0xfc,            0x0f,            0xff,            0x03,            0xff,            0xff,  // row 2
+            0xff,            0xff,            0xc0,            0xfc,            0x00,            0x00,            0x03,            0xff,            0xc0,            0x00,  // row 3
+            0x00,            0x00,            0x03,            0xff,            0xff,            0x00,            0x00,            0x00,            0xfc,            0x0f,  // row 4
+            0xff,            0xfc,            0x0f,            0xff,            0xff,            0xff,            0xc0,            0xfc,            0x00,            0x00,  // row 5
+            0xff,            0xf0,            0x3f,            0xff,            0xf0,            0x00,            0xff,            0xf0,            0x3f,            0xfc,  // row 6
+            0x00,            0x00,            0xff,            0xff,            0xc0,            0xff,            0xff,            0xff,            0xfc,            0x0f,  // row 7
+            0xff,            0xfc,            0x00,            0x00 
+        ]
+    };
+
+    // tv_media_box icon (auto-generated from PNG)
+    // Per-icon nudges (consumed by MenuLine and AppSwitcher's
+    // drawTitleBar) shift the draw position without touching the
+    // bitmap data. The two contexts are tuned independently:
+    //   - `offsetX` / `offsetY` apply in MenuLine (Apps submenu).
+    //   - `titleBarOffsetX` / `titleBarOffsetY` apply in the App
+    //     Switcher's title bar; when undefined they fall back to
+    //     the MenuLine values. drawTitleBar now centres icons in
+    //     the bar by default, so the explicit y nudge that used
+    //     to compensate for the old +3 hardcode is no longer
+    //     needed.
+    var tv_media_box = {
+        w: 14,
+        h: 14,
+        offsetX: 1,
+        offsetY: 0,
+        titleBarOffsetX: 1,
+        titleBarOffsetY: 0,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,  // row 0
+            0x00,            0x00,            0x00,            0x3f,            0xff,            0xff,            0xff,            0xff,            0xff,            0xc0,            0x00,  // row 1
+            0x00,            0x00,            0x03,            0xf0,            0x3f,            0xff,            0xff,            0xff,            0xff,            0xff,            0xc0,  // row 2
+            0xfc,            0x00,            0x00,            0x00,            0x00,            0x3f,            0xfc,            0x0f,            0xff,            0xff,            0xff,  // row 3
+            0xc0,            0x00,            0x00,            0x00,            0x03,            0xf0,            0x3f,            0xfc,            0x00,            0x3f,            0xff,  // row 4
+            0xff,            0xc0,            0xfc,            0x00,            0x00,            0x00,            0x00,            0x3f,            0xfc,            0x00,            0x00,  // row 5
+            0xff,            0xff,            0xc0,            0x00,            0x00,            0x00,            0x03,            0xf0,            0x3f,            0xfc,            0x00,  // row 6
+            0x00,            0x03,            0xff,            0xc0,            0xfc,            0x00,            0x00,            0x00,            0x00,            0x3f,            0xfc,  // row 7
+            0x00,            0x00,            0x03,            0xff,            0xc0,            0x00,            0x00,            0x00,            0x03,            0xf0,            0x3f,  // row 8
+            0xfc,            0x00,            0x00,            0xff,            0xff,            0xc0,            0xfc,            0x00,            0x00,            0x00,            0x00,  // row 9
+            0x3f,            0xfc,            0x00,            0x3f,            0xff,            0xff,            0xc0,            0x00,            0x00,            0x00,            0x03,  // row 10
+            0xf0,            0x3f,            0xfc,            0x0f,            0xff,            0xff,            0xff,            0xc0,            0xfc,            0x00,            0x00,  // row 11
+            0x00,            0x00,            0x3f,            0xff,            0xff,            0xff,            0xff,            0xff,            0xc0,            0x00,            0x00,  // row 12
+            0x00,            0x03,            0xf0,            0x3f,            0xff,            0xff,            0xff,            0xff,            0xff,            0xc0,            0xfc,  // row 13
+            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,  // row 14
+            0x00,            0x00,            0x00 
+        ]
+    };
+
     return {
+        tv_media_box: tv_media_box,
+        usb_ethetrnet_status_bar: usb_ethetrnet_status_bar,
         kill_app: kill_app,
         nmap_eye: nmap_eye,
         power_usage: power_usage,

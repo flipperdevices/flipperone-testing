@@ -107,6 +107,12 @@ var MenuLine = (function() {
                 : iconSource.h;
             var iconY = y + Math.max(ICON_PAD,
                 Math.round((H - iconVisH) / 2));
+            // Optional per-icon nudge baked into the asset definition.
+            // Lets specific icons compensate for whitespace inside
+            // their bitmap without forcing every other icon to absorb
+            // the offset. Defaults are 0.
+            iconX += iconSource.offsetX || 0;
+            iconY += iconSource.offsetY || 0;
             if (useAnimated) {
                 var frames = iconSource.frames || 1;
                 var elapsed = Date.now() - this._selectedAt;
@@ -131,11 +137,15 @@ var MenuLine = (function() {
         // in SELECTED/PRESSED. Status text is different — it always
         // stays on BusyFont9 so the row's right-side info keeps the
         // same typographic weight across states; only its *colour*
-        // changes with the state.
+        // changes with the state. The active font also nudges 1 px
+        // down — Born2bSporty's cap baseline sits visually high
+        // against the selector frame, so + 1 puts it on the same
+        // optical row as the BusyFont9 default.
         var font       = active ? Born2bSportyV2Medium : BusyFont9;
         var statusFont = BusyFont9;
         var textY = y + TEXT_DRAW_Y;
-        font.draw(canvas.ctx, this.text, textLeft, textY, textColor);
+        var labelY = active ? textY + 1 : textY;
+        font.draw(canvas.ctx, this.text, textLeft, labelY, textColor);
 
         var status = this.statusProvider ? this.statusProvider() : this.status;
         if (status) {

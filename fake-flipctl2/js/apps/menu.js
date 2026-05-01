@@ -214,12 +214,12 @@ var MenuScene = (function() {
         // title bar). Adding a new app: drop a PNG into assets/apps/,
         // add an entry here, and (optionally) add its icon sprite.
         var APPS = {
-            'HDMI':            { image: '/assets/apps/hdmi_screen.png',           icon: null },
+            'Media':           { image: '/assets/apps/hdmi_screen.png',           icon: Icons.tv_media_box },
             'NMap':            { image: '/assets/apps/nmap_set_up_00.png',        icon: Icons.nmap_eye },
-            'Yet another app': { image: '/assets/apps/nmap_set_up_03.png',        icon: null },
-            'Router':          { image: '/assets/apps/router_app_placeholder.png',icon: null }
+            'Yet another app': { image: '/assets/apps/nmap_set_up_03.png',        icon: Icons.minimal },
+            'Router':          { image: '/assets/apps/router_app_placeholder.png',icon: Icons.router }
         };
-        var order = ['HDMI', 'NMap', 'Yet another app', 'Router'];
+        var order = ['Media', 'NMap', 'Yet another app', 'Router'];
 
         var factories = {};
         order.forEach(function(name) {
