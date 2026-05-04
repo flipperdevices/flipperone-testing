@@ -1109,12 +1109,17 @@ var AppSwitcherScene = (function() {
             // tick a stale snap-back to completion right after touch.
             // Reset the velocity sample buffer too — momentum is
             // computed only from movement within this stroke.
+            // Overshoot tracker resets too: we only fire the
+            // edge-bounce when the user actually pushed past the
+            // limits during this stroke.
             this._tpBaselineY = ny;
             this._tpBaselineFocusedIdx = this.focusedIdx;
             this._tpDragDelta = 0;
             this._tpSnapStartDelta = 0;
             this._tpSnapTargetDelta = 0;
             this._tpSnapTarget = this.focusedIdx;
+            this._tpLastRawFracIdx = this.focusedIdx;
+            this._tpOvershootDir = 0;
             this._tpVelSamples = [{ y: ny, ts: now() }];
             this.phase = PHASE_DRAGGING;
             this._animDurationMs = 0;
@@ -1129,9 +1134,13 @@ var AppSwitcherScene = (function() {
             var rawDelta = (this._tpBaselineY - ny) / TP_UNITS_PER_STEP;
             // Clamp to the carousel's bounded range so the user
             // can't drag the focus out past the ends. fracIdx must
-            // sit in [0, n-1].
+            // sit in [0, n-1]. Track the unclamped raw value so we
+            // can fire an edge-bounce on release if the user pushed
+            // past either end during the stroke.
             var n = this.cards.length;
-            var fracIdx = this._tpBaselineFocusedIdx + rawDelta;
+            var rawFracIdx = this._tpBaselineFocusedIdx + rawDelta;
+            this._tpLastRawFracIdx = rawFracIdx;
+            var fracIdx = rawFracIdx;
             if (fracIdx < 0) fracIdx = 0;
             else if (fracIdx > n - 1) fracIdx = n - 1;
             this._tpDragDelta = fracIdx - this._tpBaselineFocusedIdx;
@@ -1182,15 +1191,85 @@ var AppSwitcherScene = (function() {
             }
             var projectedExtra = velUnitsPerMs * TP_VELOCITY_PROJECTION_MS / TP_UNITS_PER_STEP;
             var projected = fracIdx + projectedExtra;
-            var target = Math.round(projected);
-            target = Math.max(0, Math.min(this.cards.length - 1, target));
+            var rawTarget = Math.round(projected);
+            var n = this.cards.length;
+            var target = Math.max(0, Math.min(n - 1, rawTarget));
+
+            // Edge-bounce trigger. Two ways the stroke can want to
+            // go past the carousel's [0, n-1] limits:
+            //   (1) Finger-position overshoot: at any point during
+            //       the drag (including the moment of release) the
+            //       unclamped fracIdx was outside the range.
+            //   (2) Momentum overshoot: a fast flick whose
+            //       projected stop position lands outside the range.
+            // Either case stamps `_tpOvershootDir` (-1 = past the
+            // most-recent end, +1 = past the oldest end). The
+            // PHASE_DRAGGING auto-advance reads it after the snap
+            // commits and chains a PHASE_BOUNCING pulse on the
+            // focused card so the user gets the same "you've hit
+            // the wall" feedback they get from keyboard Up/Down.
+            var overshoot = 0;
+            var raw = this._tpLastRawFracIdx;
+            if (typeof raw === 'number') {
+                if (raw < 0)        overshoot = -1;
+                else if (raw > n-1) overshoot = 1;
+            }
+            if (!overshoot) {
+                if (rawTarget < 0)         overshoot = -1;
+                else if (rawTarget > n-1)  overshoot = 1;
+            }
+            this._tpOvershootDir = overshoot;
 
             this._tpSnapStartDelta  = this._tpDragDelta;
             this._tpSnapTargetDelta = target - this._tpBaselineFocusedIdx;
             this._tpSnapTarget      = target;
-            // Scale duration with snap distance, capped at 4× base
-            // so a multi-slot fling decelerates smoothly without
-            // dragging on for an awkwardly long time.
+
+            // Fast-path edge bounce. When the user is at a carousel
+            // end and pulls the finger past it, the snap is a no-op
+            // (snapStart === snapTarget — the clamped target is the
+            // baseline focusedIdx, no real motion). The standard
+            // snap-then-bounce chain takes a full ANIM_DURATION_MS
+            // before the bounce fires; if the user is rapid-jerking
+            // (lift, drag, lift, drag, …) faster than that, each
+            // touch-down would reset `_tpOvershootDir` before the
+            // chain could fire and the user would see at most one
+            // bounce per burst. Firing the bounce immediately here,
+            // skipping the no-op snap, lets every jerk produce
+            // feedback even at high cadence.
+            //
+            // Momentum overshoot (snap actually moves toward a
+            // different end-slot) still goes through the standard
+            // snap → bounce chain so the user sees the carousel
+            // commit the fling before it pulses.
+            if (overshoot
+                    && this._tpSnapStartDelta === this._tpSnapTargetDelta) {
+                this.focusedIdx = this._tpSnapTarget;
+                applyCyclicalLayout(this.cards, this.focusedIdx);
+                this._tpDragDelta = 0;
+                for (var fci = 0; fci < this.cards.length; fci++) {
+                    this.cards[fci]._dragPos  = undefined;
+                    this.cards[fci]._typeSlot = undefined;
+                    this.cards[fci].animFrom  = null;
+                }
+                var fastFocus = this._findFocused();
+                if (fastFocus) {
+                    fastFocus._bounceDir = overshoot;
+                    this.phase = PHASE_BOUNCING;
+                } else {
+                    this.phase = PHASE_REST;
+                }
+                this._tpOvershootDir = 0;
+                this._animDurationMs = 0;
+                this._animStart      = now();
+                this._tpVelSamples   = [];
+                this._tpTouching     = nowTouching;
+                if (typeof window.requestRender === 'function') window.requestRender();
+                return;
+            }
+
+            // Standard path: snap then bounce. Scale snap duration
+            // with distance, capped at 4× so a multi-slot fling
+            // decelerates smoothly without dragging on too long.
             var snapDistance = Math.abs(this._tpSnapTargetDelta - this._tpSnapStartDelta);
             var distScale = Math.min(4, Math.max(1, snapDistance));
             this._animDurationMs    = ANIM_DURATION_MS * distScale;
@@ -1817,10 +1896,29 @@ var AppSwitcherScene = (function() {
                         // does for keyboard.
                         this.cards[dki].animFrom = null;
                     }
-                    this.phase = PHASE_REST;
                     // Reset the per-fling duration override; the next
                     // animation should run at the base ANIM_DURATION_MS.
                     this._animDurationMs = 0;
+                    // If the user pushed past either carousel end
+                    // during the drag (or their fling momentum
+                    // projected past one), chain a PHASE_BOUNCING
+                    // pulse on the freshly-committed focused card —
+                    // same feedback the keyboard Up/Down boundary
+                    // path already produces. Otherwise return to
+                    // REST as usual.
+                    if (this._tpOvershootDir) {
+                        var bounceFocus = this._findFocused();
+                        if (bounceFocus) {
+                            bounceFocus._bounceDir = this._tpOvershootDir;
+                            this.phase = PHASE_BOUNCING;
+                            this._animStart = now();
+                        } else {
+                            this.phase = PHASE_REST;
+                        }
+                        this._tpOvershootDir = 0;
+                    } else {
+                        this.phase = PHASE_REST;
+                    }
                 }
             } else if (this.phase === PHASE_CLOSING) {
                 // Closing zoom-out finished — the focused card has
