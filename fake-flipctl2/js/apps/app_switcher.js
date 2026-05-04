@@ -126,6 +126,21 @@ var AppSwitcherScene = (function() {
     var PHASE_BOUNCING  = 'bouncing';
     // Maximum y-displacement of the bounce, in pixels.
     var BOUNCE_DISTANCE = 5;
+    // Touchpad-driven fractional scroll. Cards render at fractional
+    // positions while the user's finger is on the pad — releasing
+    // snaps to the nearest integer focusedIdx via PHASE_SCROLLING.
+    var PHASE_DRAGGING  = 'dragging';
+    // Pad units per one focusedIdx step. Y axis on this hardware
+    // ranges ~400 raw units; 400/step → full pad ≈ 1 position.
+    var TP_UNITS_PER_STEP = 400;
+    // Velocity-based momentum on release. We average raw Y movement
+    // over the last `TP_VELOCITY_WINDOW_MS` of touch and project it
+    // forward by `TP_VELOCITY_PROJECTION_MS` to decide how many
+    // extra slots to fly past the finger's last position. iPhone-
+    // style: a slow drag stops where you let go (projected ≈ 0); a
+    // fast flick sails through several frames before settling.
+    var TP_VELOCITY_WINDOW_MS     = 100;
+    var TP_VELOCITY_PROJECTION_MS = 150;
 
     // Screenshot draw offset. Aligns the image's left edge with the
     // focused frame body's left edge (state.x = 2 for POSITIONS[0]),
@@ -408,6 +423,12 @@ var AppSwitcherScene = (function() {
         // PHASE_SCROLLING completes; this just makes the transition
         // a smooth fade instead of an abrupt removal.
         if (card._fadeOut) cardAlpha = 1 - e;
+        // Drag: fractional `_dragPos` may walk past +1 or below -2
+        // where POSITIONS has no geometry. fractionalAlpha ramps the
+        // card out over one slot of overshoot in either direction.
+        if (typeof card._dragPos === 'number') {
+            cardAlpha = Math.min(cardAlpha, fractionalAlpha(card._dragPos));
+        }
         // `pinnedPosAbs` short-circuits the position lerp in the
         // posAbs computation below when the card is doing a pure
         // fade-in or fade-out. Without it, lerping `animFrom` →
@@ -428,6 +449,15 @@ var AppSwitcherScene = (function() {
             // normally; that produces the focused → tab crossfade
             // synced to the position change.
             pinnedPosAbs = Math.abs(card.position);
+            // If the destination ALSO has no POSITIONS geometry
+            // (e.g. drag-release lands a card at +2 or -3 with no
+            // slot), fade the card out across the lerp the same way
+            // the integer-only animFrom→position branch does. The
+            // card sticks to its `_fromState` geometry while alpha
+            // ramps to 0 — gracefully drops off the carousel.
+            if (POSITIONS[card.position] === undefined) {
+                cardAlpha = Math.min(cardAlpha, 1 - e);
+            }
         } else if (card.animFrom !== null) {
             var posExists = POSITIONS[card.position] !== undefined;
             var afpExists = POSITIONS[card.animFrom] !== undefined;
@@ -501,6 +531,11 @@ var AppSwitcherScene = (function() {
         var posAbs;
         if (pinnedPosAbs !== null) {
             posAbs = pinnedPosAbs;
+        } else if (typeof card._dragPos === 'number') {
+            // Drag drives posAbs from the fractional position so the
+            // focused-zone title-bar crossfade tracks the user's
+            // finger smoothly across the 0 ↔ ±1 boundary.
+            posAbs = Math.abs(card._dragPos);
         } else if (card.animFrom !== null) {
             posAbs = Math.abs(lerp(card.animFrom, card.position, e));
         } else {
@@ -508,12 +543,24 @@ var AppSwitcherScene = (function() {
         }
         var posClamped = Math.max(0, Math.min(1, posAbs));
 
+        // Image alpha. Keyboard / animation paths use the linear
+        // 1 − posClamped (their `e = easeOutCubic(t)` already paces
+        // the visual). Touchpad drag is linear with finger position,
+        // so a 1 − posClamped fade keeps the screenshot visible into
+        // the tab-styled range and reads as the focused style
+        // "lagging" the geometry. Tying the drag image fade to the
+        // discrete type-flip threshold (p = 0.5) makes the screenshot
+        // disappear exactly when the type commits to tab.
+        var dragMode = (typeof card._dragPos === 'number');
+
         // ── Image (fades with the focused style) ──────────────
         var img = card.image;
         var ready = img && (img.naturalWidth > 0
             || (img.tagName === 'CANVAS' && img.width > 0));
         if (ready) {
-            var imgAlpha = 1 - posClamped;
+            var imgAlpha = dragMode
+                ? Math.max(0, 1 - 2 * posClamped)
+                : 1 - posClamped;
             if (imgAlpha > 0.001) {
                 var ictx = canvas.ctx;
                 ictx.save();
@@ -577,11 +624,25 @@ var AppSwitcherScene = (function() {
         // position-indexed bar. No 0↔±1 crossfade applies; just
         // paint the row's standard gray title bar. -2 is a tab
         // (in TAB_CONFIG), so it skips this branch.
+        //
+        // During a touchpad drag the integer `card.position` is the
+        // RESTING slot from before touch-down — it doesn't reflect
+        // where the card has been pulled to visually. A card with
+        // integer position −3 dragged into the visible 0..±1 range
+        // would otherwise hit deepZone here (|pos|=3 ≥ 2) and render
+        // with the default gray bar instead of the proper crossfade.
+        // The extra `_dragPos`-aware guard forces the crossfade path
+        // whenever the card is visually inside the [−2, +2] band.
         var posInTab = TAB_CONFIG[card.position] !== undefined;
         var afpInTab = card.animFrom !== null && TAB_CONFIG[card.animFrom] !== undefined;
         var deepZone = !posInTab && !afpInTab
             && (Math.abs(card.position) >= 2)
             && (card.animFrom === null || Math.abs(card.animFrom) >= 2);
+        if (deepZone
+                && typeof card._dragPos === 'number'
+                && Math.abs(card._dragPos) < 2) {
+            deepZone = false;
+        }
         if (deepZone) {
             var dBg = TITLE_BAR_BG_BY_POSITION[card.position] || TITLE_BAR_BG_DEFAULT;
             var dBarH = TITLE_BAR_H_BY_POSITION[card.position] || TITLE_BAR_H_DEFAULT;
@@ -590,42 +651,115 @@ var AppSwitcherScene = (function() {
             return;
         }
 
-        // ── 0 ↔ ±1 zone — crossfade focused style and tab style.
-        // Each style fades linearly with posClamped, so at slot 0
-        // we see only the focused look, at slot ±1 only the tab,
-        // and mid-animation both at complementary alphas. The bar
-        // background and text colors *also* interpolate, which
-        // smooths the transition further than a pure alpha xfade.
+        // ── 0 ↔ ±1 zone ──────────────────────────────────────
+        // Two paths:
+        //
+        //   Keyboard / animations: posClamped is driven by an eased
+        //   lerp (e = easeOutCubic(t)) over the integer animFrom →
+        //   position transition. A linear crossfade between focused
+        //   and tab styles works fine here because the easing makes
+        //   posClamped pass the midpoint quickly, so the dual-style
+        //   overlap region is brief.
+        //
+        //   Touchpad drag: posClamped is driven directly by the
+        //   finger's Y position with no easing. A linear crossfade
+        //   keeps both styles overlapping linearly across the whole
+        //   [0, 1] range — every card mid-transition shows TWO
+        //   fonts, two strokes, two colours, which reads as "the
+        //   type is lagging the geometry". The discrete picker
+        //   below commits to a single style on either side of
+        //   |visPos| = 0.5, so every card is always visually
+        //   committed to one type.
+        var ctx = canvas.ctx;
+        if (dragMode) {
+            // DRAG: type comes from the carousel-wide `_typeSlot`
+            // (Math.round(fracIdx) − cardIdx), NOT from the card's
+            // own fractional `_dragPos`. This way every card across
+            // the carousel snaps types simultaneously when fracIdx
+            // crosses a half-integer — the user sees the whole
+            // carousel "click into" each new focused-slot
+            // arrangement as they scroll, and a card visibly travels
+            // +1 → 0 → −1 → −2 in sequence picking up the matching
+            // style at each commit. Geometry stays smooth via
+            // `_dragPos` (handled in getCardState).
+            var slot = card._typeSlot;
+            if (slot === 0) {
+                // Focused: black bar, Born2bSporty white label,
+                // 4-sided black stroke.
+                drawTitleBar(canvas, state, card.name, '#000000', 16, card.icon, 1);
+                drawFrameStroke(canvas, state, '#000000');
+            } else if (TAB_CONFIG[slot]) {
+                // Tab(slot).
+                var dragTabCfg = TAB_CONFIG[slot];
+                var dragTabColor = dragTabCfg.color || '#666666';
+                if (card.name) {
+                    var dragLabelDy = dragTabCfg.labelDy + (isWrapHint ? 1 : 0);
+                    HaxrcorpFont16.draw(canvas.ctx, card.name,
+                        state.x + 3 + dragTabCfg.labelDx,
+                        state.y + dragLabelDy,
+                        dragTabColor);
+                }
+                var dragEdges = {};
+                dragEdges[dragTabCfg.openEdge] = false;
+                if (isWrapHint) dragEdges = { bottom: false, right: false };
+                if (card._keepBottomStroke && dragEdges.bottom === false) {
+                    dragEdges = Object.assign({}, dragEdges);
+                    delete dragEdges.bottom;
+                }
+                drawFrameStroke(canvas, state, dragTabColor, dragEdges);
+            } else {
+                // Past the visible tab range (|slot| > 2) — the card
+                // is sliding off-canvas and `cardAlpha` is fading it
+                // out via `fractionalAlpha`. Paint the default-deep
+                // bar so it has something to dissolve.
+                drawTitleBar(canvas, state, card.name,
+                    TITLE_BAR_BG_DEFAULT, TITLE_BAR_H_DEFAULT, card.icon);
+            }
+            topCtx.restore();
+            return;
+        }
+
+        // KEYBOARD / animations: original crossfade preserved.
         var focusedAlpha = 1 - posClamped;
         var tabAlpha     = posClamped;
-        var ctx = canvas.ctx;
+
+        // Always-opaque title-bar background. Drawn at full alpha
+        // (only `cardAlpha` modulates it) with a colour that lerps
+        // from black at the focused slot 0 to white at any tab slot
+        // (±1, ±2, …). Without this, the focused/tab branches each
+        // draw the bar at their own alpha (1 − posClamped /
+        // posClamped) — at midpoint both are 0.5 and the body fill
+        // shows through as translucent gray. Pre-painting at full
+        // alpha keeps the bar solid; the focused branch's later
+        // overdraw at reduced alpha deposits the same colour again.
+        {
+            var barCtx = canvas.ctx;
+            barCtx.save();
+            barCtx.beginPath();
+            addBodyClipPath(barCtx, state.x, state.y, state.w, state.h,
+                state.rTL, state.rTR, state.rBL, state.rBR);
+            barCtx.clip();
+            barCtx.fillStyle = lerpColor('#000000', '#FFFFFF', posClamped);
+            barCtx.fillRect(state.x, state.y, state.w, 16);
+            barCtx.restore();
+        }
 
         // Focused style: black title bar with Born2bSporty centered,
         // 4-sided black stroke. As we approach ±1 the bg drifts to
-        // white and the stroke to gray, so even at low alpha the
-        // colors are blending toward the tab's palette.
+        // white and the stroke to gray.
         if (focusedAlpha > 0.001) {
             var fBg     = lerpColor('#000000', '#FFFFFF', posClamped);
             var fStroke = lerpColor('#000000', '#666666', posClamped);
-            // Bar height stays at the focused 16; the body height
-            // itself is interpolating with the geometry, so a
-            // 16-px-tall bar tucked behind the body clip naturally
-            // shrinks with the card.
             ctx.save();
             ctx.globalAlpha = ctx.globalAlpha * focusedAlpha;
-            // +1 px on the title text so the focused card's label
-            // reads visually centred against the 16-px bar — the
-            // bar's mathematical centre lands too high for
-            // Born2bSporty's optical baseline.
             drawTitleBar(canvas, state, card.name, fBg, 16, card.icon, 1);
             drawFrameStroke(canvas, state, fStroke);
             ctx.restore();
         }
 
         // Tab style: white card with HaxrcorpFont16 gray label and a
-        // 3-sided gray stroke. The exact look (open edge + label
-        // nudge) comes from TAB_CONFIG indexed by the card's tab
-        // slot. Slot 0 idle has tabAlpha = 0 and skips this block.
+        // 3-sided gray stroke. tabCfg from integer position /
+        // animFrom (we know we're not in drag mode here).
         var tabCfg = TAB_CONFIG[card.position]
             || (card.animFrom !== null ? TAB_CONFIG[card.animFrom] : null);
         if (tabAlpha > 0.001 && tabCfg) {
@@ -633,9 +767,6 @@ var AppSwitcherScene = (function() {
             ctx.save();
             ctx.globalAlpha = ctx.globalAlpha * tabAlpha;
             if (card.name) {
-                // Wrap-hint label: nudge 1 px down on top of
-                // tabCfg.labelDy so the text reads centred against
-                // the now-taller card silhouette.
                 var labelDy = tabCfg.labelDy + (isWrapHint ? 1 : 0);
                 HaxrcorpFont16.draw(canvas.ctx, card.name,
                     state.x + 3 + tabCfg.labelDx,
@@ -644,16 +775,7 @@ var AppSwitcherScene = (function() {
             }
             var edges = {};
             edges[tabCfg.openEdge] = false;
-            // Wrap-hint shape: stroke ONLY top + left (drop bottom
-            // and right), matching the "anchor in the bottom-left
-            // corner of the screen" silhouette the user sees when
-            // parked at the oldest app.
             if (isWrapHint) edges = { bottom: false, right: false };
-            // _keepBottomStroke (set by A in the N=2 intro) keeps
-            // the bottom edge drawn even when the standard tab
-            // config would omit it (TAB_CONFIG[+1].openEdge is
-            // 'bottom'). Lets the line where A meets B's top edge
-            // remain visible while B sits in front.
             if (card._keepBottomStroke && edges.bottom === false) {
                 edges = Object.assign({}, edges);
                 delete edges.bottom;
@@ -896,8 +1018,189 @@ var AppSwitcherScene = (function() {
             this._animDurationMs = 0;
         }
         this._animStart = now();
+
+        // ── Touchpad scroll ──────────────────────────────────────
+        // Subscribe to the kernel-evdev SSE stream (same pipeline as
+        // TouchpadAbsScene). Each message is "x,y,touch" where touch
+        // is 0 or 1. Y on this hardware spans ~400 raw units; we
+        // map TP_UNITS_PER_STEP units to one focusedIdx step.
+        //
+        // While the finger is on the pad we drive a continuous
+        // fractional `_tpDragDelta` that the renderer reads to lerp
+        // every card between adjacent integer slots. On lift we snap
+        // to the nearest integer focusedIdx and play a smooth
+        // PHASE_SCROLLING animation from the captured fractional
+        // states down to the target slots.
+        this._tpTouching = false;
+        this._tpBaselineY = 0;
+        this._tpBaselineFocusedIdx = this.focusedIdx;
+        this._tpDragDelta = 0;
+        var self = this;
+        try {
+            this._tpES = new EventSource('/api/touchpad/xy');
+            this._tpES.onmessage = function(e) {
+                self._handleTouchpadMessage(e);
+            };
+            this._tpES.onerror = function() {
+                // Silently degrade: keyboard input still works.
+            };
+        } catch (err) {
+            this._tpES = null;
+        }
     };
-    AppSwitcherScene.prototype.exit = function() {};
+    AppSwitcherScene.prototype.exit = function() {
+        if (this._tpES) { this._tpES.close(); this._tpES = null; }
+    };
+
+    // Resolve a card's frame state for a given fractional position.
+    // The carousel only defines geometry for integer positions in
+    // POSITIONS (-2 … +1). Between two defined integers we lerp.
+    // Past +1 or -2 (where one neighbour is missing) we hold the
+    // last defined state and rely on `cardAlpha` (computed in
+    // drawCard) to fade the card out as it leaves the carousel.
+    function fractionalState(fracPos) {
+        var lo = Math.floor(fracPos);
+        var hi = lo + 1;
+        var t  = fracPos - lo;
+        var loS = POSITIONS[lo];
+        var hiS = POSITIONS[hi];
+        if (loS && hiS) return lerpState(loS, hiS, t);
+        if (loS)        return loS;
+        if (hiS)        return hiS;
+        return null;
+    }
+
+    // Per-card alpha during drag — fades cards that have fractionally
+    // walked past the visible range (above +1 or below -2). The fade
+    // happens over one "slot" of distance so a card sliding past +1
+    // is fully gone by the time it would have hit +2.
+    function fractionalAlpha(fracPos) {
+        if (fracPos > 1)  return Math.max(0, 1 - (fracPos - 1));
+        if (fracPos < -2) return Math.max(0, 1 + (fracPos + 2));
+        return 1;
+    }
+
+    // Translate one SSE message ("x,y,touch") into PHASE_DRAGGING
+    // updates. Touch-down captures the current focusedIdx + Y as
+    // baseline; subsequent movement updates `_tpDragDelta` (in
+    // fractional position units). Touch-up snaps to the nearest
+    // integer focusedIdx and hands off to PHASE_SCROLLING.
+    AppSwitcherScene.prototype._handleTouchpadMessage = function(e) {
+        if (!this.cards || this.cards.length === 0) return;
+        // Block touchpad scroll during phases that own the carousel
+        // mid-motion (intro, kill, close). Resume once we're at REST
+        // or already in DRAGGING / SCROLLING / BOUNCING.
+        var blocking = (this.phase === PHASE_OPENING
+                     || this.phase === PHASE_KILLING
+                     || this.phase === PHASE_CLOSING);
+        if (blocking) return;
+
+        var p = e.data.split(',');
+        if (p.length < 3) return;
+        var ny = +p[1], nt = +p[2];
+        if (ny !== ny || (nt !== 0 && nt !== 1)) return;
+
+        var nowTouching = (nt === 1);
+        var prevTouching = this._tpTouching;
+
+        if (nowTouching && !prevTouching) {
+            // Touch-down: capture baselines. _tpDragDelta starts at 0.
+            // Reset _animStart so the auto-advance can't accidentally
+            // tick a stale snap-back to completion right after touch.
+            // Reset the velocity sample buffer too — momentum is
+            // computed only from movement within this stroke.
+            this._tpBaselineY = ny;
+            this._tpBaselineFocusedIdx = this.focusedIdx;
+            this._tpDragDelta = 0;
+            this._tpSnapStartDelta = 0;
+            this._tpSnapTargetDelta = 0;
+            this._tpSnapTarget = this.focusedIdx;
+            this._tpVelSamples = [{ y: ny, ts: now() }];
+            this.phase = PHASE_DRAGGING;
+            this._animDurationMs = 0;
+            this._animStart = now();
+        }
+
+        if (nowTouching) {
+            // Inverted Y: finger moves DOWN on the pad → focus moves
+            // UP through the list (toward more-recent / lower
+            // focusedIdx). Matches the "drag the carousel down"
+            // direct-manipulation feel.
+            var rawDelta = (this._tpBaselineY - ny) / TP_UNITS_PER_STEP;
+            // Clamp to the carousel's bounded range so the user
+            // can't drag the focus out past the ends. fracIdx must
+            // sit in [0, n-1].
+            var n = this.cards.length;
+            var fracIdx = this._tpBaselineFocusedIdx + rawDelta;
+            if (fracIdx < 0) fracIdx = 0;
+            else if (fracIdx > n - 1) fracIdx = n - 1;
+            this._tpDragDelta = fracIdx - this._tpBaselineFocusedIdx;
+            this.phase = PHASE_DRAGGING;
+            // Append a velocity sample. Trim to the recent window so
+            // a long drag with a slow tail doesn't average in stale
+            // movement when the user finally releases.
+            var sampleTs = now();
+            if (!this._tpVelSamples) this._tpVelSamples = [];
+            this._tpVelSamples.push({ y: ny, ts: sampleTs });
+            while (this._tpVelSamples.length > 0
+                   && sampleTs - this._tpVelSamples[0].ts > TP_VELOCITY_WINDOW_MS) {
+                this._tpVelSamples.shift();
+            }
+        }
+
+        if (!nowTouching && prevTouching) {
+            // Touch-up: stay in PHASE_DRAGGING and time-lerp
+            // `_tpDragDelta` from its current fractional value to an
+            // integer target. render() reads `_tpDragDelta` every
+            // frame, so the same fractional-position rendering used
+            // during the live drag carries over into the snap — the
+            // styling stays continuous (no posAbs jump that would
+            // otherwise blink the title bar at release).
+            //
+            // Target = round(fracIdx + projectedExtra), where
+            // projectedExtra is derived from the finger's average
+            // velocity over the last TP_VELOCITY_WINDOW_MS of touch.
+            // Slow drag → projectedExtra ≈ 0 (lands where finger
+            // stopped). Fast flick → projectedExtra carries the
+            // carousel multiple slots past where the finger left.
+            // Duration scales with snap distance so longer flings
+            // visibly decelerate (easeOutCubic + longer dt = the
+            // iPhone-style "decay to a stop" feel).
+            var fracIdx = this._tpBaselineFocusedIdx + this._tpDragDelta;
+            var velUnitsPerMs = 0;
+            var samples = this._tpVelSamples || [];
+            if (samples.length >= 2) {
+                var first = samples[0];
+                var last  = samples[samples.length - 1];
+                var dt    = last.ts - first.ts;
+                if (dt > 0) {
+                    // Inverted Y matches `rawDelta`'s convention:
+                    // finger UP (ny decreasing) → positive velocity
+                    // toward higher focusedIdx.
+                    velUnitsPerMs = -(last.y - first.y) / dt;
+                }
+            }
+            var projectedExtra = velUnitsPerMs * TP_VELOCITY_PROJECTION_MS / TP_UNITS_PER_STEP;
+            var projected = fracIdx + projectedExtra;
+            var target = Math.round(projected);
+            target = Math.max(0, Math.min(this.cards.length - 1, target));
+
+            this._tpSnapStartDelta  = this._tpDragDelta;
+            this._tpSnapTargetDelta = target - this._tpBaselineFocusedIdx;
+            this._tpSnapTarget      = target;
+            // Scale duration with snap distance, capped at 4× base
+            // so a multi-slot fling decelerates smoothly without
+            // dragging on for an awkwardly long time.
+            var snapDistance = Math.abs(this._tpSnapTargetDelta - this._tpSnapStartDelta);
+            var distScale = Math.min(4, Math.max(1, snapDistance));
+            this._animDurationMs    = ANIM_DURATION_MS * distScale;
+            this._animStart         = now();
+            this._tpVelSamples      = [];
+        }
+
+        this._tpTouching = nowTouching;
+        if (typeof window.requestRender === 'function') window.requestRender();
+    };
 
     AppSwitcherScene.prototype._findFocused = function() {
         for (var i = 0; i < this.cards.length; i++) {
@@ -1269,6 +1572,11 @@ var AppSwitcherScene = (function() {
         // sits between killing (-1) and focused (0) in the
         // descending sort — i.e. they paint LAST, on top.
         if (card._overlay) return -0.5;
+        // Drag: fractional `_dragPos` drives z-order, so cards
+        // visibly cross depth as the user scrubs through positions.
+        if (typeof card._dragPos === 'number') {
+            return Math.abs(card._dragPos);
+        }
         // Ghosts (e.g. the +1 slide-out spawned by _raiseWrapHint)
         // use the same `|position|` zKey as everything else, so
         // they sit naturally behind the focused card — at position
@@ -1287,6 +1595,12 @@ var AppSwitcherScene = (function() {
         if (card.killing) {
             // Slide from POSITIONS[0] to KILLED_STATE — off-screen left.
             return lerpState(POSITIONS[0], KILLED_STATE, t);
+        }
+        if (phase === PHASE_DRAGGING && typeof card._dragPos === 'number') {
+            // Fractional position fed by the drag handler. Lerp between
+            // adjacent integer slots; cardAlpha is applied separately
+            // by drawCard for the "past +1 / past -2" fade.
+            return fractionalState(card._dragPos);
         }
         if (phase === PHASE_OPENING && card.position === 0) {
             var endStateOpening = POSITIONS[0];
@@ -1349,6 +1663,50 @@ var AppSwitcherScene = (function() {
 
         var animating = (this.phase !== PHASE_REST && t < 1);
 
+        // PHASE_DRAGGING: stamp every card with a fractional `_dragPos`
+        // and an integer `_typeSlot`.
+        //
+        //   `_dragPos`  drives geometry — fractional, lerps every
+        //               frame so cards visibly move with the finger
+        //               (and during the snap-back lerp afterwards).
+        //
+        //   `_typeSlot` drives the title bar style — integer, snaps
+        //               whenever `fracIdx` crosses a half-integer.
+        //               Same value across all cards each frame, so
+        //               the carousel always reads as one consistent
+        //               state ("we're committed to focusedIdx = N
+        //               right now"). A card visibly travels through
+        //               +1 → 0 → −1 → −2 in sequence as the user
+        //               scrolls, picking up the matching type as
+        //               its slot crosses the midpoint.
+        //
+        // Live drag: `_tpDragDelta` is updated by SSE; we just read
+        // it here. Snap-back (after release): we time-lerp it from
+        // the touch-up snapshot down to the integer target.
+        if (this.phase === PHASE_DRAGGING) {
+            if (!this._tpTouching) {
+                this._tpDragDelta = lerp(
+                    this._tpSnapStartDelta || 0,
+                    this._tpSnapTargetDelta || 0,
+                    e
+                );
+            }
+            var fracIdx = this._tpBaselineFocusedIdx + this._tpDragDelta;
+            var effectiveFocusedIdx = Math.round(fracIdx);
+            for (var di = 0; di < this.cards.length; di++) {
+                this.cards[di]._dragPos  = fracIdx - di;
+                this.cards[di]._typeSlot = effectiveFocusedIdx - di;
+            }
+        } else {
+            // Clear stale fields so other phases don't accidentally
+            // read them (getCardState branches on `_dragPos`,
+            // drawCard branches on `_typeSlot`).
+            for (var dj = 0; dj < this.cards.length; dj++) {
+                this.cards[dj]._dragPos  = undefined;
+                this.cards[dj]._typeSlot = undefined;
+            }
+        }
+
         canvas.clear('#FFF');
 
         // Empty stack — no apps have been launched. Show a hint so
@@ -1409,11 +1767,21 @@ var AppSwitcherScene = (function() {
         // there.
         var focusedForKill = this._findFocused();
         var hasFocus = focusedForKill !== null && !focusedForKill.transient;
+        // Kill stays on-screen across every phase except the actual
+        // kill animation (where flickering it as the killed card
+        // slides past would be distracting). PHASE_DRAGGING included
+        // — the user expects the affordance to remain visible while
+        // they scrub. The action targets whichever card is at
+        // integer position 0 (the resting focus); during a drag
+        // that's the baseline card, post-release it's the snapped
+        // target.
         if (hasFocus && this.phase !== PHASE_KILLING) {
-            // 11 px icon + 3 px gap + ~16 px "Kill" + ~14 px chrome
-            // padding → 56 px. Wider than the old 48 so icon and text
-            // both fit comfortably and the pair is visibly centred.
-            canvas.drawLeftButton('Kill', 0, 56, false, false, Icons.kill_app);
+            // 11 px icon + 3 px gap + ~16 px "Kill" + chrome margins.
+            // 48 px lines the icon + label up tight against the
+            // button edges — same width the text-only Kill used to
+            // be, no extra padding now that the icon shares the
+            // budget.
+            canvas.drawLeftButton('Kill', 0, 48, false, false, Icons.kill_app);
         }
 
         // Auto-advance phase on animation completion.
@@ -1426,6 +1794,33 @@ var AppSwitcherScene = (function() {
                 this.phase = PHASE_REST;
                 for (var bi = 0; bi < this.cards.length; bi++) {
                     this.cards[bi]._bounceDir = 0;
+                }
+            } else if (this.phase === PHASE_DRAGGING) {
+                // Snap-back lerp done — commit focusedIdx, drop the
+                // fractional rendering machinery, return to REST.
+                // Skipped while still touching: live drag stays in
+                // PHASE_DRAGGING indefinitely until the user lifts.
+                if (!this._tpTouching) {
+                    this.focusedIdx = this._tpSnapTarget;
+                    applyCyclicalLayout(this.cards, this.focusedIdx);
+                    this._tpDragDelta = 0;
+                    for (var dki = 0; dki < this.cards.length; dki++) {
+                        this.cards[dki]._dragPos  = undefined;
+                        this.cards[dki]._typeSlot = undefined;
+                        // Clear `animFrom` after commit so a
+                        // subsequent PHASE_BOUNCING (Up at the
+                        // most-recent / Down at the oldest) doesn't
+                        // see leftover animFrom != position state
+                        // and accidentally drive cardAlpha / posAbs
+                        // animations on non-focused cards. Mirrors
+                        // what PHASE_SCROLLING auto-advance already
+                        // does for keyboard.
+                        this.cards[dki].animFrom = null;
+                    }
+                    this.phase = PHASE_REST;
+                    // Reset the per-fling duration override; the next
+                    // animation should run at the base ANIM_DURATION_MS.
+                    this._animDurationMs = 0;
                 }
             } else if (this.phase === PHASE_CLOSING) {
                 // Closing zoom-out finished — the focused card has
