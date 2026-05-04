@@ -123,6 +123,11 @@ var MenuScene = (function() {
             'Ethernet': function() { return new EthernetScene(sm); }
             // 'Airplane mode' has no factory — it's a toggle (see below).
         });
+        // Treat Network as a first-class app in the App Switcher:
+        // enter() registers it with RunningApps, exit() snapshots it.
+        // The factoryFn is used when the user picks the Network card
+        // from the switcher to re-open a fresh instance.
+        subMenu.markAsApp(Icons.network, function(reSm) { return networkMenu(reSm || sm); });
 
         var iconMap = {
             'Routing info': Icons.info_icon,
@@ -242,7 +247,7 @@ var MenuScene = (function() {
     }
 
     function settingsMenu(sm) {
-        return new SubMenuScene(sm, 'Settings', [
+        var subMenu = new SubMenuScene(sm, 'Settings', [
             'System info',
             'Battery info',
             'Disk info',
@@ -252,6 +257,9 @@ var MenuScene = (function() {
             'Disk info': function() { return new DiskSpaceScene(); },
             'Update': function() { return new UpdateScene(); }
         });
+        // Treat Settings as a first-class app in the App Switcher.
+        subMenu.markAsApp(Icons.system, function(reSm) { return settingsMenu(reSm || sm); });
+        return subMenu;
     }
 
     var subMenus = {

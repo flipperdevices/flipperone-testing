@@ -85,16 +85,51 @@ var SubMenuScene = (function() {
         this.scrollbar = new UI.Scrollbar(items.length, VISIBLE_COUNT, this.scrollOffset);
     }
 
+    // Mark this submenu as an "app" — it then participates in the
+    // App Switcher exactly like a PlaceholderAppScene: enter()
+    // registers it with RunningApps (bumping any prior entry to the
+    // top), exit() captures a screenshot the switcher can use as
+    // the card thumbnail. `icon` is the static icon shown in the
+    // switcher's title bar; `factoryFn(sceneManager)` returns a
+    // fresh instance of this submenu, used by the switcher when the
+    // user picks the card.
+    SubMenuScene.prototype.markAsApp = function(icon, factoryFn) {
+        this._asApp = { icon: icon || null, factoryFn: factoryFn || null };
+    };
+
     SubMenuScene.prototype.enter = function() {
         if (this._animTimer) return;
         this._animTimer = setInterval(function() {
             if (window.requestRender) window.requestRender();
         }, ANIMATED_ICON_FRAME_MS);
+        // App-mode submenus register with RunningApps on enter so
+        // the switcher's recents stack picks them up. No imagePath
+        // — these scenes have no PNG mockup; the switcher will rely
+        // on the snapshot captured on exit().
+        if (this._asApp && typeof RunningApps !== 'undefined') {
+            RunningApps.open(this.title, null, this._asApp.icon, this._asApp.factoryFn);
+        }
     };
     SubMenuScene.prototype.exit = function() {
         if (this._animTimer) {
             clearInterval(this._animTimer);
             this._animTimer = null;
+        }
+        // Capture the current canvas pixels as the switcher's card
+        // thumbnail. Same race guard as PlaceholderAppScene: only
+        // capture when this scene is the one that actually rendered
+        // the visible frame, otherwise we'd save (e.g.) the App
+        // Switcher's own pixels as our thumbnail.
+        if (this._asApp && typeof RunningApps !== 'undefined') {
+            var canvasEl = document.getElementById('screen');
+            var ownsCanvas = (window._lastRenderedScene === this);
+            if (ownsCanvas && canvasEl) {
+                var snap = document.createElement('canvas');
+                snap.width  = canvasEl.width;
+                snap.height = canvasEl.height;
+                snap.getContext('2d').drawImage(canvasEl, 0, 0);
+                RunningApps.setSnapshot(this.title, snap);
+            }
         }
     };
 

@@ -53,6 +53,34 @@ var FlipCanvas = (function() {
         var ty = y + 2;  // 2px top padding
         HaxrcorpFont16.draw(ctx, text, tx, ty, fg);
     }
+    // Combined icon + label inside a button. Icon and text are
+    // measured as one block and centred horizontally inside the
+    // button. Icon is vertically centred against BTN_H; text uses
+    // the same 2px top padding as `_btnText`. Falls back to
+    // `_btnText` when `icon` is null/undefined.
+    function _btnIconText(canvas, text, icon, x, w, y, fg) {
+        if (!icon) {
+            _btnText(canvas.ctx, text, x, w, y, fg);
+            return;
+        }
+        var GAP = 3;
+        var tw = HaxrcorpFont16.textWidth(text);
+        var totalW = icon.w + GAP + tw;
+        var startX = x + Math.floor((w - totalW) / 2);
+        // +1 nudge: pure vertical centring puts the icon top at y+1
+        // (for an 11 px icon in a 14 px button), but the text top sits
+        // at y+2 (the standard 2 px top padding). Matching the icon
+        // top to the text top reads as a single optical baseline.
+        var iconY  = y + Math.floor((BTN_H - icon.h) / 2) + 1;
+        // grayscale sprites go through drawSprite; binary icons
+        // through drawIcon — same convention MenuLine uses.
+        if (icon.grayscale) {
+            canvas.drawSprite(icon, startX, iconY, fg);
+        } else {
+            canvas.drawIcon(icon, startX, iconY, fg);
+        }
+        HaxrcorpFont16.draw(canvas.ctx, text, startX + icon.w + GAP, y + 2, fg);
+    }
 
     // Middle button — both top corners rounded
     FlipCanvas.prototype.drawMiddleButton = function(text, x, w, pressed, disabled) {
@@ -84,8 +112,10 @@ var FlipCanvas = (function() {
         _btnText(this.ctx, text, x, w, y, c.fg);
     };
 
-    // Left button — flush with left screen edge, only top-right corner rounded
-    FlipCanvas.prototype.drawLeftButton = function(text, x, w, pressed, disabled) {
+    // Left button — flush with left screen edge, only top-right corner rounded.
+    // Optional `icon` renders to the left of the label; the icon+text
+    // pair is centred together inside the button.
+    FlipCanvas.prototype.drawLeftButton = function(text, x, w, pressed, disabled, icon) {
         var y = this.h - BTN_H;
         var c = disabled ? { bg: '#CCC', fg: '#999' } : _btnColors(pressed);
         this.ctx.fillStyle = c.bg;
@@ -106,7 +136,7 @@ var FlipCanvas = (function() {
         // Right border straight
         this.ctx.fillRect(x + w - 1, y + 3, 1, BTN_H - 3);
 
-        _btnText(this.ctx, text, x, w, y, c.fg);
+        _btnIconText(this, text, icon, x, w, y, c.fg);
     };
 
     // Right button — flush with right screen edge, only top-left corner rounded

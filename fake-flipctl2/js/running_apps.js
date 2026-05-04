@@ -28,7 +28,14 @@ var RunningApps = (function() {
     // `icon` is the bitmap sprite the App Switcher renders in the
     // card's title bar (matches the icon shown next to the app's
     // name in the Apps submenu).
-    function open(name, imagePath, icon) {
+    //
+    // `factoryFn` is an optional `(sceneManager) => sceneInstance`
+    // — used by the App Switcher to re-launch this entry. When
+    // omitted, the switcher falls back to constructing a fresh
+    // `PlaceholderAppScene` from `imagePath`/`name`/`icon`. App-mode
+    // submenus (Settings, Network) provide a factory because they
+    // aren't placeholder PNGs — they're real scene types.
+    function open(name, imagePath, icon, factoryFn) {
         if (!name) return;
 
         var existing = null;
@@ -42,15 +49,18 @@ var RunningApps = (function() {
         var entry;
         if (existing) {
             entry = existing;
-            // Refresh imagePath / icon in case they changed; image
-            // stays as-is (the captured snapshot is what matters).
+            // Refresh imagePath / icon / factoryFn in case they
+            // changed; image stays as-is (the captured snapshot is
+            // what matters).
             if (imagePath) entry.imagePath = imagePath;
             if (icon)      entry.icon = icon;
+            if (factoryFn) entry.factoryFn = factoryFn;
         } else {
             entry = {
                 name: name,
                 imagePath: imagePath || null,
                 icon: icon || null,
+                factoryFn: factoryFn || null,
                 image: null
             };
             if (entry.imagePath) {

@@ -90,13 +90,22 @@
 
                 // Capture a "transient" focused card whenever Tab is
                 // pressed from a non-app scene (Desktop, Main Menu,
-                // any submenu, etc). The switcher renders that
-                // snapshot at slot 0 — running apps queue behind it
-                // — and the entry is NOT written to RunningApps.
-                // From within a PlaceholderAppScene this is null;
-                // the switcher just shows the recents stack.
+                // generic submenus). The switcher renders that
+                // snapshot as a fade-out overlay during the intro —
+                // it isn't written to RunningApps and disappears
+                // when the intro completes.
+                //
+                // Skipped for "app-like" scenes (PlaceholderAppScene,
+                // and SubMenuScenes that called `markAsApp(...)`,
+                // i.e. Settings / Network) because those scenes are
+                // already in RunningApps as real cards — capturing a
+                // transient on top would just duplicate them.
+                var isAppScene = active instanceof PlaceholderAppScene
+                    || (typeof SubMenuScene !== 'undefined'
+                        && active instanceof SubMenuScene
+                        && active._asApp);
                 var transient = null;
-                if (!(active instanceof PlaceholderAppScene)) {
+                if (!isAppScene) {
                     var tSnap = document.createElement('canvas');
                     tSnap.width  = canvas.w;
                     tSnap.height = canvas.h;

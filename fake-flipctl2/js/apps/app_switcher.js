@@ -101,11 +101,31 @@ var AppSwitcherScene = (function() {
     // lerp results sensible if anything ever reads them.
     var WRAP_HINT_START = S(50, 144, 252, 13, 4, 0, 0, 0);
 
+    // N=2 intro source for B (the "previous" app sliding up from
+    // below the canvas into the focused slot). Same x/w/h/corners
+    // as POSITIONS[0] but y anchored to the canvas bottom so at
+    // t=0 the entire frame sits off-screen below.
+    var INTRO_B_FROM_BOTTOM = S(2, 144, 258, 100, 4, 4, 4, 4);
+
     // ── Phase state machine ─────────────────────────────────────
     var PHASE_OPENING   = 'opening';
     var PHASE_REST      = 'rest';
     var PHASE_SCROLLING = 'scrolling';
     var PHASE_KILLING   = 'killing';
+    // Reverse of OPENING — focused card zooms from POSITIONS[0]
+    // out to the full-canvas overscan (OPENING_START), then the
+    // PlaceholderAppScene for the selected app takes over. All
+    // non-focused cards are hidden during this phase.
+    var PHASE_CLOSING   = 'closing';
+    // Boundary feedback. Pressing Down at the oldest or Up at
+    // the most-recent (where there's nothing further to navigate
+    // to) plays a quick "tug" on the focused card: it slides a
+    // few pixels in the direction its phantom move *would* have
+    // gone, then springs back to POSITIONS[0]. Visual hint that
+    // the press registered but there's no card past this one.
+    var PHASE_BOUNCING  = 'bouncing';
+    // Maximum y-displacement of the bounce, in pixels.
+    var BOUNCE_DISTANCE = 5;
 
     // Screenshot draw offset. Aligns the image's left edge with the
     // focused frame body's left edge (state.x = 2 for POSITIONS[0]),
@@ -371,7 +391,7 @@ var AppSwitcherScene = (function() {
         return '#' + pad(r) + pad(g) + pad(bl);
     }
 
-    function drawCard(canvas, state, card, e) {
+    function drawCard(canvas, state, card, e, phase) {
         // Card-level alpha — fades the whole card in or out when it
         // animates between a slot that has POSITIONS geometry and
         // one that doesn't. Without this, a card pushed past +1
@@ -380,6 +400,14 @@ var AppSwitcherScene = (function() {
         // at t=1; symmetrically, one returning would pop in. The
         // fade lets it dissolve cleanly in either direction.
         var cardAlpha = 1;
+        // Transient intro fade-out: the Desktop / Menu / Submenu
+        // snapshot is animated alongside the rest of the intro, but
+        // it's not a real switchable card — it fades from 1 → 0 over
+        // the same lerp so it's already invisible by the time it
+        // reaches the +1 peek slot. The actual splice happens when
+        // PHASE_SCROLLING completes; this just makes the transition
+        // a smooth fade instead of an abrupt removal.
+        if (card._fadeOut) cardAlpha = 1 - e;
         // `pinnedPosAbs` short-circuits the position lerp in the
         // posAbs computation below when the card is doing a pure
         // fade-in or fade-out. Without it, lerping `animFrom` →
@@ -389,11 +417,16 @@ var AppSwitcherScene = (function() {
         // card *renders* at only one geometric side throughout the
         // fade, so we pin posAbs to that side too.
         var pinnedPosAbs = null;
-        if (card._fromState) {
-            // Slide animation (e.g. wrap-hint) — full opacity, and
-            // pin posAbs to the destination so the title-bar style
-            // doesn't crossfade through the focused zone while the
-            // card is mid-slide.
+        if (card._fromState && !card._toState) {
+            // Slide animation (e.g. wrap-hint) where only the
+            // start state is overridden — pin posAbs to the
+            // destination so the title-bar style doesn't crossfade
+            // through the focused zone while the card is mid-slide.
+            // When BOTH _fromState and _toState are set (e.g. the
+            // N=2 intro phase 1), the caller is fully driving the
+            // visual via the two states, so we let posClamped lerp
+            // normally; that produces the focused → tab crossfade
+            // synced to the position change.
             pinnedPosAbs = Math.abs(card.position);
         } else if (card.animFrom !== null) {
             var posExists = POSITIONS[card.position] !== undefined;
@@ -411,6 +444,24 @@ var AppSwitcherScene = (function() {
         var topCtx = canvas.ctx;
         topCtx.save();
         topCtx.globalAlpha *= cardAlpha;
+
+        // Transient (Desktop / Menu / Submenu) intro: render ONLY the
+        // full-canvas screenshot at native (0, 0) and fade it out via
+        // cardAlpha — no card frame, no title bar, no body fill, no
+        // movement. Visually it's "the screen you came from dissolves
+        // to reveal the switcher behind it". The actual splice from
+        // this.cards happens at PHASE_SCROLLING completion; until
+        // then the alpha is already 0 so nothing is drawn anyway.
+        if (card._fadeOut) {
+            var fimg = card.image;
+            var freedy = fimg && (fimg.naturalWidth > 0
+                || (fimg.tagName === 'CANVAS' && fimg.width > 0));
+            if (freedy) {
+                topCtx.drawImage(fimg, 0, 0);
+            }
+            topCtx.restore();
+            return;
+        }
 
         // Wrap-hint shape override: when this card is the most-recent
         // app raised to slot -2 as a loop-boundary indicator (see
@@ -465,11 +516,6 @@ var AppSwitcherScene = (function() {
             var imgAlpha = 1 - posClamped;
             if (imgAlpha > 0.001) {
                 var ictx = canvas.ctx;
-                // Raise the screenshot 10 px above the frame's
-                // interior top — the body clip mask will trim that
-                // overflow, so the visible result is the source
-                // image with its top 10 px cropped off.
-                var imgY = state.y + 1 - 10;
                 ictx.save();
                 ictx.beginPath();
                 addBodyClipPath(ictx, state.x, state.y, state.w, state.h,
@@ -478,7 +524,42 @@ var AppSwitcherScene = (function() {
                 // Multiply *into* the existing alpha (which is the
                 // card-level fade) instead of overwriting it.
                 ictx.globalAlpha = ictx.globalAlpha * imgAlpha;
-                ictx.drawImage(img, IMG_X, imgY);
+                if (phase === PHASE_OPENING
+                        || phase === PHASE_CLOSING
+                        || card._imageFromFullApp) {
+                    // Zoom transitions — translate ONLY. The
+                    // screenshot stays at its native pixel size
+                    // (no resampling). Position lerps between
+                    //   FULL APP   (0, 0)
+                    //   REST/POS X (IMG_X, target.y − 9)
+                    // so at the animation boundary the image lands
+                    // exactly where the standard REST path draws
+                    // it — no jump when PHASE_OPENING settles into
+                    // REST, no jump when PHASE_CLOSING starts from
+                    // REST. Math.round on both coords keeps the
+                    // draw on integer pixel boundaries → no sub-
+                    // pixel blur. The body clip handles cropping.
+                    var targetState = POSITIONS[card.position] || POSITIONS[0];
+                    var targetImgY  = targetState.y - 9;
+                    var imgX, imgY;
+                    if (phase === PHASE_CLOSING) {
+                        imgX = Math.round(lerp(IMG_X, 0, e));
+                        imgY = Math.round(lerp(targetImgY, 0, e));
+                    } else {
+                        imgX = Math.round(lerp(0, IMG_X, e));
+                        imgY = Math.round(lerp(0, targetImgY, e));
+                    }
+                    ictx.drawImage(img, imgX, imgY);
+                } else {
+                    // Standard: native size, raised 10 px above
+                    // the frame's interior top. The body clip mask
+                    // trims that overflow so the visible result is
+                    // the source image with its top 10 px cropped
+                    // off — keeps the focused card's title bar
+                    // free of the source's status-bar strip.
+                    var imgY = state.y + 1 - 10;
+                    ictx.drawImage(img, IMG_X, imgY);
+                }
                 ictx.restore();
             }
         }
@@ -568,6 +649,15 @@ var AppSwitcherScene = (function() {
             // corner of the screen" silhouette the user sees when
             // parked at the oldest app.
             if (isWrapHint) edges = { bottom: false, right: false };
+            // _keepBottomStroke (set by A in the N=2 intro) keeps
+            // the bottom edge drawn even when the standard tab
+            // config would omit it (TAB_CONFIG[+1].openEdge is
+            // 'bottom'). Lets the line where A meets B's top edge
+            // remain visible while B sits in front.
+            if (card._keepBottomStroke && edges.bottom === false) {
+                edges = Object.assign({}, edges);
+                delete edges.bottom;
+            }
             drawFrameStroke(canvas, state, tabColor, edges);
             ctx.restore();
         }
@@ -598,19 +688,15 @@ var AppSwitcherScene = (function() {
     // have no POSITIONS geometry and fade out via cardAlpha.
     function cyclicalPosition(idx, focusedIdx, n) {
         if (n <= 1) return 0;
-        // Linear position relative to focus — cards above focus
-        // (lower idx) land at positive positions, cards below at
-        // negative. Cards array is ordered most-recent → oldest,
-        // so cards[focusedIdx] is at 0, cards[focusedIdx + 1] at
-        // -1, cards[focusedIdx - 1] at +1, etc.
-        var pos = focusedIdx - idx;
-        // The wrap-target peek-above (+1) only kicks in when the
-        // truly-oldest card (idx = N - 1) would otherwise land at
-        // a slot with no POSITIONS geometry (-3 or worse). Happens
-        // at the most-recent focus state for N >= 4. For N <= 3
-        // every card fits naturally, so no wrap.
-        if (pos === -(n - 1) && pos < -2) return 1;
-        return pos;
+        // Pure linear list — cards above focus (lower idx) land at
+        // positive positions, cards below at negative. Cards that
+        // fall past -2 run off-canvas and fade out via cardAlpha.
+        // Navigation is bounded at both ends (see handleInput).
+        // Applies uniformly across N >= 2; the only "non-linear"
+        // visual is the N=2 intro itself, which sets explicit
+        // positions on cards[0] / cards[1] in
+        // buildCardsFromRunningApps.
+        return focusedIdx - idx;
     }
 
     // Index of the "most-recent app" in the cards array. With a
@@ -643,51 +729,19 @@ var AppSwitcherScene = (function() {
         var n = cards.length;
         for (var j = 0; j < n; j++) {
             var c = cards[j];
-            c.animFrom   = c.position;
-            c.position   = cyclicalPosition(j, focusedIdx, n);
-            c.wrapHint   = false;
-            c.hidden     = false;
-            c._fromState = null;
-        }
-
-        // Wrap-hint at oldest fires for N >= 3. At N = 2 the only
-        // "other" card lands at the visible +1 peek-above slot so
-        // a wrap-hint adds no information; at N >= 3 the most-
-        // recent's linear position is +2 (off-canvas) or worse,
-        // which would just fade out without the loop-boundary
-        // indicator. Layouts:
-        //   N = 2 oldest: cards[0] at +1, cards[1] at 0 (no override).
-        //   N = 3 oldest: cards[0] at -2 wrap-hint, cards[1] at +1,
-        //                 cards[2] at 0.
-        //   N = 4 oldest: cards[0] at -2 wrap-hint, cards[1]
-        //                 at +2 (fade), cards[2] at +1, cards[3] at 0.
-        if (n < 3 || focusedIdx !== n - 1) return;
-
-        var mri = mostRecentAppIdx(cards);
-        // Bail when the most-recent IS the currently-focused card
-        // (defensive — shouldn't happen at N >= 4 oldest, but
-        // covers degenerate cards arrangements).
-        if (mri < 0 || mri === focusedIdx) return;
-        var mr = cards[mri];
-        mr.position = -2;
-        mr.wrapHint = true;
-        // Slide-up-from-below animation only when the previous
-        // position had no geometry (off-carousel). When the card
-        // was visibly somewhere else, lerp directly from there to
-        // -2 instead — avoids the visual "teleport off-screen,
-        // re-appear from below" jump.
-        if (mr.animFrom !== -2 && POSITIONS[mr.animFrom] === undefined) {
-            mr._fromState = WRAP_HINT_START;
-        }
-
-        // Hide any other card whose cyclical position landed at -2
-        // (collides with the wrap-hint slot). Happens for N >= 4
-        // without a transient — cards[1] would otherwise sit there.
-        for (var k = 0; k < n; k++) {
-            if (k === mri) continue;
-            if (cards[k].position === -2) {
-                cards[k].hidden = true;
-            }
+            c.animFrom            = c.position;
+            c.position            = cyclicalPosition(j, focusedIdx, n);
+            c.wrapHint            = false;
+            c.hidden              = false;
+            c._fromState          = null;
+            c._toState            = null;
+            // Clear N=2 / N>=3 intro one-shot flags so subsequent
+            // Up/Down scrolls don't carry the opener's overlay or
+            // image-from-full-app behaviour.
+            c._intro              = false;
+            c._overlay            = false;
+            c._imageFromFullApp   = false;
+            c._keepBottomStroke   = false;
         }
     }
 
@@ -713,9 +767,74 @@ var AppSwitcherScene = (function() {
                 imagePath: apps[i].imagePath,
                 image:     apps[i].image,
                 icon:      apps[i].icon,
+                factoryFn: apps[i].factoryFn || null,
                 animFrom:  null
             });
         }
+        // Multi-app intro animation, single phase. Applies for any
+        // N >= 2 with no transient. Two cards animate in parallel:
+        //   A (most-recent / current)   FULL APP → POSITIONS[+1]
+        //   B (previous app)            off-canvas-below → POSITIONS[0]
+        //
+        // Cards 2..N-1 (C, D, …) just appear at their linear
+        // slots for focusedIdx = 1 — no intro animation, they're
+        // initially hidden behind A's full-canvas frame and become
+        // visible as A shrinks toward the +1 corner:
+        //
+        //   N = 3:  A at +1, B at 0, C at -1.
+        //   N = 4:  A at +1, B at 0, C at -1, D at -2.
+        //   N >= 5: extras run past -2 (off-canvas, fade out via
+        //           cardAlpha).
+        //
+        // Z-order: B is flagged `_overlay` so zKey() puts it
+        // above A — A sits behind, B paints on top. A keeps its
+        // bottom stroke (`_keepBottomStroke`) so the line where
+        // it meets B's top is visible. A's screenshot translates
+        // from full-canvas (0, 0) to the +1 REST anchor via the
+        // `_imageFromFullApp` path; B's screenshot uses the
+        // standard REST math (state.y − 9) so it tracks its frame
+        // smoothly as the frame slides up from the bottom.
+        // Desktop / Menu / Submenu transients participate in this
+        // intro the same way regular apps do — the snapshot we just
+        // took IS what's currently filling the screen, so it animates
+        // FULL → +1 just like a real most-recent app would. The user
+        // lands focused on the *previous* running app (cards[1]),
+        // which is what they almost always want when Tab'ing from a
+        // non-app scene.
+        if (cards.length >= 2) {
+            // A: FULL APP → +1.
+            cards[0].animFrom         = 0;
+            cards[0].position         = 1;
+            cards[0]._fromState       = OPENING_START;
+            cards[0]._toState         = POSITIONS[1];
+            cards[0]._imageFromFullApp = true;
+            cards[0]._keepBottomStroke = true;
+            // Transient (Desktop / Menu / Submenu) snapshots aren't
+            // real switchable apps — they fade out across the FULL →
+            // +1 lerp so by the time they'd land at the +1 peek slot
+            // they're fully invisible. Splice happens at PHASE_REST,
+            // but the visual is "vanishes into the +1 frame as the
+            // intro plays". Real apps keep cardAlpha = 1.
+            if (cards[0].transient) cards[0]._fadeOut = true;
+
+            // B: off-canvas-below → 0 (focused).
+            cards[1].animFrom   = 0;
+            cards[1].position   = 0;
+            cards[1]._fromState = INTRO_B_FROM_BOTTOM;
+            cards[1]._toState   = POSITIONS[0];
+            cards[1]._overlay   = true;
+
+            // C onwards: static at their linear positions for
+            // focusedIdx = 1. animFrom stays null so no animation
+            // is played — they just sit at -1, -2, … and become
+            // visible as A's full-canvas frame shrinks past them.
+            for (var ci = 2; ci < cards.length; ci++) {
+                cards[ci].animFrom = null;
+                cards[ci].position = cyclicalPosition(ci, 1, cards.length);
+            }
+            return cards;
+        }
+
         // Apply cyclical positions with focus on cards[0] (the
         // transient if present, otherwise the most-recent app).
         // The last card in the array (oldest, or most-old running
@@ -747,11 +866,35 @@ var AppSwitcherScene = (function() {
         this.focusedIdx = 0;
         this.phase = PHASE_OPENING;
         this._animStart = 0;
+        // N=2 opening sequence step: 0 = inactive/finished,
+        // 1 = shrink-in-place phase running, 2 = move-and-rise
+        // phase running. Set in enter() when the carousel is
+        // exactly two non-transient cards.
+        this._n2IntroStep = 0;
     }
 
     AppSwitcherScene.prototype.enter = function() {
         this.cards = buildCardsFromRunningApps(this._transient);
-        this.focusedIdx = 0;
+        // Multi-app intro plays for any N >= 2 — including the
+        // transient cases (Desktop / Menu / Submenu snapshot at
+        // cards[0]). A (cards[0]) animates FULL APP → +1, B
+        // (cards[1], the most-recent real app) slides up from the
+        // bottom into focus 0. Cards 2..N-1 sit statically at their
+        // linear slots. focusedIdx = 1 — B is the resting focus.
+        // N = 1 falls back to the standard OPENING zoom-in.
+        if (this.cards.length >= 2) {
+            this.focusedIdx = 1;
+            this.phase      = PHASE_SCROLLING;
+            // Intro runs at 2× the base duration so the
+            // FULL APP → +1 transition reads as a deliberate opener,
+            // not a quick scroll-step. Cleared by the SCROLLING
+            // auto-advance so subsequent Up/Down lerps run normally.
+            this._animDurationMs = ANIM_DURATION_MS * 2;
+        } else {
+            this.focusedIdx = 0;
+            this.phase      = PHASE_OPENING;
+            this._animDurationMs = 0;
+        }
         this._animStart = now();
     };
     AppSwitcherScene.prototype.exit = function() {};
@@ -910,17 +1053,16 @@ var AppSwitcherScene = (function() {
             if (!ok) return;
             // Transient (current Desktop / Menu / Submenu) just
             // dismisses the switcher — the user is staying where
-            // they were.
+            // they were, no zoom-out animation.
             if (ok.transient) {
                 return 'pop';
             }
-            if (this.sceneManager && typeof PlaceholderAppScene !== 'undefined') {
-                this.sceneManager.pop();
-                while (this.sceneManager.current() instanceof PlaceholderAppScene) {
-                    this.sceneManager.pop();
-                }
-                this.sceneManager.push(new PlaceholderAppScene(ok.imagePath, ok.name));
-            }
+            // Real app: trigger the closing zoom-out. The actual
+            // pop + push happens in render's PHASE_CLOSING auto-
+            // advance once the animation lands at full size.
+            this.phase = PHASE_CLOSING;
+            this._animStart = now();
+            if (typeof window.requestRender === 'function') window.requestRender();
             return;
         }
 
@@ -945,14 +1087,36 @@ var AppSwitcherScene = (function() {
         if (delta === 0) return;
 
         var n = this.cards.length;
-        if (n <= 1) return;
+        if (n === 0) return;
 
-        // Cyclical scroll: Down moves focus forward (next-older
-        // becomes focused, wrapping at the boundary), Up moves it
-        // backward. The layout helper handles the position
-        // recompute plus the at-oldest wrap-hint override (most-
-        // recent slides up to -2, conflicting card hidden).
-        this.focusedIdx = (this.focusedIdx + delta + n) % n;
+        // Bounded linear scroll — Down moves focus forward (next-
+        // older becomes focused), Up moves it backward. No wrap:
+        // pressing past either end triggers a brief bounce on the
+        // focused card instead of cycling.
+        //
+        // N === 1 falls through too: every press is a boundary,
+        // so any Up/Down nudges the lone card to signal "nowhere
+        // else to go".
+        var newFocusedIdx = this.focusedIdx + delta;
+        if (newFocusedIdx < 0 || newFocusedIdx >= n) {
+            // Boundary: stamp the focused card with the press
+            // direction so PHASE_BOUNCING knows which way to nudge
+            // it. Down (delta=+1) at the oldest → card pulses up
+            // (toward where it would have moved). Up (delta=-1)
+            // at the most-recent → pulses down. The sign flip
+            // happens in getCardState.
+            var focused = this._findFocused();
+            if (focused) {
+                focused._bounceDir = delta;
+                this.phase = PHASE_BOUNCING;
+                this._animStart = now();
+                if (typeof window.requestRender === 'function') {
+                    window.requestRender();
+                }
+            }
+            return;
+        }
+        this.focusedIdx = newFocusedIdx;
         applyCyclicalLayout(this.cards, this.focusedIdx);
 
         this.phase = PHASE_SCROLLING;
@@ -1100,6 +1264,11 @@ var AppSwitcherScene = (function() {
     // slide *over* the surviving cards as they slide off-screen.
     function zKey(card, e) {
         if (card.killing) return -1;
+        // Overlay cards (e.g. B in the N=2 single-phase opener)
+        // draw above everything except the kill-out slide. -0.5
+        // sits between killing (-1) and focused (0) in the
+        // descending sort — i.e. they paint LAST, on top.
+        if (card._overlay) return -0.5;
         // Ghosts (e.g. the +1 slide-out spawned by _raiseWrapHint)
         // use the same `|position|` zKey as everything else, so
         // they sit naturally behind the focused card — at position
@@ -1125,6 +1294,32 @@ var AppSwitcherScene = (function() {
                 ? lerpState(OPENING_START, endStateOpening, t)
                 : null;
         }
+        if (phase === PHASE_CLOSING && card.position === 0) {
+            // Reverse of OPENING — focused card zooms out from its
+            // POSITIONS[0] frame to the full-canvas overscan, then
+            // the actual app scene takes over (push happens in the
+            // PHASE_CLOSING auto-advance branch).
+            return lerpState(POSITIONS[0], OPENING_START, t);
+        }
+        if (phase === PHASE_BOUNCING && card.position === 0 && card._bounceDir) {
+            // Boundary bounce: nudge the focused card a few pixels
+            // in the direction the press would have moved it, then
+            // spring back. sin(π · t) curve → 0 at endpoints, 1
+            // at the midpoint, single smooth pulse over the phase
+            // duration. Sign convention: Down (delta=+1) means
+            // the card would have moved UP (toward POSITIONS[+1]
+            // at y=1); negate to match the screen-y convention.
+            var s = POSITIONS[0];
+            var pulse = Math.sin(Math.PI * t) * BOUNCE_DISTANCE;
+            var dy    = -card._bounceDir * pulse;
+            return {
+                x:   s.x,
+                y:   s.y + Math.round(dy),
+                w:   s.w,
+                h:   s.h,
+                rTL: s.rTL, rTR: s.rTR, rBL: s.rBL, rBR: s.rBR
+            };
+        }
         if ((phase === PHASE_SCROLLING || phase === PHASE_KILLING) && card.animFrom !== null) {
             // Explicit `_fromState` / `_toState` (e.g. the wrap-hint
             // slide-in, the +1 ghost slide-out) override the POSITIONS
@@ -1140,7 +1335,14 @@ var AppSwitcherScene = (function() {
 
     AppSwitcherScene.prototype.render = function(canvas) {
         var elapsed = now() - this._animStart;
-        var t = elapsed / ANIM_DURATION_MS;
+        // Per-phase duration override. The N >= 2 intro
+        // (FULL APP → +1 with the parallel slide-up of B and the
+        // transient fade-out) sets `_animDurationMs` to 2×
+        // ANIM_DURATION_MS so the opener reads as a substantial
+        // transition; subsequent scroll/kill/bounce/close phases
+        // clear the override and run at the base duration.
+        var dur = this._animDurationMs || ANIM_DURATION_MS;
+        var t = elapsed / dur;
         if (t < 0) t = 0;
         else if (t > 1) t = 1;
         var e = easeOutCubic(t);
@@ -1175,47 +1377,142 @@ var AppSwitcherScene = (function() {
             var state = getCardState(card, this.phase, e);
             if (!state) continue;
             // Hide the cyclical wrap target at +1 when the focus is
-            // on the most-recent app. The card remains in `cards[]`
-            // so an Up press still cycles to it — just don't paint
-            // it on the LCD. focusedIdx === 0 covers both transient
-            // (cards[0] = transient) and non-transient (cards[0] =
-            // most-recent app) layouts.
-            if (this.focusedIdx === 0 && card.position === 1) continue;
+            // on the most-recent app. Only applies for N >= 4 — at
+            // smaller counts the +1 slot either isn't used (N = 3
+            // linear lays out at 0/-1/-2) or IS used as a regular
+            // peek-above swap target (N = 2: B always at +1 when A
+            // focused; we want it visible). focusedIdx === 0 covers
+            // both transient (cards[0] = transient) and non-
+            // transient (cards[0] = most-recent app) layouts.
+            if (this.cards.length >= 4
+                    && this.focusedIdx === 0
+                    && card.position === 1) continue;
             // Cards explicitly hidden by the at-oldest wrap-hint
             // override (the cyclical card that would otherwise sit
             // at -2 and overlap the wrap-hint silhouette).
             if (card.hidden) continue;
-            drawCard(canvas, state, card, e);
+            // During the closing zoom-out, only the focused card
+            // is rendered — peek-above / peek-below tabs would
+            // otherwise sit on top of the expanding focused card
+            // (which now overflows the standard 0 slot).
+            if (this.phase === PHASE_CLOSING && card.position !== 0) continue;
+            drawCard(canvas, state, card, e, this.phase);
         }
 
         // Kill affordance — surfaces what Esc does. Standard left-button
         // chrome (white fill, top-right rounded, 1 px black border) with
-        // the literal label "Kill". Hidden during the kill animation so
-        // it doesn't visually flicker as the killed card slides past;
-        // comes back at REST. Hidden too when the focus is on the
-        // transient current-scene card (Desktop / Menu / Submenu) —
-        // there's nothing for Esc to do there.
+        // the kill_app icon and the literal label "Kill". Hidden
+        // during the kill animation so it doesn't visually flicker as
+        // the killed card slides past; comes back at REST. Hidden too
+        // when the focus is on the transient current-scene card
+        // (Desktop / Menu / Submenu) — there's nothing for Esc to do
+        // there.
         var focusedForKill = this._findFocused();
         var hasFocus = focusedForKill !== null && !focusedForKill.transient;
         if (hasFocus && this.phase !== PHASE_KILLING) {
-            canvas.drawLeftButton('Kill', 0, 48, false, false);
+            // 11 px icon + 3 px gap + ~16 px "Kill" + ~14 px chrome
+            // padding → 56 px. Wider than the old 48 so icon and text
+            // both fit comfortably and the pair is visibly centred.
+            canvas.drawLeftButton('Kill', 0, 56, false, false, Icons.kill_app);
         }
 
         // Auto-advance phase on animation completion.
         if (t >= 1) {
             if (this.phase === PHASE_OPENING) {
                 this.phase = PHASE_REST;
+            } else if (this.phase === PHASE_BOUNCING) {
+                // Bounce pulse done — back to REST and clear the
+                // direction marker on whichever card had it.
+                this.phase = PHASE_REST;
+                for (var bi = 0; bi < this.cards.length; bi++) {
+                    this.cards[bi]._bounceDir = 0;
+                }
+            } else if (this.phase === PHASE_CLOSING) {
+                // Closing zoom-out finished — the focused card has
+                // expanded out to full canvas. Pop the switcher and
+                // push the PlaceholderAppScene for the focused
+                // entry. Any existing PlaceholderAppScene already
+                // on the stack is popped first so Back from the
+                // launched app returns to the menu/desktop, not to
+                // the previously-active app.
+                var ok = this._findFocused();
+                if (ok && this.sceneManager) {
+                    this.sceneManager.pop();
+                    // Pop any "running app" scenes already on the
+                    // stack so the new launch replaces them, rather
+                    // than stacking on top. Two scene shapes count
+                    // as a running app: PlaceholderAppScene and
+                    // SubMenuScenes flagged via markAsApp() (i.e.
+                    // Settings / Network).
+                    while (true) {
+                        var cur = this.sceneManager.current();
+                        if (typeof PlaceholderAppScene !== 'undefined'
+                                && cur instanceof PlaceholderAppScene) {
+                            this.sceneManager.pop();
+                            continue;
+                        }
+                        if (typeof SubMenuScene !== 'undefined'
+                                && cur instanceof SubMenuScene
+                                && cur._asApp) {
+                            this.sceneManager.pop();
+                            continue;
+                        }
+                        break;
+                    }
+                    // Prefer a registered factoryFn (used by the
+                    // app-mode submenus to construct fresh
+                    // instances). Falls back to PlaceholderAppScene
+                    // for the regular PNG-mockup apps.
+                    var newScene = null;
+                    if (typeof ok.factoryFn === 'function') {
+                        newScene = ok.factoryFn(this.sceneManager);
+                    } else if (typeof PlaceholderAppScene !== 'undefined') {
+                        newScene = new PlaceholderAppScene(ok.imagePath, ok.name, ok.icon);
+                    }
+                    if (newScene && typeof newScene.render === 'function') {
+                        this.sceneManager.push(newScene);
+                    }
+                } else {
+                    // Defensive fallback — if anything is missing,
+                    // just return to REST so the switcher doesn't
+                    // hang on a finished closing animation.
+                    this.phase = PHASE_REST;
+                }
             } else if (this.phase === PHASE_SCROLLING) {
                 this.phase = PHASE_REST;
+                // Clear any per-phase duration override (set by the
+                // 2× intro) so the next lerp reverts to the base
+                // ANIM_DURATION_MS.
+                this._animDurationMs = 0;
                 // Drop any one-shot ghost cards left over from
                 // legacy wrap-hint code (none spawn in the cyclical
                 // model, but the filter is cheap and keeps any
                 // future ghost-style overlays cleanly removed).
                 this.cards = this.cards.filter(function(c) { return !c._ghost; });
+                // Discard the transient (Desktop / Menu / Submenu
+                // snapshot) once the intro completes. It's never a
+                // real running app, so leaving it in the carousel at
+                // +1 would put a dead "card" in the user's switch
+                // path. Decrement focusedIdx by one transient eaten
+                // so the most-recent real app stays focused.
+                var trIdx = -1;
+                for (var ti = 0; ti < this.cards.length; ti++) {
+                    if (this.cards[ti].transient) { trIdx = ti; break; }
+                }
+                if (trIdx !== -1) {
+                    this.cards.splice(trIdx, 1);
+                    if (this.focusedIdx > trIdx) this.focusedIdx--;
+                }
                 for (var k = 0; k < this.cards.length; k++) {
-                    this.cards[k].animFrom   = null;
-                    this.cards[k]._fromState = null;
-                    this.cards[k]._toState   = null;
+                    this.cards[k].animFrom            = null;
+                    this.cards[k]._fromState          = null;
+                    this.cards[k]._toState            = null;
+                    // Clear N=2 intro flags so subsequent scrolls
+                    // / kills don't carry them.
+                    this.cards[k]._intro              = false;
+                    this.cards[k]._overlay            = false;
+                    this.cards[k]._imageFromFullApp   = false;
+                    this.cards[k]._keepBottomStroke   = false;
                 }
             } else if (this.phase === PHASE_KILLING) {
                 // Drop killed cards from the carousel for good.
