@@ -6,8 +6,38 @@ var fs = require('fs');
 var os = require('os');
 var path = require('path');
 var crypto = require('crypto');
+var util = require('util');
 var execSync = require('child_process').execSync;
 var exec = require('child_process').exec;
+var execAsync = util.promisify(exec);
+
+// Async exec helper that swallows errors. Returns { stdout, stderr } on
+// success, null on any failure (non-zero exit, timeout, missing binary).
+// Endpoints aggregating several commands chain through this so a shell
+// failure in one step doesn't fault the whole refresh, and — crucially —
+// the Node loop never blocks on a subprocess: that's fatal for the
+// touchpad SSE stream that lives in the same process.
+function tryExec(cmd, opts) {
+    return execAsync(cmd, opts || { encoding: 'utf8' }).then(
+        function(r) { return r; },
+        function()  { return null; }
+    );
+}
+
+// Background refresher: invokes `fn` (returns Promise), waits for it to
+// settle, sleeps `ms`, repeats. Errors are logged but never break the
+// loop. Using setTimeout chains instead of setInterval guarantees no
+// overlap when a refresh runs longer than its period.
+function startRefreshLoop(name, fn, ms) {
+    function tick() {
+        Promise.resolve().then(fn).catch(function(e) {
+            console.warn('[' + name + '] refresh error: ' + (e && e.message || e));
+        }).then(function() {
+            setTimeout(tick, ms);
+        });
+    }
+    tick();
+}
 
 var PORT = 8899;
 var BIND = '0.0.0.0';
@@ -38,145 +68,42 @@ var BASE = __dirname;
 var PSU = '/sys/class/power_supply/bq28z610-0';
 var QMI_DEV = '/dev/cdc-wdm0';
 
-// ── Touchpad raw event reader ──────────────────────────────────────────
+// ── Touchpad ABS_X / ABS_Y SSE stream ──────────────────────────────────
 //
-// The Flipper One ships a touchpad evdev device named "Flipper One
-// Touchpad" exposing ABS_X (0..1024), ABS_Y (0..800), ABS_PRESSURE
-// (0..12288), plus BTN_TOUCH / BTN_TOOL_FINGER. We open it on server
-// startup, parse 24-byte struct input_event records, and maintain a
-// running snapshot the HTTP layer can hand out at request time.
-//
-// Multiple readers are allowed by the kernel as long as no consumer
-// has called EVIOCGRAB; on FlipperOne the cog/libinput stack normally
-// shares the device, so this background reader works alongside the
-// regular cursor pipeline. If the device can't be opened (e.g. dev
-// machine on macOS, or missing file), `available` stays false and the
-// /api/touchpad endpoint reports it so the UI can show a hint.
-var INPUT_EVENT_SIZE = 24;            // sec(8)+usec(8)+type(2)+code(2)+value(4)
-var EV_SYN = 0, EV_KEY = 1, EV_ABS = 3;
-var SYN_REPORT = 0, BTN_TOUCH = 330, ABS_X = 0, ABS_Y = 1, ABS_PRESSURE = 24;
+// Open /dev/input/event1 once at startup. The kernel emits 24-byte
+// input_event structs (16-byte timeval + u16 type + u16 code + s32 value).
+// Three integer fields per event at fixed offsets — no text, no spawn,
+// no child process. On each EV_SYN/SYN_REPORT we flush the current
+// "x,y,touching" triple to every SSE subscriber as one short line. With
+// no subscribers we skip the write entirely, so idle cost is zero.
+var TOUCHPAD_DEV = '/dev/input/event1';
+var touchpadClients = new Set();
+var tpX = 0, tpY = 0, tpTouching = false;
 
-var touchpadState = {
-    available: false,
-    devName: null,
-    devPath: null,
-    touching: false,
-    x: 0, y: 0, pressure: 0,
-    touchdownX: 0, touchdownY: 0,
-    maxX: 1024, maxY: 800, maxPressure: 12288,
-    eventCount: 0,
-    lastEventAt: 0
-};
-
-function findTouchpadDevice() {
-    var root = '/sys/class/input';
-    var entries;
-    try { entries = fs.readdirSync(root); }
-    catch (e) { return null; }
-    for (var i = 0; i < entries.length; i++) {
-        var name = entries[i];
-        if (!/^event\d+$/.test(name)) continue;
-        var nameFile = root + '/' + name + '/device/name';
-        try {
-            var devName = fs.readFileSync(nameFile, 'utf8').trim();
-            if (devName.toLowerCase().indexOf('touchpad') !== -1) {
-                return { name: devName, path: '/dev/input/' + name };
-            }
-        } catch (e) { /* ignore */ }
-    }
-    return null;
-}
-
-function startTouchpadReader() {
-    var dev = findTouchpadDevice();
-    if (!dev) {
-        console.warn('[touchpad] no input device found; /api/touchpad will report unavailable');
-        return;
-    }
-    touchpadState.devName = dev.name;
-    touchpadState.devPath = dev.path;
-    touchpadState.available = true;
-
+function startTouchpadStream() {
     var stream;
-    try {
-        stream = fs.createReadStream(dev.path);
-    } catch (e) {
-        console.warn('[touchpad] failed to open ' + dev.path + ': ' + e.message);
-        touchpadState.available = false;
-        return;
-    }
-
-    var pendingTouchdown = false;
-    var leftover = Buffer.alloc(0);
+    try { stream = fs.createReadStream(TOUCHPAD_DEV); }
+    catch (e) { console.warn('[touchpad] open failed: ' + e.message); return; }
 
     stream.on('data', function(chunk) {
-        // Glue together what we have with the new chunk; the kernel
-        // hands us full-event-aligned reads almost always, but we
-        // play it safe and buffer any partial trailing record.
-        var buf = leftover.length === 0
-            ? chunk
-            : Buffer.concat([leftover, chunk]);
-
-        var off = 0;
-        while (off + INPUT_EVENT_SIZE <= buf.length) {
-            // Skip the 16-byte timeval; we only care about type/code/value.
-            var type  = buf.readUInt16LE(off + 16);
-            var code  = buf.readUInt16LE(off + 18);
-            var value = buf.readInt32LE (off + 20);
-            off += INPUT_EVENT_SIZE;
-
-            if (type === EV_KEY && code === BTN_TOUCH) {
-                if (value === 1 && !touchpadState.touching) {
-                    // BTN_TOUCH=1 arrives before the same-frame ABS_X/Y
-                    // values; defer capturing the touchdown position
-                    // until SYN_REPORT lands.
-                    pendingTouchdown = true;
-                }
-                touchpadState.touching = (value === 1);
-                if (value === 0) {
-                    touchpadState.pressure = 0;
-                }
-            } else if (type === EV_ABS) {
-                if (code === ABS_X)            touchpadState.x = value;
-                else if (code === ABS_Y)       touchpadState.y = value;
-                else if (code === ABS_PRESSURE) touchpadState.pressure = value;
-            } else if (type === EV_SYN && code === SYN_REPORT) {
-                if (pendingTouchdown) {
-                    touchpadState.touchdownX = touchpadState.x;
-                    touchpadState.touchdownY = touchpadState.y;
-                    pendingTouchdown = false;
-                }
-                touchpadState.eventCount++;
-                touchpadState.lastEventAt = Date.now();
+        for (var off = 0; off + 24 <= chunk.length; off += 24) {
+            var type = chunk.readUInt16LE(off + 16);
+            var code = chunk.readUInt16LE(off + 18);
+            var val  = chunk.readInt32LE (off + 20);
+            if (type === 3) {                            // EV_ABS
+                if      (code === 0) tpX = val;          // ABS_X
+                else if (code === 1) tpY = val;          // ABS_Y
+            } else if (type === 1 && code === 330) {     // EV_KEY / BTN_TOUCH
+                tpTouching = (val === 1);
+            } else if (type === 0 && code === 0 && touchpadClients.size) {
+                // EV_SYN / SYN_REPORT — frame complete, push to subscribers.
+                var line = 'data:' + tpX + ',' + tpY + ',' + (tpTouching ? 1 : 0) + '\n\n';
+                touchpadClients.forEach(function(res) { res.write(line); });
             }
         }
-        leftover = (off < buf.length) ? buf.slice(off) : Buffer.alloc(0);
     });
-
-    stream.on('error', function(e) {
-        console.warn('[touchpad] read error: ' + e.message);
-        touchpadState.available = false;
-    });
-
-    console.log('[touchpad] streaming from ' + dev.path + ' (' + dev.name + ')');
-}
-
-function getTouchpadInfo() {
-    return {
-        available: touchpadState.available,
-        device: touchpadState.devName,
-        touching: touchpadState.touching,
-        x: touchpadState.x,
-        y: touchpadState.y,
-        pressure: touchpadState.pressure,
-        touchdownX: touchpadState.touchdownX,
-        touchdownY: touchpadState.touchdownY,
-        maxX: touchpadState.maxX,
-        maxY: touchpadState.maxY,
-        maxPressure: touchpadState.maxPressure,
-        eventCount: touchpadState.eventCount,
-        lastEventAt: touchpadState.lastEventAt
-    };
+    stream.on('error', function(e) { console.warn('[touchpad] ' + e.message); });
+    console.log('[touchpad] streaming ABS_X/ABS_Y from ' + TOUCHPAD_DEV);
 }
 
 // Bandwidth tracking: previous byte counters + timestamp
@@ -225,17 +152,19 @@ function rxMatch(str, re) {
     return m ? m[1] : null;
 }
 
-function getModemInfo() {
+// Last-known modem snapshot. Refreshed asynchronously every second by
+// refreshModem(); HTTP /api/modem returns this object directly without
+// any shell-out, so modem info is never on the request path's hot loop.
+var modemCache = { available: false };
+
+async function refreshModem() {
     var result = { available: false };
 
-    // 1. ModemManager info (operator, tech, signal, model, bearer)
+    var mmRes = await tryExec('mmcli -m 0 -J 2>/dev/null', { encoding: 'utf8', timeout: 3000 });
+    if (!mmRes) { modemCache = result; return; }
     var mm;
-    try {
-        var mmRaw = execSync('mmcli -m 0 -J 2>/dev/null', { encoding: 'utf8', timeout: 3000 });
-        mm = JSON.parse(mmRaw);
-    } catch (e) {
-        return result;
-    }
+    try { mm = JSON.parse(mmRes.stdout); }
+    catch (e) { modemCache = result; return; }
 
     var modem = mm.modem || mm;
     result.available = true;
@@ -245,12 +174,10 @@ function getModemInfo() {
     result.operatorCode = deepGet(modem, '3gpp.operator-code') || null;
     result.state = deepGet(modem, 'generic.state') || null;
 
-    // Access technologies
     var techs = deepGet(modem, 'generic.access-technologies') || [];
     if (typeof techs === 'string') techs = techs.split(',').map(function(s) { return s.trim(); });
     result.accessTech = techs;
 
-    // Signal quality
     var sq = deepGet(modem, 'generic.signal-quality');
     if (sq && typeof sq === 'object') {
         result.signalQuality = parseInt(sq.value, 10) || null;
@@ -260,7 +187,6 @@ function getModemInfo() {
         result.signalQuality = null;
     }
 
-    // IP + interface from bearer
     result.ip4 = null;
     result.ip6 = null;
     result.iface = null;
@@ -269,54 +195,58 @@ function getModemInfo() {
         var bPath = bearers[bearers.length - 1];
         var bNum = bPath.match(/(\d+)$/);
         if (bNum) {
-            try {
-                var bRaw = execSync('mmcli -b ' + bNum[1] + ' -J 2>/dev/null', { encoding: 'utf8', timeout: 2000 });
-                var bearer = JSON.parse(bRaw);
-                var b = bearer.bearer || bearer;
-                result.ip4 = deepGet(b, 'ipv4-config.address') || null;
-                result.ip6 = deepGet(b, 'ipv6-config.address') || null;
-                result.iface = deepGet(b, 'status.interface') || null;
-            } catch (e) {}
+            var bRes = await tryExec('mmcli -b ' + bNum[1] + ' -J 2>/dev/null', { encoding: 'utf8', timeout: 2000 });
+            if (bRes) {
+                try {
+                    var bearer = JSON.parse(bRes.stdout);
+                    var b = bearer.bearer || bearer;
+                    result.ip4 = deepGet(b, 'ipv4-config.address') || null;
+                    result.ip6 = deepGet(b, 'ipv6-config.address') || null;
+                    result.iface = deepGet(b, 'status.interface') || null;
+                } catch (e) {}
+            }
         }
     }
 
-    // Bandwidth from sysfs byte counters
     var bw = getBandwidth(result.iface);
     result.dlMbps = bw.dlMbps;
     result.ulMbps = bw.ulMbps;
 
-    // 2. QMI serving system (cell ID, TAC, MCC/MNC)
-    try {
-        var ss = execSync('qmicli -d ' + QMI_DEV + ' --device-open-proxy --nas-get-serving-system 2>/dev/null',
-            { encoding: 'utf8', timeout: 2000 });
+    var ssRes = await tryExec(
+        'qmicli -d ' + QMI_DEV + ' --device-open-proxy --nas-get-serving-system 2>/dev/null',
+        { encoding: 'utf8', timeout: 2000 });
+    if (ssRes) {
+        var ss = ssRes.stdout;
         result.cellId = rxMatch(ss, /3GPP cell ID:\s*'(\d+)'/);
         result.tac = rxMatch(ss, /LTE tracking area code:\s*'(\d+)'/);
         result.mcc = rxMatch(ss, /MCC:\s*'(\d+)'/);
         result.mnc = rxMatch(ss, /MNC:\s*'(\d+)'/);
-    } catch (e) {}
+    }
 
-    // 3. QMI cell location info (EARFCN, PCI, band)
-    try {
-        var cl = execSync('qmicli -d ' + QMI_DEV + ' --device-open-proxy --nas-get-cell-location-info 2>/dev/null',
-            { encoding: 'utf8', timeout: 2000 });
+    var clRes = await tryExec(
+        'qmicli -d ' + QMI_DEV + ' --device-open-proxy --nas-get-cell-location-info 2>/dev/null',
+        { encoding: 'utf8', timeout: 2000 });
+    if (clRes) {
+        var cl = clRes.stdout;
         var earfcnMatch = cl.match(/EUTRA Absolute RF Channel Number:\s*'(\d+)'\s*\(([^)]+)\)/);
         if (earfcnMatch) {
             result.earfcn = earfcnMatch[1];
             result.band = earfcnMatch[2];
         }
         result.pci = rxMatch(cl, /Serving Cell ID:\s*'(\d+)'/);
-    } catch (e) {}
+    }
 
-    // 4. QMI signal strength (RSRP, RSRQ, SINR)
-    try {
-        var sig = execSync('qmicli -d ' + QMI_DEV + ' --device-open-proxy --nas-get-signal-strength 2>/dev/null',
-            { encoding: 'utf8', timeout: 2000 });
+    var sigRes = await tryExec(
+        'qmicli -d ' + QMI_DEV + ' --device-open-proxy --nas-get-signal-strength 2>/dev/null',
+        { encoding: 'utf8', timeout: 2000 });
+    if (sigRes) {
+        var sig = sigRes.stdout;
         result.rsrp = rxMatch(sig, /RSRP:[\s\S]*?Network '[^']*':\s*'([^']+)'/);
         result.rsrq = rxMatch(sig, /RSRQ:[\s\S]*?Network '[^']*':\s*'([^']+)'/);
         result.sinr = rxMatch(sig, /SINR[^:]*:\s*'([^']+)'/);
-    } catch (e) {}
+    }
 
-    return result;
+    modemCache = result;
 }
 
 function readInt(filePath) {
@@ -511,11 +441,13 @@ function doUpdate() {
     return result;
 }
 
-function getRoutingInfo() {
+var routingCache = [];
+
+async function refreshRouting() {
     var routes = [];
-    try {
-        var out4 = execSync('ip -4 route show default 2>/dev/null', { encoding: 'utf8', timeout: 2000 });
-        var lines4 = out4.trim().split('\n');
+    var r4 = await tryExec('ip -4 route show default 2>/dev/null', { encoding: 'utf8', timeout: 2000 });
+    if (r4) {
+        var lines4 = r4.stdout.trim().split('\n');
         for (var i = 0; i < lines4.length; i++) {
             if (!lines4[i]) continue;
             var m4 = lines4[i].match(/default via (\S+) dev (\S+).*?metric (\d+)/);
@@ -525,10 +457,10 @@ function getRoutingInfo() {
                 if (m4b) routes.push({ family: 'IPv4', gateway: m4b[1], dev: m4b[2], metric: null });
             }
         }
-    } catch (e) {}
-    try {
-        var out6 = execSync('ip -6 route show default 2>/dev/null', { encoding: 'utf8', timeout: 2000 });
-        var lines6 = out6.trim().split('\n');
+    }
+    var r6 = await tryExec('ip -6 route show default 2>/dev/null', { encoding: 'utf8', timeout: 2000 });
+    if (r6) {
+        var lines6 = r6.stdout.trim().split('\n');
         for (var j = 0; j < lines6.length; j++) {
             if (!lines6[j]) continue;
             var m6 = lines6[j].match(/default via (\S+) dev (\S+).*?metric (\d+)/);
@@ -538,8 +470,8 @@ function getRoutingInfo() {
                 if (m6b) routes.push({ family: 'IPv6', gateway: m6b[1], dev: m6b[2], metric: null });
             }
         }
-    } catch (e) {}
-    return routes;
+    }
+    routingCache = routes;
 }
 
 // `flipusb0` is the USB-gadget Ethernet device created on builds
@@ -550,122 +482,83 @@ function getRoutingInfo() {
 // pass below picks them up.
 var ETH_IFACES = ['end0', 'end1', 'flipusb0'];
 
-function getEthernetInfo() {
+var ethernetCache = [];
+
+async function refreshEthernet() {
     var ifaces = [];
     for (var i = 0; i < ETH_IFACES.length; i++) {
         var name = ETH_IFACES[i];
-        // Skip interfaces the kernel doesn't have. flipusb0 only
-        // exists on builds where the USB-gadget driver creates it;
-        // we don't want a phantom "unavailable" tab cluttering the
-        // page on builds without it.
         if (!fs.existsSync('/sys/class/net/' + name)) continue;
 
         var info = { name: name, state: null, ip4: [], ip6: [], gateway4: null, gateway6: null, dns: [] };
-        try {
-            var out = execSync('nmcli -t device show ' + name + ' 2>/dev/null', { encoding: 'utf8', timeout: 3000 });
-            var lines = out.split('\n');
+        var nmRes = await tryExec('nmcli -t device show ' + name + ' 2>/dev/null', { encoding: 'utf8', timeout: 3000 });
+        if (nmRes) {
+            var lines = nmRes.stdout.split('\n');
             for (var j = 0; j < lines.length; j++) {
                 var parts = lines[j].split(':');
                 var key = parts[0];
                 var val = parts.slice(1).join(':');
-                if (key === 'GENERAL.STATE') {
-                    info.state = val;
-                } else if (key.match(/^IP4\.ADDRESS/)) {
-                    info.ip4.push(val);
-                } else if (key.match(/^IP6\.ADDRESS/)) {
-                    info.ip6.push(val);
-                } else if (key === 'IP4.GATEWAY') {
-                    info.gateway4 = val || null;
-                } else if (key === 'IP6.GATEWAY') {
-                    info.gateway6 = val || null;
-                } else if (key.match(/^IP4\.DNS/)) {
-                    info.dns.push(val);
-                }
+                if (key === 'GENERAL.STATE') info.state = val;
+                else if (key.match(/^IP4\.ADDRESS/)) info.ip4.push(val);
+                else if (key.match(/^IP6\.ADDRESS/)) info.ip6.push(val);
+                else if (key === 'IP4.GATEWAY') info.gateway4 = val || null;
+                else if (key === 'IP6.GATEWAY') info.gateway6 = val || null;
+                else if (key.match(/^IP4\.DNS/)) info.dns.push(val);
             }
-        } catch (e) {
+        } else {
             info.state = 'unavailable';
         }
-        // Kernel-level carrier flips the moment the cable moves; nmcli
-        // can lag by a second or two. Force the state to "disconnected"
-        // whenever the kernel reports no carrier so the UI reflects
-        // physical disconnection immediately.
         var carrier = readSysInt('/sys/class/net/' + name + '/carrier');
-        if (carrier === 0) {
-            info.state = 'disconnected (no carrier)';
-        }
-        // Link speed via ethtool — skip the call entirely when the
-        // cable is unplugged, both for speed and because ethtool
-        // reports stale/unknown values while auto-negotiation tears
-        // down.
+        if (carrier === 0) info.state = 'disconnected (no carrier)';
+
         info.speed = null;
         if (carrier !== 0) {
-            try {
-                var ethraw = execSync('ethtool ' + name + ' 2>/dev/null', { encoding: 'utf8', timeout: 1500 });
-                var speedMatch = ethraw.match(/^\s*Speed:\s*([^\s]+)/m);
+            var ethRes = await tryExec('ethtool ' + name + ' 2>/dev/null', { encoding: 'utf8', timeout: 1500 });
+            if (ethRes) {
+                var speedMatch = ethRes.stdout.match(/^\s*Speed:\s*([^\s]+)/m);
                 if (speedMatch && speedMatch[1] !== 'Unknown!' && speedMatch[1] !== 'Unknown') {
                     info.speed = speedMatch[1];
                 }
-            } catch (e) { /* ignore */ }
+            }
         }
-        // Cumulative byte counters from sysfs — same source `ip -s link`
-        // reports. Missing counters (very rare) land as null so the
-        // client can show em-dash or blank.
         info.rxBytes = readSysInt('/sys/class/net/' + name + '/statistics/rx_bytes');
         info.txBytes = readSysInt('/sys/class/net/' + name + '/statistics/tx_bytes');
 
-        // Fallback for unmanaged interfaces (flipusb0 and friends):
-        // when nmcli yielded no addresses but the kernel DOES have
-        // them bound (e.g. assigned by a startup script), pull them
-        // straight from `ip -j addr show <iface>`. We only run this
-        // when nmcli came back empty AND the kernel sees the iface
-        // up — saves a fork on the common managed case.
-        // The iproute2 JSON output uses {local, prefixlen} pairs;
-        // we glue them back to the "addr/cidr" string nmcli would
-        // have produced so downstream consumers (the Desktop card,
-        // the verbose modal) don't have to know the difference.
         if (info.ip4.length === 0 && carrier !== 0) {
-            try {
-                var ipraw = execSync('ip -j addr show ' + name + ' 2>/dev/null',
-                    { encoding: 'utf8', timeout: 1500 });
-                var ipdata = JSON.parse(ipraw);
-                if (Array.isArray(ipdata) && ipdata[0]
-                        && Array.isArray(ipdata[0].addr_info)) {
-                    var addrs = ipdata[0].addr_info;
-                    for (var ki = 0; ki < addrs.length; ki++) {
-                        var a = addrs[ki];
-                        if (!a || !a.local) continue;
-                        var cidr = a.local + '/' + a.prefixlen;
-                        if (a.family === 'inet')       info.ip4.push(cidr);
-                        else if (a.family === 'inet6') info.ip6.push(cidr);
+            var ipRes = await tryExec('ip -j addr show ' + name + ' 2>/dev/null',
+                { encoding: 'utf8', timeout: 1500 });
+            if (ipRes) {
+                try {
+                    var ipdata = JSON.parse(ipRes.stdout);
+                    if (Array.isArray(ipdata) && ipdata[0]
+                            && Array.isArray(ipdata[0].addr_info)) {
+                        var addrs = ipdata[0].addr_info;
+                        for (var ki = 0; ki < addrs.length; ki++) {
+                            var a = addrs[ki];
+                            if (!a || !a.local) continue;
+                            var cidr = a.local + '/' + a.prefixlen;
+                            if (a.family === 'inet')       info.ip4.push(cidr);
+                            else if (a.family === 'inet6') info.ip6.push(cidr);
+                        }
+                        if (info.ip4.length > 0
+                            && (!info.state || info.state.indexOf('connected') === -1)) {
+                            info.state = 'connected';
+                        }
                     }
-                    // nmcli might have reported "unmanaged" / empty
-                    // here. If we just found addresses, the link is
-                    // effectively connected — relabel so isConnected()
-                    // on the client and the modal status both read
-                    // "connected" rather than the unmanaged state.
-                    if (info.ip4.length > 0
-                        && (!info.state || info.state.indexOf('connected') === -1)) {
-                        info.state = 'connected';
-                    }
-                }
-            } catch (e) { /* ip missing or no JSON support — skip */ }
+                } catch (e) {}
+            }
         }
 
-        // IPv4 method on the currently-active connection for this
-        // device (auto | manual | shared | link-local | disabled).
-        // Only bothered when carrier is up — saves two nmcli calls
-        // when the cable is unplugged.
         info.ipv4Method = null;
         if (carrier !== 0) {
-            try {
-                var actRaw = execSync('nmcli -t -f NAME,DEVICE connection show --active 2>/dev/null', { encoding: 'utf8', timeout: 1500 });
-                var actLines = actRaw.split('\n');
+            var actRes = await tryExec('nmcli -t -f NAME,DEVICE connection show --active 2>/dev/null',
+                { encoding: 'utf8', timeout: 1500 });
+            if (actRes) {
+                var actLines = actRes.stdout.split('\n');
                 var connName = null;
                 for (var ai = 0; ai < actLines.length; ai++) {
                     var ln = actLines[ai];
                     if (!ln) continue;
-                    // nmcli -t escapes colons in values as "\:"; split on
-                    // the last unescaped colon.
                     var idx = -1;
                     for (var p = ln.length - 1; p >= 0; p--) {
                         if (ln.charAt(p) === ':' && (p === 0 || ln.charAt(p - 1) !== '\\')) { idx = p; break; }
@@ -678,26 +571,28 @@ function getEthernetInfo() {
                     }
                 }
                 if (connName) {
-                    var methodRaw = execSync(
+                    var methodRes = await tryExec(
                         'nmcli -t -f ipv4.method connection show "' + connName.replace(/"/g, '\\"') + '" 2>/dev/null',
-                        { encoding: 'utf8', timeout: 1500 }
-                    );
-                    var mm = methodRaw.match(/ipv4\.method:(.+)/);
-                    if (mm) info.ipv4Method = mm[1].trim();
+                        { encoding: 'utf8', timeout: 1500 });
+                    if (methodRes) {
+                        var mm = methodRes.stdout.match(/ipv4\.method:(.+)/);
+                        if (mm) info.ipv4Method = mm[1].trim();
+                    }
                 }
-            } catch (e) { /* ignore */ }
+            }
         }
         ifaces.push(info);
     }
-    return ifaces;
+    ethernetCache = ifaces;
 }
 
-function getDiskInfo() {
+var diskCache = { device: '/dev/mmcblk0p2', mounted: false };
+
+async function refreshDisk() {
     var result = { device: '/dev/mmcblk0p2', mounted: false };
-    try {
-        // df outputs: Filesystem 1K-blocks Used Available Use% Mounted-on
-        var out = execSync('df -k /dev/mmcblk0p2 2>/dev/null', { encoding: 'utf8' });
-        var lines = out.trim().split('\n');
+    var r = await tryExec('df -k /dev/mmcblk0p2 2>/dev/null', { encoding: 'utf8' });
+    if (r) {
+        var lines = r.stdout.trim().split('\n');
         if (lines.length >= 2) {
             var parts = lines[1].trim().split(/\s+/);
             var totalKB = parseInt(parts[1], 10);
@@ -706,10 +601,8 @@ function getDiskInfo() {
             result.totalGB = +(totalKB / 1048576).toFixed(1);
             result.usedGB = +(usedKB / 1048576).toFixed(1);
         }
-    } catch (e) {
-        // device not mounted or doesn't exist
     }
-    return result;
+    diskCache = result;
 }
 
 var SOUND_DIR = '/flipperone-testing/sound/audio_files';
@@ -888,147 +781,138 @@ function serveStatic(req, res) {
 // so it doesn't flap during rescans. If an 802-11-wireless connection is
 // activated, we're connected; then fetch signal via `iw dev link` which
 // reads kernel-side link state (also not tied to scan cache).
-function getWifiInfo() {
-    try {
-        var active = execSync('nmcli -t -f NAME,TYPE,STATE c show --active',
-            { encoding: 'utf8', timeout: 2000 });
-        var wifiName = null;
-        var lines = active.split('\n');
-        for (var i = 0; i < lines.length; i++) {
-            var line = lines[i];
-            if (!line) continue;
-            var parts = line
-                .replace(/\\:/g, '\x01')
-                .split(':')
-                .map(function(p) { return p.replace(/\x01/g, ':'); });
-            if (parts[1] === '802-11-wireless' && parts[2] === 'activated') {
-                wifiName = parts[0] || '';
+var wifiCache = { connected: false, quality: 0, ssid: '', iface: '', ip4: [], ip6: [] };
+
+async function refreshWifi() {
+    var result = { connected: false, quality: 0, ssid: '', iface: '', ip4: [], ip6: [] };
+    var actRes = await tryExec('nmcli -t -f NAME,TYPE,STATE c show --active',
+        { encoding: 'utf8', timeout: 2000 });
+    if (!actRes) { wifiCache = result; return; }
+
+    var wifiName = null;
+    var lines = actRes.stdout.split('\n');
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        if (!line) continue;
+        var parts = line
+            .replace(/\\:/g, '\x01')
+            .split(':')
+            .map(function(p) { return p.replace(/\x01/g, ':'); });
+        if (parts[1] === '802-11-wireless' && parts[2] === 'activated') {
+            wifiName = parts[0] || '';
+            break;
+        }
+    }
+    if (!wifiName) { wifiCache = result; return; }
+
+    var ssid = wifiName;
+    var quality = 0;
+    var iface = null;
+    var ip4 = [];
+    var ip6 = [];
+
+    var devRes = await tryExec(
+        'nmcli -t -f GENERAL.DEVICE,GENERAL.TYPE,GENERAL.CONNECTION d show',
+        { encoding: 'utf8', timeout: 2000 });
+    if (devRes) {
+        var blocks = devRes.stdout.split(/\n(?=GENERAL\.DEVICE:)/);
+        var escName = wifiName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        for (var b = 0; b < blocks.length; b++) {
+            if (/GENERAL\.TYPE:wifi/.test(blocks[b]) &&
+                new RegExp('GENERAL\\.CONNECTION:' + escName).test(blocks[b])) {
+                var m = blocks[b].match(/GENERAL\.DEVICE:([^\n]+)/);
+                if (m) iface = m[1];
                 break;
             }
         }
-        if (!wifiName) {
-            return { connected: false, quality: 0, ssid: '', iface: '', ip4: [], ip6: [] };
-        }
-
-        // Connected. Find the device bound to this connection, then query
-        // kernel-side link signal via `iw`.
-        var ssid = wifiName;
-        var quality = 0;
-        var iface = null;
-        var ip4 = [];
-        var ip6 = [];
-        try {
-            var dev = execSync(
-                'nmcli -t -f GENERAL.DEVICE,GENERAL.TYPE,GENERAL.CONNECTION d show',
-                { encoding: 'utf8', timeout: 2000 });
-            var blocks = dev.split(/\n(?=GENERAL\.DEVICE:)/);
-            var escName = wifiName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            for (var b = 0; b < blocks.length; b++) {
-                if (/GENERAL\.TYPE:wifi/.test(blocks[b]) &&
-                    new RegExp('GENERAL\\.CONNECTION:' + escName).test(blocks[b])) {
-                    var m = blocks[b].match(/GENERAL\.DEVICE:([^\n]+)/);
-                    if (m) iface = m[1];
-                    break;
-                }
-            }
-            if (iface) {
-                var link = execSync('iw dev ' + iface + ' link',
-                    { encoding: 'utf8', timeout: 1500 });
+        if (iface) {
+            var linkRes = await tryExec('iw dev ' + iface + ' link',
+                { encoding: 'utf8', timeout: 1500 });
+            if (linkRes) {
+                var link = linkRes.stdout;
                 var ssidM = link.match(/SSID:\s*(.+)/);
                 if (ssidM) ssid = ssidM[1].trim();
                 var sigM = link.match(/signal:\s*(-?\d+)\s*dBm/);
                 if (sigM) {
-                    // dBm → 0-100 quality. -50 ≈ 100, -100 ≈ 0.
                     var dbm = parseInt(sigM[1], 10);
                     quality = Math.max(0, Math.min(100, 2 * (dbm + 100)));
                 }
             }
-        } catch (e) { /* iw missing; fall back */ }
-
-        // IP addresses for the bound interface — same source the
-        // ethernet endpoint uses (`nmcli -t device show <iface>`),
-        // so the desktop's renderer can reuse `drawEthCard` without
-        // any schema fork. Failure leaves ip4/ip6 empty arrays; the
-        // client treats that as "no addresses yet" and skips the
-        // card on render.
-        if (iface) {
-            try {
-                var ipout = execSync('nmcli -t device show ' + iface + ' 2>/dev/null',
-                    { encoding: 'utf8', timeout: 2000 });
-                var ipLines = ipout.split('\n');
-                for (var li = 0; li < ipLines.length; li++) {
-                    var lp = ipLines[li].split(':');
-                    var key = lp[0];
-                    var val = lp.slice(1).join(':');
-                    if (key.match(/^IP4\.ADDRESS/))      ip4.push(val);
-                    else if (key.match(/^IP6\.ADDRESS/)) ip6.push(val);
-                }
-            } catch (e) { /* keep arrays empty */ }
         }
-
-        // Fallback: grab signal from the scan list if iw didn't work.
-        if (quality === 0) {
-            try {
-                var scan = execSync('nmcli -t -f IN-USE,SSID,SIGNAL dev wifi',
-                    { encoding: 'utf8', timeout: 2000 });
-                var sl = scan.split('\n');
-                for (var j = 0; j < sl.length; j++) {
-                    if (!sl[j] || sl[j][0] !== '*') continue;
-                    var sp = sl[j].replace(/\\:/g, '\x01').split(':').map(
-                        function(p) { return p.replace(/\x01/g, ':'); });
-                    var s = parseInt(sp[2], 10);
-                    if (!isNaN(s)) quality = Math.max(0, Math.min(100, s));
-                    if (sp[1]) ssid = sp[1];
-                    break;
-                }
-            } catch (e) { /* keep defaults */ }
-        }
-
-        return {
-            connected: true,
-            quality: quality,
-            ssid: ssid,
-            iface: iface || '',
-            ip4: ip4,
-            ip6: ip6
-        };
-    } catch (e) { /* nmcli missing or failed */ }
-    return { connected: false, quality: 0, ssid: '', iface: '', ip4: [], ip6: [] };
-}
-
-function getAirplaneMode() {
-    try {
-        var raw = execSync('nmcli -t -f WIFI,WWAN radio', { encoding: 'utf8', timeout: 2000 });
-        var line = raw.split('\n').find(function(l) { return l; }) || '';
-        var parts = line.split(':');
-        var wifi = parts[0] || '';
-        var wwan = parts[1] || '';
-        // Airplane mode is "on" when every managed radio is disabled.
-        return { enabled: wifi === 'disabled' && wwan === 'disabled' };
-    } catch (e) { /* nmcli missing */ }
-    return { enabled: false };
-}
-
-function setAirplaneMode(enabled) {
-    try {
-        execSync('nmcli radio all ' + (enabled ? 'off' : 'on'), { encoding: 'utf8', timeout: 3000 });
-        return { ok: true };
-    } catch (e) {
-        return { ok: false, error: String(e && e.message || e) };
     }
+
+    if (iface) {
+        var ipRes = await tryExec('nmcli -t device show ' + iface + ' 2>/dev/null',
+            { encoding: 'utf8', timeout: 2000 });
+        if (ipRes) {
+            var ipLines = ipRes.stdout.split('\n');
+            for (var li = 0; li < ipLines.length; li++) {
+                var lp = ipLines[li].split(':');
+                var key = lp[0];
+                var val = lp.slice(1).join(':');
+                if (key.match(/^IP4\.ADDRESS/))      ip4.push(val);
+                else if (key.match(/^IP6\.ADDRESS/)) ip6.push(val);
+            }
+        }
+    }
+
+    if (quality === 0) {
+        var scanRes = await tryExec('nmcli -t -f IN-USE,SSID,SIGNAL dev wifi',
+            { encoding: 'utf8', timeout: 2000 });
+        if (scanRes) {
+            var sl = scanRes.stdout.split('\n');
+            for (var j = 0; j < sl.length; j++) {
+                if (!sl[j] || sl[j][0] !== '*') continue;
+                var sp = sl[j].replace(/\\:/g, '\x01').split(':').map(
+                    function(p) { return p.replace(/\x01/g, ':'); });
+                var s = parseInt(sp[2], 10);
+                if (!isNaN(s)) quality = Math.max(0, Math.min(100, s));
+                if (sp[1]) ssid = sp[1];
+                break;
+            }
+        }
+    }
+
+    wifiCache = {
+        connected: true,
+        quality: quality,
+        ssid: ssid,
+        iface: iface || '',
+        ip4: ip4,
+        ip6: ip6
+    };
+}
+
+var airplaneCache = { enabled: false };
+
+async function refreshAirplane() {
+    var r = await tryExec('nmcli -t -f WIFI,WWAN radio', { encoding: 'utf8', timeout: 2000 });
+    if (!r) { airplaneCache = { enabled: false }; return; }
+    var line = r.stdout.split('\n').find(function(l) { return l; }) || '';
+    var parts = line.split(':');
+    var wifi = parts[0] || '';
+    var wwan = parts[1] || '';
+    airplaneCache = { enabled: wifi === 'disabled' && wwan === 'disabled' };
+}
+
+function setAirplaneMode(enabled, cb) {
+    exec('nmcli radio all ' + (enabled ? 'off' : 'on'),
+        { encoding: 'utf8', timeout: 3000 },
+        function(err) {
+            if (err) cb({ ok: false, error: String(err.message || err) });
+            else cb({ ok: true });
+        });
 }
 
 var server = http.createServer(function(req, res) {
     if (req.url === '/api/wifi') {
-        var wifi = getWifiInfo();
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(wifi));
+        res.end(JSON.stringify(wifiCache));
         return;
     }
     if (req.url === '/api/airplane' && req.method === 'GET') {
-        var a = getAirplaneMode();
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(a));
+        res.end(JSON.stringify(airplaneCache));
         return;
     }
     if (req.url === '/api/airplane' && req.method === 'POST') {
@@ -1038,9 +922,13 @@ var server = http.createServer(function(req, res) {
                 res.end(JSON.stringify({ ok: false, error: 'Invalid request' }));
                 return;
             }
-            var result = setAirplaneMode(!!(data && data.enabled));
-            res.writeHead(result.ok ? 200 : 500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify(Object.assign({ enabled: !!(data && data.enabled) }, result)));
+            setAirplaneMode(!!(data && data.enabled), function(result) {
+                // Optimistically refresh the cache so the next GET reflects
+                // the new state without waiting for the 3 s background poll.
+                refreshAirplane();
+                res.writeHead(result.ok ? 200 : 500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(Object.assign({ enabled: !!(data && data.enabled) }, result)));
+            });
         });
         return;
     }
@@ -1068,15 +956,25 @@ var server = http.createServer(function(req, res) {
         res.end(JSON.stringify(pu || { watts: null }));
         return;
     }
-    if (req.url === '/api/touchpad') {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(getTouchpadInfo()));
+    if (req.url === '/api/touchpad/xy') {
+        // SSE messages are short (~15 B). With Nagle on the kernel
+        // batches them up to ~40 ms — fatal for an interactive feed.
+        req.socket.setNoDelay(true);
+        res.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no'
+        });
+        res.flushHeaders();
+        res.write('\n');
+        touchpadClients.add(res);
+        req.on('close', function() { touchpadClients.delete(res); });
         return;
     }
     if (req.url === '/api/modem') {
-        var modem = getModemInfo();
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(modem));
+        res.end(JSON.stringify(modemCache));
         return;
     }
     if (req.url === '/api/update/check') {
@@ -1105,21 +1003,18 @@ var server = http.createServer(function(req, res) {
         return;
     }
     if (req.url === '/api/routing') {
-        var routing = getRoutingInfo();
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(routing));
+        res.end(JSON.stringify(routingCache));
         return;
     }
     if (req.url === '/api/ethernet') {
-        var eth = getEthernetInfo();
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(eth));
+        res.end(JSON.stringify(ethernetCache));
         return;
     }
     if (req.url === '/api/disk') {
-        var info = getDiskInfo();
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(info));
+        res.end(JSON.stringify(diskCache));
         return;
     }
     if (req.url === '/api/sound/files') {
@@ -1227,9 +1122,19 @@ var server = http.createServer(function(req, res) {
 
 server.listen(PORT, BIND, function() {
     console.log('flipctl server listening on http://' + BIND + ':' + PORT);
-    // Touchpad reader is Linux-only and silently no-ops on macOS dev hosts.
     if (process.platform === 'linux') {
-        try { startTouchpadReader(); }
+        try { startTouchpadStream(); }
         catch (e) { console.warn('[touchpad] startup failed: ' + e.message); }
+
+        // Background refreshers keep per-endpoint snapshots fresh without
+        // ever blocking the main loop. Periods match the previous client
+        // poll rates so perceived freshness is unchanged. HTTP handlers
+        // just read the cached objects.
+        startRefreshLoop('modem',    refreshModem,    1000);
+        startRefreshLoop('wifi',     refreshWifi,     2000);
+        startRefreshLoop('ethernet', refreshEthernet, 2000);
+        startRefreshLoop('routing',  refreshRouting,  5000);
+        startRefreshLoop('airplane', refreshAirplane, 3000);
+        startRefreshLoop('disk',     refreshDisk,    30000);
     }
 });

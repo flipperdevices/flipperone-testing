@@ -195,6 +195,7 @@ var MenuScene = (function() {
             'Boot menu - UI demo',
             'Input',
             'Touchpad',
+            'Touchpad ABS',
             'Sound',
             'Figma live preview',
             'GPIO',
@@ -203,6 +204,7 @@ var MenuScene = (function() {
             'Screen': function() { return new ScreenTestScene(); },
             'Boot menu - UI demo': function() { return new UIDemoScene(sm); },
             'Touchpad': function() { return new TouchpadTestScene(); },
+            'Touchpad ABS': function() { return new TouchpadAbsScene(); },
             'Sound': function() { return new SoundMenuScene(sm); },
             'Figma live preview': function() { return new FigmaLivePreviewScene(sm); },
             'Switch to fake-flipctl': function() {

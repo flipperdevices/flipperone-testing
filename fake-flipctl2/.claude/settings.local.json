@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c ' *)",
+      "Bash(node ui-sandbox.js)",
+      "Bash(curl -sS -o /dev/null -w \"html=%{http_code} \" http://127.0.0.1:8900/)",
+      "Bash(curl -sS -o /dev/null -w \"js=%{http_code}\\\\n\" http://127.0.0.1:8900/js/sandbox/main.js)",
+      "Bash(curl -sS -o /dev/null -w \"comp=%{http_code} \" http://127.0.0.1:8900/js/components/MenuSelectorFrame.js)",
+      "Bash(curl -sS -o /dev/null -w \"main=%{http_code}\\\\n\" http://127.0.0.1:8900/js/sandbox/main.js)"
+    ]
+  }
+}
