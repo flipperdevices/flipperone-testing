@@ -725,7 +725,122 @@ var Icons = (function() {
         ]
     };
 
+    // keyboard_shift icon (auto-generated from PNG)
+    var keyboard_shift = {
+        w: 11,
+        h: 11,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xc0,  // row 0
+            0xff,            0xff,            0xff,            0xfc,            0x0f,            0xff,            0xff,            0xff,            0xc0,  // row 1
+            0xff,            0xff,            0xff,            0x00,            0x00,            0x3f,            0xff,            0xff,            0xc0,  // row 2
+            0xff,            0xff,            0xc0,            0x00,            0x00,            0x00,            0xff,            0xff,            0xc0,  // row 3
+            0xff,            0xf0,            0x00,            0x00,            0x00,            0x00,            0x03,            0xff,            0xc0,  // row 4
+            0xff,            0xff,            0xff,            0x00,            0x00,            0x3f,            0xff,            0xff,            0xc0,  // row 5
+            0xff,            0xff,            0xff,            0x00,            0x00,            0x3f,            0xff,            0xff,            0xc0,  // row 6
+            0xff,            0xff,            0xff,            0x00,            0x00,            0x3f,            0xff,            0xff,            0xc0,  // row 7
+            0xff,            0xff,            0xff,            0x00,            0x00,            0x3f,            0xff,            0xff,            0xc0,  // row 8
+            0xff,            0xff,            0xff,            0x00,            0x00,            0x3f,            0xff,            0xff,            0xc0,  // row 9
+            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xc0   // row 10
+
+        ]
+    };
+
+    // keyboard_shift_unpressed icon (auto-generated from PNG)
+    var keyboard_shift_unpressed = {
+        w: 9,
+        h: 9,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0xff,            0xff,            0xff,            0x03,            0xff,            0xff,            0xfc,  // row 0
+            0x00,            0x00,            0xff,            0xff,            0xc0,            0xfc,            0x0f,  // row 1
+            0xff,            0xfc,            0x00,            0x00,            0xff,            0xf0,            0x3f,  // row 2
+            0xff,            0xf0,            0x3f,            0xfc,            0x00,            0x00,            0xfc,  // row 3
+            0x0f,            0xff,            0xff,            0xff,            0xc0,            0xfc,            0x00,  // row 4
+            0x00,            0x03,            0xf0,            0x3f,            0xff,            0xf0,            0x3f,  // row 5
+            0x00,            0x00,            0x00,            0xff,            0xf0,            0x3f,            0xff,  // row 6
+            0xf0,            0x3f,            0xfc,            0x00,            0x00,            0xff,            0xf0,  // row 7
+            0x3f,            0xff,            0xf0,            0x3f,            0xfc,            0x00,            0x00,  // row 8
+            0xff,            0xf0,            0x3f,            0xff,            0xf0,            0x3f,            0xfc,  // row 9
+            0x00,            0x00,            0xff,            0xf0,            0x00,            0x00,            0x00,  // row 10
+            0x3f,            0xfc,            0x00,            0x00 
+        ]
+    };
+
+    // keyboard_shift_pressed icon (auto-generated from PNG)
+    var keyboard_shift_pressed = {
+        w: 9,
+        h: 9,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0xff,            0xff,            0xff,            0x03,            0xff,            0xff,            0xfc,  // row 0
+            0x00,            0x00,            0xff,            0xff,            0xc0,            0x00,            0x0f,  // row 1
+            0xff,            0xfc,            0x00,            0x00,            0xff,            0xf0,            0x00,  // row 2
+            0x00,            0x00,            0x3f,            0xfc,            0x00,            0x00,            0xfc,  // row 3
+            0x00,            0x00,            0x00,            0x00,            0x00,            0xfc,            0x00,  // row 4
+            0x00,            0x03,            0xf0,            0x00,            0x00,            0x00,            0x3f,  // row 5
+            0x00,            0x00,            0x00,            0xff,            0xf0,            0x00,            0x00,  // row 6
+            0x00,            0x3f,            0xfc,            0x00,            0x00,            0xff,            0xf0,  // row 7
+            0x00,            0x00,            0x00,            0x3f,            0xfc,            0x00,            0x00,  // row 8
+            0xff,            0xf0,            0x00,            0x00,            0x00,            0x3f,            0xfc,  // row 9
+            0x00,            0x00,            0xff,            0xf0,            0x00,            0x00,            0x00,  // row 10
+            0x3f,            0xfc,            0x00,            0x00 
+        ]
+    };
+
+    // keyboard_caps_lock_pressed icon (auto-generated from PNG)
+    var keyboard_caps_lock_pressed = {
+        w: 9,
+        h: 9,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0xff,            0xff,            0xff,            0x03,            0xff,            0xff,            0xfc,  // row 0
+            0x00,            0x00,            0xff,            0xff,            0xc0,            0x00,            0x0f,  // row 1
+            0xff,            0xfc,            0x00,            0x00,            0xff,            0xf0,            0x00,  // row 2
+            0x00,            0x00,            0x3f,            0xfc,            0x00,            0x00,            0xfc,  // row 3
+            0x00,            0x00,            0x00,            0x00,            0x00,            0xfc,            0x00,  // row 4
+            0x00,            0x03,            0xf0,            0x00,            0x00,            0x00,            0x3f,  // row 5
+            0x00,            0x00,            0x00,            0xff,            0xf0,            0x00,            0x00,  // row 6
+            0x00,            0x3f,            0xfc,            0x00,            0x00,            0xff,            0xf0,  // row 7
+            0x00,            0x00,            0x00,            0x3f,            0xfc,            0x00,            0x00,  // row 8
+            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xfc,  // row 9
+            0x00,            0x00,            0xff,            0xf0,            0x00,            0x00,            0x00,  // row 10
+            0x3f,            0xfc,            0x00,            0x00 
+        ]
+    };
+
+    // keyboard_lang icon (auto-generated from PNG)
+    var keyboard_lang = {
+        w: 11,
+        h: 11,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0xff,            0xff,            0xff,            0x00,            0x00,            0x3f,            0xff,            0xff,            0xc0,  // row 0
+            0xff,            0xf0,            0x00,            0xff,            0xff,            0xc0,            0x03,            0xff,            0xc0,  // row 1
+            0xfc,            0x0f,            0xff,            0xff,            0xf0,            0x00,            0x00,            0x0f,            0xc0,  // row 2
+            0xfc,            0x0f,            0xff,            0xff,            0xf0,            0x00,            0x00,            0x0f,            0xc0,  // row 3
+            0x00,            0x0f,            0xff,            0xfc,            0x0f,            0xff,            0xfc,            0x00,            0x00,  // row 4
+            0x03,            0xff,            0xff,            0x00,            0x00,            0x3f,            0xff,            0xf0,            0x00,  // row 5
+            0x00,            0x00,            0x3f,            0x00,            0x00,            0x00,            0xff,            0xf0,            0x00,  // row 6
+            0xfc,            0x00,            0x3f,            0xff,            0xf0,            0x00,            0xfc,            0x0f,            0xc0,  // row 7
+            0xfc,            0x00,            0x00,            0xff,            0xf0,            0x3f,            0xfc,            0x0f,            0xc0,  // row 8
+            0xff,            0xf0,            0x00,            0xff,            0xff,            0xc0,            0x03,            0xff,            0xc0,  // row 9
+            0xff,            0xff,            0xff,            0x00,            0x00,            0x3f,            0xff,            0xff,            0xc0   // row 10
+
+        ]
+    };
+
     return {
+        keyboard_lang: keyboard_lang,
+        keyboard_caps_lock_pressed: keyboard_caps_lock_pressed,
+        keyboard_shift_pressed: keyboard_shift_pressed,
+        keyboard_shift_unpressed: keyboard_shift_unpressed,
+        keyboard_shift: keyboard_shift,
         tv_media_box: tv_media_box,
         usb_ethetrnet_status_bar: usb_ethetrnet_status_bar,
         kill_app: kill_app,

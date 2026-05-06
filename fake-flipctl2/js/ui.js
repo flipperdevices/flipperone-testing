@@ -517,6 +517,12 @@ var UI = (function() {
 
     // ── Keyboard ──────────────────────────────────────────────────────────────
     // Virtual keyboard popup with multiple rows
+    var KEYBOARD_SHIFT_CHAR = '⇧';
+    // Private-use-area sentinel matching the one used by drawKeyboard
+    // for the language-switcher key. The owning scene gets no onChar
+    // callback for it — the key is purely visual right now.
+    var KEYBOARD_LANG_CHAR  = '⌘';
+
     function Keyboard(rows, onChar, onClose) {
         this.rows = rows;
         this.selectedRow = 0;
@@ -525,6 +531,23 @@ var UI = (function() {
         this.onClose = onClose || null; // Called when esc pressed
         this.pressedRow = -1;
         this.pressedCol = -1;  // Track which button is pressed
+        // Tri-state shift:
+        //   'off'   — letters lowercase (default).
+        //   'shift' — next letter uppercased, then auto-releases
+        //             back to 'off' (Camel-Case use case).
+        //   'caps'  — every letter uppercased until toggled off
+        //             (caps lock; entered via long-press handled
+        //             externally by the owning scene).
+        // Single tap on the shift key cycles 'off' ↔ 'shift';
+        // 'caps' is reachable only via long-press, and any tap
+        // while in 'caps' returns to 'off'.
+        this.shiftState = 'off';
+        // Optional gray label rendered in the top-row left-pad
+        // area (above the wide cell at row [last-1][0]). 'EN' for
+        // the alphabetic layout; the owning scene swaps to '123' /
+        // 'ABC' / etc. when it changes layouts. Set to '' or null
+        // to suppress.
+        this.langLabel = 'EN';
 
         // Position: centered on screen in container
         var BTN_W = 15;
@@ -536,13 +559,16 @@ var UI = (function() {
         var keyboardH = rows.length * BTN_H;
 
         this.x = Math.floor((256 - CONTAINER_W) / 2);
-        this.y = 70;  // 70px from top of screen
+        this.y = 72;  // 72px from top of screen — nudged 2 px down so the keyboard chrome and the inner-background rectangle both sit slightly lower under the input field.
         this.w = CONTAINER_W;
         this.h = CONTAINER_H;
     }
 
     Keyboard.prototype.render = function(canvas) {
-        canvas.drawKeyboard(this.x, this.y, this.rows, this.selectedRow, this.selectedCol, this.pressedRow, this.pressedCol, '#fff', '#000');
+        canvas.drawKeyboard(this.x, this.y, this.rows,
+            this.selectedRow, this.selectedCol,
+            this.pressedRow, this.pressedCol,
+            '#fff', '#000', this.shiftState, this.langLabel);
     };
 
     Keyboard.prototype.handleInput = function(action) {
@@ -563,15 +589,72 @@ var UI = (function() {
                 this.selectedCol = this.rows[this.selectedRow].length - 1;
             }
         } else if (action === 'ok') {
-            var char = this.rows[this.selectedRow][this.selectedCol];
+            // Cells can be strings (single-char keys) OR objects
+            // {text, isShift, isLang, onPress, ...} (custom wide
+            // cells in alternate layouts). Extract a uniform text
+            // + flags + optional onPress callback.
+            var raw = this.rows[this.selectedRow][this.selectedCol];
+            var char, isShiftCell, isLangCell, cellOnPress;
+            if (raw && typeof raw === 'object') {
+                char        = raw.text != null ? raw.text : '';
+                isShiftCell = !!raw.isShift;
+                isLangCell  = !!raw.isLang;
+                cellOnPress = (typeof raw.onPress === 'function') ? raw.onPress : null;
+            } else {
+                char        = raw;
+                isShiftCell = (char === KEYBOARD_SHIFT_CHAR);
+                isLangCell  = (char === KEYBOARD_LANG_CHAR);
+                cellOnPress = null;
+            }
+            // Brief press flash on the highlighted key — applies
+            // to the shift toggle too, so the user gets visual
+            // confirmation of the tap independent of the shift
+            // state's persistent fill.
             this.pressedRow = this.selectedRow;
             this.pressedCol = this.selectedCol;
-            if (this.onChar) this.onChar(char);
             var self = this;
             setTimeout(function() {
                 self.pressedRow = -1;
                 self.pressedCol = -1;
             }, 100);
+            // Cell-level onPress (e.g. the symbols-layout's
+            // <>| button switching to the second symbols layout).
+            // Fires before / instead of any text emission.
+            if (cellOnPress) {
+                cellOnPress();
+                return;
+            }
+            // Shift key: tap-cycle between 'off' and 'shift'. From
+            // 'caps' a tap also returns to 'off'. The 'caps' state
+            // itself is only reachable via long-press — that's
+            // handled externally by the owning scene, which sets
+            // `this.shiftState = 'caps'` directly.
+            if (isShiftCell) {
+                this.shiftState = (this.shiftState === 'off') ? 'shift' : 'off';
+                return;
+            }
+            // Language-switcher sentinel: no behaviour wired up at
+            // this layer. Press flash already happened above; the
+            // owning scene watches `selectedRow`/`Col` directly to
+            // implement layout switching if it wants to.
+            if (isLangCell) {
+                return;
+            }
+            // Uppercase alphabetic chars while shift is active.
+            // Non-letters (numbers, punctuation, space) pass through
+            // unchanged. After firing one upper-cased letter while
+            // in 'shift' (one-shot), auto-release back to 'off' —
+            // the Camel-Case affordance the user described. 'caps'
+            // stays latched until the next tap on the shift key.
+            // Multi-char labels (e.g. SYM layout's "<>|") fall
+            // through unchanged.
+            var emit = char;
+            if (this.shiftState !== 'off' && typeof char === 'string'
+                    && char.length === 1 && /^[a-z]$/.test(char)) {
+                emit = char.toUpperCase();
+                if (this.shiftState === 'shift') this.shiftState = 'off';
+            }
+            if (this.onChar) this.onChar(emit);
         } else if (action === 'back') {
             // Back key deletes character (backspace)
             if (this.onChar) this.onChar('\b');

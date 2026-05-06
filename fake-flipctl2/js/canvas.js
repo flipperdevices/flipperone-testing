@@ -578,25 +578,161 @@ var FlipCanvas = (function() {
     // selectedRow, selectedCol: current selection position
     // pressedRow, pressedCol: button currently pressed (-1 if none)
     // bg: background color, fg: border/text color
-    FlipCanvas.prototype.drawKeyboard = function(x, y, rows, selectedRow, selectedCol, pressedRow, pressedCol, bg, fg) {
+    FlipCanvas.prototype.drawKeyboard = function(x, y, rows, selectedRow, selectedCol, pressedRow, pressedCol, bg, fg, shiftState, langLabel) {
         var BTN_W = 15;
         var BTN_H = 16;
         var BTN_GAP = 0;  // No gap between buttons
         var SPACE_W = 35;  // Width of space button
+        var SHIFT_W = 35;  // Width of shift button (matches space)
+        var LANG_W  = 35;  // Width of language-switcher button (matches shift)
+        // Sentinel for the shift key in `rows`. ⇧ is the unicode
+        // upward-pointing white arrow — distinct from any character
+        // a normal alphabetic layout might want to insert.
+        var SHIFT_CHAR = '⇧';
+        // Sentinel for the language-switcher key. Lives in the
+        // private-use area so it can't collide with any character
+        // a layout might legitimately want to type. drawKeyboard
+        // recognises it at col 0 of the SECOND-TO-LAST row (the
+        // slot directly above the shift cell) and paints
+        // `Icons.keyboard_lang` instead of a glyph.
+        var LANG_CHAR  = '⌘';
         var R = 4;
         var CONTAINER_W = 250;
         var CONTAINER_H = 77;
         var ctx = this.ctx;
+        var self = this;
 
-        // Calculate keyboard dimensions (account for space button in last row)
+        // Normalise a cell from `rows`. Each entry can be either:
+        //   - A string  (single char): legacy form. Width / icon
+        //                              flags are inferred from
+        //                              the sentinel char + position
+        //                              (shift / lang / space).
+        //   - An object {text, wide?, isShift?, isLang?, isSpace?}:
+        //                              callers can mark any cell
+        //                              wide and supply arbitrary
+        //                              display text, used by the
+        //                              symbol layout for keys like
+        //                              wide '_' / '<>|' / '.' that
+        //                              don't carry shift / lang /
+        //                              space behaviour.
+        function cellOf(rowIdx, colIdx) {
+            var raw = rows[rowIdx][colIdx];
+            if (raw && typeof raw === 'object') {
+                return {
+                    text:    raw.text != null ? raw.text : '',
+                    wide:    !!raw.wide,
+                    isShift: !!raw.isShift,
+                    isLang:  !!raw.isLang,
+                    isSpace: !!raw.isSpace
+                };
+            }
+            var lastRow      = (rowIdx === rows.length - 1);
+            var aboveLastRow = (rowIdx === rows.length - 2);
+            var lastCol      = (colIdx === rows[rowIdx].length - 1);
+            var isShift = lastRow      && colIdx === 0 && raw === SHIFT_CHAR;
+            var isLang  = aboveLastRow && colIdx === 0 && raw === LANG_CHAR;
+            var isSpace = lastRow      && lastCol      && raw === ' ';
+            return {
+                text:    raw,
+                wide:    isShift || isLang || isSpace,
+                isShift: isShift,
+                isLang:  isLang,
+                isSpace: isSpace
+            };
+        }
+
+        function btnWidthAt(rowIdx, colIdx) {
+            return cellOf(rowIdx, colIdx).wide ? SHIFT_W : BTN_W;
+        }
+        // Width of a row's leading wide key. Used to align the
+        // alphabetic columns across all rows: rows without a
+        // leading wide key are padded left by `maxLeadingWide`, so
+        // e.g. Q sits over A which sits over Z even though Z is
+        // preceded by shift and A is preceded by the language key.
+        function rowLeadingWideWidth(rowIdx) {
+            var rk = rows[rowIdx];
+            if (!rk || rk.length === 0) return 0;
+            return cellOf(rowIdx, 0).wide ? SHIFT_W : 0;
+        }
+        var maxLeadingWide = 0;
+        for (var lwRow = 0; lwRow < rows.length; lwRow++) {
+            var lw = rowLeadingWideWidth(lwRow);
+            if (lw > maxLeadingWide) maxLeadingWide = lw;
+        }
+        function rowLeftOffset(rowIdx) {
+            return maxLeadingWide - rowLeadingWideWidth(rowIdx);
+        }
+        function rowPixelWidth(rowIdx) {
+            var rk = rows[rowIdx];
+            var total = rowLeftOffset(rowIdx);
+            for (var c = 0; c < rk.length; c++) total += btnWidthAt(rowIdx, c);
+            return total;
+        }
+
+        // Three shift states with distinct icons:
+        //   'off'    → unpressed arrow (default chrome)
+        //   'shift'  → pressed arrow (one-shot, next letter capped)
+        //   'caps'   → caps-lock variant (latched, all letters capped)
+        // While shiftState !== 'off' alphabetic glyphs render uppercase
+        // so the keyboard's visual state matches what onChar emits.
+        var shiftActive = (shiftState && shiftState !== 'off');
+        function shiftIconFor(state) {
+            if (state === 'caps')  return Icons.keyboard_caps_lock_pressed;
+            if (state === 'shift') return Icons.keyboard_shift_pressed;
+            return Icons.keyboard_shift_unpressed || Icons.keyboard_shift;
+        }
+
+        // Centre either the shift icon, the language-switcher icon,
+        // or a (possibly multi-char) text label inside a button.
+        function paintContent(cell, bx, by, bw, color) {
+            if (cell.isShift) {
+                var sIcon = shiftIconFor(shiftState);
+                var sIx = bx + Math.floor((bw - sIcon.w) / 2);
+                var sIy = by + Math.floor((BTN_H - sIcon.h) / 2);
+                if (sIcon.grayscale) self.drawSprite(sIcon, sIx, sIy, color);
+                else                  self.drawIcon(sIcon, sIx, sIy, color);
+                return;
+            }
+            if (cell.isLang) {
+                var lIcon = Icons.keyboard_lang;
+                var lIx = bx + Math.floor((bw - lIcon.w) / 2);
+                var lIy = by + Math.floor((BTN_H - lIcon.h) / 2);
+                if (lIcon.grayscale) self.drawSprite(lIcon, lIx, lIy, color);
+                else                  self.drawIcon(lIcon, lIx, lIy, color);
+                return;
+            }
+            if (cell.isSpace) return;            // empty wide bar
+            var t = cell.text;
+            if (t === '' || t === ' ' || t == null) return;
+            // Single-letter cells get the shift-aware uppercasing.
+            // Multi-char labels (e.g. the SYM layout's "<>|") are
+            // never letters, so the comparison naturally skips them.
+            var displayCh = (shiftActive && t.length === 1 && t >= 'a' && t <= 'z')
+                ? t.toUpperCase() : t;
+            var cw = HaxrcorpFont16.textWidth(displayCh);
+            var cx = bx + Math.floor((bw - cw) / 2);
+            var cy = by + 2;
+            HaxrcorpFont16.draw(ctx, displayCh, cx, cy, color);
+        }
+
+        // Calculate keyboard dimensions — pick the widest row.
         var cols = rows[0].length;
-        var lastRowWidth = (rows[rows.length - 1].length - 1) * BTN_W + SPACE_W;  // last row with space button
-        var maxRowWidth = Math.max(cols * BTN_W, lastRowWidth);
+        var maxRowWidth = 0;
+        for (var rr = 0; rr < rows.length; rr++) {
+            var rw = rowPixelWidth(rr);
+            if (rw > maxRowWidth) maxRowWidth = rw;
+        }
         var keyboardW = maxRowWidth;
         var keyboardH = rows.length * BTN_H;
 
         // Position keyboard: 5px from top, 4px from right edge of container
-        var keyboardX = x + (CONTAINER_W - keyboardW - 4);
+        // Centre the keyboard horizontally inside the container.
+        // (Was right-anchored 4 px from the right edge before; the
+        // new layout has wide shift + space keys flanking the
+        // bottom row, so a centred placement reads cleaner and the
+        // empty area to the right of the top rows naturally hosts
+        // the Delete affordance.)
+        var keyboardX = x + Math.floor((CONTAINER_W - keyboardW) / 2);
         var keyboardY = y + 5;
 
         // Draw container background with r=4 corners
@@ -670,55 +806,104 @@ var FlipCanvas = (function() {
         // Draw border and buttons
         ctx.fillStyle = fg;
 
-        // Draw each button
+        // Selected button is deferred to a second pass after the
+        // main loop. Its 2-px frame extends 1 px OUTSIDE the
+        // button's bounds, and any neighbour drawn after it (next
+        // column on the right, next row below) would otherwise
+        // overdraw those outer-ring pixels. We record its geometry
+        // here and re-render it on top once every other key has
+        // been painted.
+        var selBtn = null;
+
+        // Draw each button.
         for (var row = 0; row < rows.length; row++) {
-            for (var col = 0; col < rows[row].length; col++) {
-                var char = rows[row][col];
-                var isLastRowLastCol = (row === rows.length - 1 && col === rows[row].length - 1);
-                var isSpaceButton = (char === ' ' && isLastRowLastCol);
-                var btnW = isSpaceButton ? SPACE_W : BTN_W;
+            var rowKeys = rows[row];
+            // Rows without a leading wide key are padded left so
+            // their first key aligns column-wise with the bottom
+            // row's first letter (i.e., Q sits over A sits over Z).
+            var btnX = keyboardX + rowLeftOffset(row);
+            var btnY = keyboardY + row * BTN_H;
+            for (var col = 0; col < rowKeys.length; col++) {
+                var cell = cellOf(row, col);
+                var btnW = cell.wide ? SHIFT_W : BTN_W;
 
-                // Calculate button position
-                var btnX;
-                if (isSpaceButton) {
-                    // Space button positioned at the end of last row
-                    var lastRowNormalBtnsW = (col) * BTN_W;
-                    btnX = keyboardX + lastRowNormalBtnsW;
-                } else {
-                    btnX = keyboardX + col * BTN_W;
-                }
-
-                var btnY = keyboardY + row * BTN_H;
                 var isSelected = (row === selectedRow && col === selectedCol);
-                var isPressed = (row === pressedRow && col === pressedCol);
+                var isPressed  = (row === pressedRow && col === pressedCol);
+                // Filled-black look fires only on the brief press
+                // flash. State indicators (shift mode, caps lock)
+                // are conveyed by which icon paints — chrome stays
+                // the standard light-gray frame at rest.
+                var isFilled   = isPressed;
 
-                if (isPressed) {
-                    // Pressed state: filled black with white text
+                if (isSelected) {
+                    // Defer the 2-px black frame to a second pass,
+                    // but paint the underlying button look now so
+                    // the slot isn't blank if rendering aborts.
+                    if (isFilled) {
+                        this.drawRoundRect(btnX, btnY, btnW, BTN_H, 2, '#000');
+                        paintContent(cell, btnX, btnY, btnW, '#fff');
+                    } else {
+                        this.drawRoundFrame(btnX, btnY, btnW, BTN_H, 2, '#CCCCCC');
+                        paintContent(cell, btnX, btnY, btnW, '#000');
+                    }
+                    selBtn = { x: btnX, y: btnY, w: btnW, cell: cell, isFilled: isFilled };
+                } else if (isFilled) {
+                    // Pressed (transient): filled black background
+                    // with white glyph/icon.
                     this.drawRoundRect(btnX, btnY, btnW, BTN_H, 2, '#000');
-                    var charW = HaxrcorpFont16.textWidth(char || ' ');
-                    var charX = btnX + Math.floor((btnW - charW) / 2);
-                    var charY = btnY + 2;
-                    if (char !== ' ') HaxrcorpFont16.draw(ctx, char, charX, charY, '#fff');
-                } else if (isSelected) {
-                    // Selected state: black frame only
-                    this.drawRoundFrame(btnX, btnY, btnW, BTN_H, 2, '#000');
-                    var charW = HaxrcorpFont16.textWidth(char || ' ');
-                    var charX = btnX + Math.floor((btnW - charW) / 2);
-                    var charY = btnY + 2;
-                    if (char !== ' ') HaxrcorpFont16.draw(ctx, char, charX, charY, '#000');
+                    paintContent(cell, btnX, btnY, btnW, '#fff');
                 } else {
-                    // Default state: gray frame only
-                    this.drawRoundFrame(btnX, btnY, btnW, BTN_H, 2, '#888');
-                    var charW = HaxrcorpFont16.textWidth(char || ' ');
-                    var charX = btnX + Math.floor((btnW - charW) / 2);
-                    var charY = btnY + 2;
-                    if (char !== ' ') HaxrcorpFont16.draw(ctx, char, charX, charY, '#000');
+                    // Default light-gray frame.
+                    this.drawRoundFrame(btnX, btnY, btnW, BTN_H, 2, '#CCCCCC');
+                    paintContent(cell, btnX, btnY, btnW, '#000');
                 }
+
+                btnX += btnW;
             }
         }
 
-        // Draw back icon and "Delete" label on the right
-        var labelX = keyboardX + cols * BTN_W + 5 + 2;  // +3px to the right
+        // ── Selected-button second pass ──────────────────────────
+        // Now that every other key is painted, layer the 2-px
+        // black frame over the selected one. The outer ring (r=3,
+        // expanded by 1 px) overdraws any neighbour pixels that
+        // touched the outer-ring columns/rows; the inner ring
+        // (r=2, at button bounds) overdraws the first-pass gray
+        // (or filled black) with black. Then re-paint the
+        // content — colour follows the underlying state so a
+        // selected shift-on key keeps its white icon, a selected
+        // letter shows its black glyph.
+        if (selBtn) {
+            this.drawRoundFrame(selBtn.x - 1, selBtn.y - 1, selBtn.w + 2, BTN_H + 2, 3, '#000');
+            this.drawRoundFrame(selBtn.x,     selBtn.y,     selBtn.w,     BTN_H,     2, '#000');
+            paintContent(selBtn.cell,
+                         selBtn.x, selBtn.y, selBtn.w,
+                         selBtn.isFilled ? '#fff' : '#000');
+        }
+
+        // ── Layout indicator ─────────────────────────────────────
+        // Gray label in the top-row left-pad area, directly above
+        // the wide cell at row [last-1][0]. The text is supplied
+        // by the caller via `langLabel` ('EN' for the alphabet
+        // layout, '123' for the symbol layout, etc.) — drawKeyboard
+        // doesn't try to infer it. Drawn only when row[last-1] has
+        // a wide cell (i.e., there's somewhere to anchor).
+        if (langLabel && rows.length >= 2 && cellOf(rows.length - 2, 0).wide) {
+            var llW = HaxrcorpFont16.textWidth(langLabel);
+            var llX = keyboardX + Math.floor((LANG_W - llW) / 2);
+            // Same y offset glyphs use inside button cells (btnY +
+            // 2) so the label optically sits at the row's natural
+            // text baseline.
+            var llY = keyboardY + 2;
+            HaxrcorpFont16.draw(ctx, langLabel, llX, llY, '#888888');
+        }
+
+        // Draw back icon and "Delete" label on the right —
+        // positioned just past the TOP row's actual right edge so
+        // it sits in the empty area left of the bottom row's
+        // wider span (the bottom row may be wider thanks to shift +
+        // space). Includes the row's left offset so the math
+        // tracks correctly when other rows are pad-aligned.
+        var labelX = keyboardX + rowPixelWidth(0) + 5 + 2;
         var labelY = keyboardY + 12;  // Position icon higher
 
         // Set semi-transparent alpha (0.5 = 50%)
