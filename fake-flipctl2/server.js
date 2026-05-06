@@ -883,6 +883,121 @@ async function refreshWifi() {
     };
 }
 
+// ── /api/wifi/scan ──────────────────────────────────────────────
+// Visible-networks list. `nmcli device wifi list` returns whatever
+// scan results NetworkManager already has cached; we don't trigger
+// a fresh `nmcli dev wifi rescan` here because that takes ~2-3 s
+// and the polling cadence is enough to keep the list reasonably
+// fresh on its own. Output is parsed into a deduplicated list of
+// { ssid, signal (0-100), security } objects, sorted by signal.
+// Hidden networks (empty SSID) and duplicate SSIDs (multiple BSSIDs
+// for the same network) are collapsed.
+// `ready` flips to true after the FIRST successful refresh that
+// either has results OR follows a completed nmcli rescan.
+// Subsequent failures keep the most recent successful list intact
+// — the client distinguishes "scan in progress" (ready=false) from
+// "scan finished, nothing visible" (ready=true, networks=[]) and
+// shows a spinner only in the former case.
+var wifiScanCache = { ready: false, networks: [] };
+// Timestamp of the first successful `nmcli dev wifi rescan`. Until
+// it's set we treat an empty list as "scan still in progress" and
+// hold `ready` at false — otherwise the client would prematurely
+// flip from spinner to "No networks" while NetworkManager is
+// still warming up its scan cache.
+var wifiRescanCompletedAt = 0;
+// Server start time, used for a hard fallback: even if every
+// rescan fails (e.g. no wifi adapter), we don't keep the spinner
+// on forever — after this grace period an empty list is accepted
+// as the genuine state.
+var wifiScanStartedAt = Date.now();
+var WIFI_SCAN_GRACE_MS = 30000;
+
+async function triggerWifiRescan() {
+    // Fire-and-await the rescan; nmcli blocks until the kernel-
+    // initiated scan returns or times out. A 6 s ceiling protects
+    // against driver hangs without forcing the loop to wait too
+    // long between attempts.
+    var r = await tryExec('nmcli dev wifi rescan',
+        { encoding: 'utf8', timeout: 6000 });
+    if (r && wifiRescanCompletedAt === 0) {
+        wifiRescanCompletedAt = Date.now();
+    }
+}
+
+async function refreshWifiScan() {
+    var r = await tryExec(
+        'nmcli -t -f SSID,SIGNAL,SECURITY device wifi list',
+        { encoding: 'utf8', timeout: 3000 });
+    // On failure, keep the previous cache as-is — clients keep
+    // showing the most recent results rather than reverting to
+    // "loading" mid-session.
+    if (!r) return;
+    var lines = r.stdout.split('\n');
+    var byName = {};
+    var nets = [];
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        if (!line) continue;
+        // nmcli escapes ':' inside fields as '\:' — temporarily
+        // substitute to a sentinel byte so split(':') doesn't
+        // shred SSIDs containing colons, then restore.
+        var parts = line.replace(/\\:/g, '\x01').split(':').map(
+            function(p) { return p.replace(/\x01/g, ':'); });
+        var ssid     = parts[0];
+        var signal   = parseInt(parts[1], 10);
+        var security = parts[2] || '';
+        if (!ssid) continue;
+        if (isNaN(signal)) signal = 0;
+        if (byName[ssid] !== undefined) {
+            // Same SSID seen on a stronger BSSID — promote it.
+            if (signal > byName[ssid].signal) {
+                byName[ssid].signal   = signal;
+                byName[ssid].security = security;
+            }
+            continue;
+        }
+        var net = { ssid: ssid, signal: signal, security: security };
+        byName[ssid] = net;
+        nets.push(net);
+    }
+    nets.sort(function(a, b) { return b.signal - a.signal; });
+    // Gate the `ready` flag so the client doesn't prematurely flip
+    // from spinner to "No networks":
+    //   - Empty list + no rescan completed yet + still in startup
+    //     grace window → keep ready=false (spinner stays).
+    //   - Otherwise (non-empty, OR a rescan finished, OR grace
+    //     window elapsed) → ready=true.
+    var inGrace = (Date.now() - wifiScanStartedAt) < WIFI_SCAN_GRACE_MS;
+    var rescanDone = wifiRescanCompletedAt !== 0;
+    if (nets.length === 0 && !rescanDone && inGrace) return;
+    wifiScanCache = { ready: true, networks: nets };
+}
+
+// ── /api/wifi/power ─────────────────────────────────────────────
+// Wi-Fi radio on/off, mirroring `nmcli radio wifi` state. POST to
+// `/api/wifi/power` with `{ enabled: true|false }` to flip it.
+// Optimistically writes the cache before the nmcli call returns
+// so the client can poll back the new state immediately; the
+// 3-second refresh loop reconciles if the actual state differs.
+var wifiPowerCache = { enabled: true };
+
+async function refreshWifiPower() {
+    var r = await tryExec('nmcli -t -f WIFI radio',
+        { encoding: 'utf8', timeout: 2000 });
+    if (!r) return;   // keep last value on failure
+    var line = r.stdout.split('\n').find(function(l) { return l; }) || '';
+    wifiPowerCache = { enabled: line.trim() === 'enabled' };
+}
+
+function setWifiPower(enabled, cb) {
+    exec('nmcli radio wifi ' + (enabled ? 'on' : 'off'),
+        { encoding: 'utf8', timeout: 3000 },
+        function(err) {
+            if (err) cb({ ok: false, error: String(err.message || err) });
+            else cb({ ok: true });
+        });
+}
+
 var airplaneCache = { enabled: false };
 
 async function refreshAirplane() {
@@ -908,6 +1023,335 @@ var server = http.createServer(function(req, res) {
     if (req.url === '/api/wifi') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(wifiCache));
+        return;
+    }
+    if (req.url === '/api/wifi/scan') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(wifiScanCache));
+        return;
+    }
+    if (req.url === '/api/wifi/power' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(wifiPowerCache));
+        return;
+    }
+    if (req.url === '/api/wifi/power' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            if (err) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Invalid request' }));
+                return;
+            }
+            var enabled = !!(data && data.enabled);
+            // Optimistic write so the next GET reflects the
+            // request immediately even before nmcli returns; the
+            // 3-second refresh loop reconciles if the actual
+            // radio state differs.
+            wifiPowerCache = { enabled: enabled };
+            setWifiPower(enabled, function(result) {
+                refreshWifiPower();
+                res.writeHead(result.ok ? 200 : 500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(Object.assign({ enabled: enabled }, result)));
+            });
+        });
+        return;
+    }
+    if (req.url === '/api/wifi/disconnect' && req.method === 'POST') {
+        // Disconnect from a Wi-Fi network without deleting the
+        // saved profile. Body: { name }. Maps to
+        // `nmcli connection down <name>`. Profile sticks around
+        // for a future reconnect; only the active link drops.
+        readJsonBody(req, function(err, data) {
+            if (err || !data || !data.name) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Missing name' }));
+                return;
+            }
+            var nameQ = JSON.stringify(String(data.name));
+            exec('nmcli connection down ' + nameQ,
+                { encoding: 'utf8', timeout: 10000 },
+                function(execErr, stdout, stderr) {
+                    if (execErr) {
+                        var msg = String(stderr || execErr.message || execErr).trim();
+                        res.writeHead(500, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({ ok: false, error: msg }));
+                        return;
+                    }
+                    refreshWifi();
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ ok: true }));
+                });
+        });
+        return;
+    }
+    if (req.url === '/api/wifi/connect' && req.method === 'POST') {
+        // Join a Wi-Fi network. Body: { ssid, password }.
+        // Password may be empty for open networks. Internally we
+        // call `nmcli device wifi connect <ssid> [password <pwd>]`,
+        // which CREATES a connection profile if none exists for
+        // that SSID and brings the link up. On success, refresh
+        // the wifi/scan caches so the next client poll already
+        // reflects the new state without a 2 s lag.
+        readJsonBody(req, function(err, data) {
+            if (err || !data || !data.ssid) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Missing ssid' }));
+                return;
+            }
+            var ssid = String(data.ssid);
+            var pwd  = String(data.password || '');
+            var ssidQ = JSON.stringify(ssid);
+            // Build the nmcli invocation. Quoting via
+            // JSON.stringify gets us proper shell-safe escaping
+            // for SSIDs / passphrases that contain spaces or
+            // shell-special characters.
+            var cmd = 'nmcli device wifi connect ' + ssidQ;
+            if (pwd) cmd += ' password ' + JSON.stringify(pwd);
+            exec(cmd,
+                { encoding: 'utf8', timeout: 30000 },
+                function(execErr, stdout, stderr) {
+                    if (execErr) {
+                        // nmcli writes the user-facing reason to
+                        // stderr ("Secrets were required, but not
+                        // provided", "No network with SSID '…'
+                        // found", etc.). Pass it through verbatim
+                        // so the client can surface it.
+                        var msg = String(stderr || execErr.message || execErr).trim();
+                        res.writeHead(500, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({ ok: false, error: msg }));
+                        return;
+                    }
+                    refreshWifi();
+                    refreshWifiScan();
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ ok: true, output: String(stdout || '').trim() }));
+                });
+        });
+        return;
+    }
+    if (req.url === '/api/wifi/forget' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            if (err || !data || !data.name) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Missing name' }));
+                return;
+            }
+            // Quote the connection name so SSIDs containing spaces
+            // / colons survive the shell. JSON.stringify gives us
+            // a properly-escaped double-quoted form.
+            var nameQ = JSON.stringify(String(data.name));
+            exec('nmcli connection delete ' + nameQ,
+                { encoding: 'utf8', timeout: 5000 },
+                function(execErr) {
+                    if (execErr) {
+                        res.writeHead(500, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({
+                            ok: false,
+                            error: String(execErr.message || execErr)
+                        }));
+                    } else {
+                        // Refresh the wifi caches so the active
+                        // connection / scan list update on the
+                        // next GET.
+                        refreshWifi();
+                        refreshWifiScan();
+                        res.writeHead(200, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({ ok: true }));
+                    }
+                });
+        });
+        return;
+    }
+    if (req.url.indexOf('/api/wifi/connection') === 0 && req.method === 'GET') {
+        // Read full settings for a Wi-Fi profile. Two modes:
+        //   • No `name=` param → return the currently-active
+        //     connection (back-compat with the old contract).
+        //   • `name=<encoded>` → return THAT specific saved
+        //     profile, regardless of whether it's active. Lets a
+        //     single client component render verbose detail for
+        //     both the live network and any saved one.
+        // `secrets=1` adds the WPA passphrase via
+        // `nmcli --show-secrets`. Server runs as root so the
+        // lookup just works.
+        var qs = req.url.indexOf('?') >= 0 ? req.url.substring(req.url.indexOf('?') + 1) : '';
+        var withSecrets = qs.indexOf('secrets=1') >= 0;
+        // Tiny query-string parser — pulls `name=<value>` out of
+        // the qs (URL-decoded). Other params untouched.
+        var qName = '';
+        var pairs = qs.split('&');
+        for (var qi = 0; qi < pairs.length; qi++) {
+            var eq = pairs[qi].indexOf('=');
+            if (eq < 0) continue;
+            var k = pairs[qi].substring(0, eq);
+            var v = pairs[qi].substring(eq + 1);
+            if (k === 'name') {
+                try { qName = decodeURIComponent(v.replace(/\+/g, ' ')); }
+                catch (e) { qName = v; }
+            }
+        }
+        var connName = qName || wifiCache.ssid;
+        if (!connName) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ connected: false }));
+            return;
+        }
+        var nameQ = JSON.stringify(String(connName));
+        var cmd = 'nmcli ' + (withSecrets ? '--show-secrets ' : '')
+            + '-t connection show ' + nameQ;
+        exec(cmd, { encoding: 'utf8', timeout: 3000 }, function(execErr, stdout) {
+            if (execErr) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: String(execErr.message || execErr) }));
+                return;
+            }
+            // Parse field-per-line output. Same colon-escape
+            // trick the other nmcli parsers use.
+            var fields = {};
+            var lines = stdout.split('\n');
+            for (var i = 0; i < lines.length; i++) {
+                var ln = lines[i];
+                if (!ln) continue;
+                var idx = ln.indexOf(':');
+                if (idx < 0) continue;
+                var k = ln.substring(0, idx);
+                var v = ln.substring(idx + 1).replace(/\\:/g, ':');
+                fields[k] = v;
+            }
+            function pickAddrs(prefix) {
+                var addrs = [];
+                for (var key in fields) {
+                    if (key.indexOf(prefix) === 0) addrs.push(fields[key]);
+                }
+                return addrs;
+            }
+            var details = {
+                connected: true,
+                ssid:        connName,
+                autoconnect: (fields['connection.autoconnect'] || '').toLowerCase() === 'yes',
+                ipv4: {
+                    method:    fields['ipv4.method']    || '',
+                    gateway:   fields['ipv4.gateway']   || '',
+                    dns:       fields['ipv4.dns']       || '',
+                    addresses: pickAddrs('IP4.ADDRESS')
+                },
+                ipv6: {
+                    method:    fields['ipv6.method']    || '',
+                    gateway:   fields['ipv6.gateway']   || '',
+                    dns:       fields['ipv6.dns']       || '',
+                    addresses: pickAddrs('IP6.ADDRESS')
+                }
+            };
+            if (withSecrets && fields['802-11-wireless-security.psk']) {
+                details.password = fields['802-11-wireless-security.psk'];
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(details));
+        });
+        return;
+    }
+    if (req.url === '/api/wifi/saved' && req.method === 'GET') {
+        // Return every saved Wi-Fi connection profile NetworkManager
+        // knows about — i.e. networks the device has ever connected
+        // to. Each entry: { name, ssid, security, autoconnect,
+        // lastConnected }.
+        //
+        // First pass: list all 802-11-wireless connections via the
+        // terse `nmcli -t -f NAME,TYPE connection show` form.
+        // Second pass: per-profile `connection show <name>` to pull
+        // the richer fields. We do these sequentially in a small
+        // loop rather than firing N parallel nmcli calls — saved
+        // networks tend to be a handful, and serial keeps load low.
+        exec('nmcli -t -f NAME,TYPE connection show',
+             { encoding: 'utf8', timeout: 4000 },
+             function(listErr, listOut) {
+            if (listErr) {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ networks: [] }));
+                return;
+            }
+            var lines = (listOut || '').split('\n');
+            var names = [];
+            for (var li = 0; li < lines.length; li++) {
+                var ln = lines[li];
+                if (!ln) continue;
+                // Terse output is `NAME:TYPE`. NAME may itself
+                // contain literal colons escaped as `\:`. Walk
+                // back from the trailing TYPE field using the
+                // last unescaped `:`.
+                var idx = -1;
+                for (var ci = ln.length - 1; ci >= 0; ci--) {
+                    if (ln.charAt(ci) === ':' && (ci === 0 || ln.charAt(ci - 1) !== '\\')) {
+                        idx = ci; break;
+                    }
+                }
+                if (idx < 0) continue;
+                var nm = ln.substring(0, idx).replace(/\\:/g, ':');
+                var tp = ln.substring(idx + 1);
+                if (tp !== '802-11-wireless') continue;
+                // Skip internal device-managed profiles. These
+                // are connection entries the firmware creates
+                // for its own networking (e.g. the Flipper One's
+                // 2.4 GHz / 5 GHz router profiles created during
+                // factory provisioning) — not user-saved
+                // networks. Easy to extend with more patterns if
+                // new internal naming conventions show up.
+                if (/^wifi-router/i.test(nm)) continue;
+                if (/^flipper-/i.test(nm))    continue;
+                names.push(nm);
+            }
+            // Resolve detail fields one connection at a time. As
+            // each resolves, decrement `pending`; when the last
+            // one lands, write the response.
+            var results = [];
+            var pending = names.length;
+            if (pending === 0) {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ networks: [] }));
+                return;
+            }
+            names.forEach(function(name, i) {
+                var quoted = JSON.stringify(String(name));
+                exec('nmcli -t connection show ' + quoted,
+                     { encoding: 'utf8', timeout: 3000 },
+                     function(dErr, dOut) {
+                    var fields = {};
+                    if (!dErr && dOut) {
+                        var dlines = dOut.split('\n');
+                        for (var j = 0; j < dlines.length; j++) {
+                            var dl = dlines[j];
+                            if (!dl) continue;
+                            var di = dl.indexOf(':');
+                            if (di < 0) continue;
+                            var k = dl.substring(0, di);
+                            var v = dl.substring(di + 1).replace(/\\:/g, ':');
+                            fields[k] = v;
+                        }
+                    }
+                    var ts = parseInt(fields['connection.timestamp'] || '0', 10);
+                    results[i] = {
+                        name:          name,
+                        ssid:          fields['802-11-wireless.ssid'] || name,
+                        security:      fields['802-11-wireless-security.key-mgmt'] || '',
+                        autoconnect:   (fields['connection.autoconnect'] || '').toLowerCase() === 'yes',
+                        lastConnected: ts > 0 ? ts : null
+                    };
+                    if (--pending === 0) {
+                        // Sort by last-connected descending so the
+                        // most recently used profiles top the
+                        // list. Nulls (never connected) sink to
+                        // the bottom in name order.
+                        results.sort(function(a, b) {
+                            if (a.lastConnected && b.lastConnected) return b.lastConnected - a.lastConnected;
+                            if (a.lastConnected) return -1;
+                            if (b.lastConnected) return 1;
+                            return a.name.localeCompare(b.name);
+                        });
+                        res.writeHead(200, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({ networks: results }));
+                    }
+                });
+            });
+        });
         return;
     }
     if (req.url === '/api/airplane' && req.method === 'GET') {
@@ -1131,7 +1575,10 @@ server.listen(PORT, BIND, function() {
         // poll rates so perceived freshness is unchanged. HTTP handlers
         // just read the cached objects.
         startRefreshLoop('modem',    refreshModem,    1000);
-        startRefreshLoop('wifi',     refreshWifi,     2000);
+        startRefreshLoop('wifi',         refreshWifi,        2000);
+        startRefreshLoop('wifi-rescan',  triggerWifiRescan, 20000);
+        startRefreshLoop('wifi-scan',    refreshWifiScan,    5000);
+        startRefreshLoop('wifi-power',   refreshWifiPower,   3000);
         startRefreshLoop('ethernet', refreshEthernet, 2000);
         startRefreshLoop('routing',  refreshRouting,  5000);
         startRefreshLoop('airplane', refreshAirplane, 3000);

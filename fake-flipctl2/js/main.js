@@ -2,6 +2,12 @@
     var canvasEl = document.getElementById('screen');
     var canvas = new FlipCanvas(canvasEl);
     var input = new Input();
+    // Exposed so scenes / modals can poll continuous held-state
+    // (e.g. Wi-Fi password modal's PTT-to-reveal). The action
+    // queue stays the primary delivery channel — `window.input`
+    // is only for the rare features that need "is this key down
+    // right now?" semantics.
+    window.input = input;
     var scenes = new SceneManager();
 
     // Event-driven repaint: the screen only redraws when something

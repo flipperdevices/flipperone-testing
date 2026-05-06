@@ -62,10 +62,27 @@ var KeyboardTestScene = (function() {
         var self = this;
 
         this.inputText  = '';
+        // Modal-style chrome — same approach used by the Wi-Fi
+        // connect modal: tab header attached to a ResponsiveFrame
+        // body, input shown as a small CCCCCC-filled, no-stroke
+        // ResponsiveFrame inside. The TextInputBox / InputField
+        // pair is gone; render() lays everything out from these
+        // numbers below.
         this.tabHeader  = new UI.TabHeader('Type to test');
-        this.inputBox   = new UI.TextInputBox();
-        this.inputField = new UI.InputField();
         this.cursor     = new BlinkingKeyboardCursor(500);
+        // Geometry constants kept alongside the wifi connect
+        // modal's so the two screens look like siblings.
+        //   • MODAL_OFFSET_Y nudges the tab + frame down so the
+        //     top isn't hard against the status bar.
+        //   • FRAME_BOT_OVERLAP lets the frame's bottom edge tuck
+        //     behind the keyboard chrome (4 px of overlap), giving
+        //     the body more visible vertical room.
+        this._modalOffsetY    = 12;
+        this._frameBotOverlap = 4;
+        // Tab x = 4 (matches FRAME_X), y = 3 + offset.
+        this.tabHeader.x = 4;
+        this.tabHeader.y = 3 + this._modalOffsetY;
+        this.tabHeader.h = 16;
 
         // Three layouts.
         //
@@ -381,28 +398,68 @@ var KeyboardTestScene = (function() {
     };
 
     KeyboardTestScene.prototype.render = function(canvas) {
+        var ctx = canvas.ctx;
         canvas.clear('#fff');
 
-        // Status bar (kept on top — TextInputBox sits below it at
-        // y = 16, so the bar's 13 px never overlap).
+        // Status bar (kept on top — modal frame sits below it).
         UI.drawStatusBar(canvas, '');
 
-        // Tab header, text container, input field.
-        this.tabHeader.render(canvas);
-        this.inputBox.render(canvas);
-        this.inputField.render(canvas);
+        // Modal-style chrome — mirrors the Wi-Fi connect modal.
+        // Tab header up top; ResponsiveFrame body below, with its
+        // bottom edge tucked 4 px behind the keyboard chrome.
+        var FRAME_X    = 4;
+        var FRAME_W    = 256 - 8;
+        var FRAME_TOP  = 19 + this._modalOffsetY;          // tab.y + tab.h
+        var FRAME_BOT  = 70 + this._modalOffsetY + this._frameBotOverlap;
+        var FRAME_H    = FRAME_BOT - FRAME_TOP;
 
-        // Live text inside the input field. Same coordinates the
-        // UIDemoScene uses (x = 25, y = 27) so the layout matches
-        // production.
+        this.tabHeader.render(canvas);
+        var frame = new ResponsiveFrame({
+            x: FRAME_X, y: FRAME_TOP,
+            width: FRAME_W, height: FRAME_H,
+            anchorH: 'left', anchorV: 'top',
+            strokeColor: '#000', showStroke: true,
+            fillColor: '#ffffff', showFill: true,
+            cornerRadius: 4,
+            corners: { tl: false, tr: true, bl: true, br: true }
+        });
+        frame.render(canvas);
+
+        // Input field — light-grey filled rectangle, no stroke.
+        // Inset 6 px more on each side than the body frame so it
+        // sits comfortably inside (3 px more than the wifi
+        // connect modal — the keyboard test wants its field a
+        // touch narrower), and lifted 5 px above the vertical
+        // centre so it doesn't drift toward the
+        // keyboard-overlapped lower edge.
+        var inputX = FRAME_X + 4 + 3 + 3;
+        var inputW = FRAME_W - 8 - 6 - 6;
+        var inputH = 14;
+        var inputY = FRAME_TOP + Math.floor((FRAME_H - inputH) / 2) - 5;
+        var inputFrame = new ResponsiveFrame({
+            x: inputX, y: inputY,
+            width: inputW, height: inputH,
+            anchorH: 'left', anchorV: 'top',
+            showStroke: false,
+            fillColor: '#CCCCCC', showFill: true,
+            cornerRadius: 2,
+            corners: { tl: true, tr: true, bl: true, br: true }
+        });
+        inputFrame.render(canvas);
+
+        // Typed text + blinking cursor inside the input field.
         this.cursor.update();
-        HaxrcorpFont16.draw(canvas.ctx, this.inputText, 25, 27, '#000');
+        var textX = inputX + 4;
+        var textY = inputY + Math.floor((inputH - 11) / 2);
+        HaxrcorpFont16.draw(ctx, this.inputText, textX, textY, '#000');
         if (this.cursor.isVisible()) {
-            var cursorX = 25 + HaxrcorpFont16.textWidth(this.inputText) + 1;
-            canvas.drawCursor(cursorX, 28, 1, 10, '#000');
+            var cursorX = textX + HaxrcorpFont16.textWidth(this.inputText) + 1;
+            canvas.drawCursor(cursorX, textY, 1, 11, '#000');
         }
 
-        // Keyboard popup.
+        // Keyboard renders LAST (before the bottom buttons) so it
+        // covers the frame's overlapping 4-px bottom edge and
+        // stays visually on top.
         this.keyboard.render(canvas);
 
         // App-defined bottom-bar buttons sit on top of everything

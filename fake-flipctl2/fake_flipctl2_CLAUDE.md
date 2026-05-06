@@ -1990,6 +1990,362 @@ if (this._modal) { this._modal.render(canvas); }
 
 ---
 
+## App Switcher — touchpad scrolling & velocity projection
+
+The carousel can be flicked with the touchpad as well as the D-pad.
+Same machinery is reused by other scenes (visible-networks modal,
+connected-network details modal in `wifi.js`).
+
+### SSE wiring
+
+```js
+this._tpES = new EventSource('/api/touchpad/xy');
+this._tpES.onmessage = function(e) { self._handleTouchpadMessage(e); };
+```
+
+Server backs this with `fs.createReadStream` over the kernel evdev
+node, parsing `EV_ABS` events into `"x,y,touch"` lines. One stream
+per scene — close it in `exit()` so the kernel-side reader gets
+released.
+
+### PHASE_DRAGGING (live)
+
+Each `"x,y,touch"` line either:
+
+- **Touch-down** (`touch 0 → 1`): capture `_tpBaselineY`,
+  `_tpBaselineFocusedIdx`, reset `_tpVelSamples = [{y, ts}]`, switch
+  to `PHASE_DRAGGING`. Crucially also reset any in-flight snap
+  animation so the new stroke isn't tugged by stale momentum.
+- **Touch-move** (`touch 1`): compute
+  `rawDelta = (baselineY − ny) / TP_UNITS_PER_STEP`, clamp into
+  `[0, n−1]`, write `_tpDragDelta`. Append `{y, ts}` to the
+  velocity buffer and trim entries older than
+  `TP_VELOCITY_WINDOW_MS` so a long drag with a slow tail doesn't
+  pollute the release velocity.
+- **Touch-up** (`touch 1 → 0`): see velocity projection below.
+
+Y is **inverted**: finger moving down on the pad moves focus toward
+*newer* / lower-index cards. Matches "drag the carousel down"
+direct-manipulation feel.
+
+### Velocity projection on release
+
+```js
+var first = samples[0], last = samples[samples.length-1];
+var dt = last.ts - first.ts;
+var velUnitsPerMs = -(last.y - first.y) / dt;        // inverted Y
+var projectedExtra =
+    velUnitsPerMs * TP_VELOCITY_PROJECTION_MS / TP_UNITS_PER_STEP;
+var rawTarget = Math.round(fracIdx + projectedExtra);
+var target    = clamp(0, n - 1, rawTarget);
+```
+
+- Slow drag → `projectedExtra ≈ 0`, lands where the finger stopped.
+- Fast flick → carries the carousel multiple slots past release.
+- Snap duration scales with distance; rendered with `easeOutCubic`
+  for the iPhone-style decay-to-stop.
+
+### Edge bounce
+
+`_tpOvershootDir` is stamped from either:
+1. **Position overshoot** — unclamped `fracIdx` left `[0, n-1]` mid-drag.
+2. **Momentum overshoot** — projected stop position outside `[0, n-1]`.
+
+After the snap commits, `PHASE_DRAGGING`'s tick chains a
+`PHASE_BOUNCING` pulse on the focused card so the user feels the
+"hit the wall" cue regardless of which kind of overshoot triggered it.
+
+### Reusable shape (Wi-Fi modals reuse this)
+
+The same five steps — touch-down baseline, drag-clamp, sample +
+trim, velocity-from-window on release, project-then-snap with
+`easeOutCubic` — are pasted into:
+
+- Visible-networks modal scrollbar (`_openNetworksModal` in `wifi.js`)
+- Connected-network details modal (`_openConnectedDetailsModal`)
+
+The only thing that varies is the unit (cards vs pixels) and the
+clamp range (carousel `[0, n-1]` vs scroll `[0, contentH − viewportH]`).
+
+---
+
+## Virtual Keyboard (`Keyboard` in `js/ui.js`)
+
+Pop-up text-entry component used by the screen-keyboard testing
+scene and any future text-input flow. Centred on the canvas, 250 ×
+77 with 5 × 16 cells.
+
+### Cell shapes
+
+A row entry is either a **string** (single-char key, the common
+case) or an **object**:
+
+```js
+{ text, wide, isShift, isLang, isSpace, onPress }
+```
+
+- `wide: true` — cell spans extra columns (used by space, shift,
+  lang, the symbols-layout's `<>|` switcher).
+- `isShift / isLang / isSpace` — semantic flags so the renderer
+  can swap the glyph for an icon (`keyboard_shift`,
+  `keyboard_lang`) and `handleInput` can branch on them.
+- `onPress` — cell-level callback. Fires on OK *before* any text
+  emission. Wires up the symbols-layout's `<>|` button switching
+  between SYM-1 and SYM-2 layouts.
+
+The OK handler normalises strings + objects into a uniform
+`{char, isShiftCell, isLangCell, cellOnPress}` so the rest of the
+key dispatch doesn't care which form the cell came in.
+
+### Three-state shift machine
+
+```
+'off'  ──tap──▶ 'shift'  ──letter emitted──▶ 'off'   (Camel-Case affordance)
+'off'  ─long-press─▶ 'caps'                          (entered externally)
+'caps' ──tap──▶ 'off'                                (any tap exits caps)
+```
+
+- `'shift'` is **one-shot**: emits one upper-case letter, auto-releases.
+- `'caps'` is reachable only via long-press, handled by the owning
+  scene (sets `keyboard.shiftState = 'caps'` directly). The
+  Keyboard component itself only knows about taps.
+- Numbers, punctuation, space pass through unchanged regardless of
+  `shiftState`. Multi-char labels (`"<>|"`) also fall through.
+
+The pressed-state visual is independent of the shift-state fill —
+every key (including shift) gets the 100 ms press-flash on tap so
+the user sees the touch register even when the persistent state
+doesn't change.
+
+### Selection visual
+
+Selected cell renders a **2 px outer stroke** drawn AFTER the
+neighbouring cells, so the right + bottom edges aren't clipped by
+the next cell's fill. Unselected cells use a whitened-gray fill
+(`#E0E0E0` ish) so the selection pops without making everything
+shouty.
+
+### Layout switching
+
+`langLabel` is a small gray badge above the lang key (top-row left
+pad area): `'EN'` for the alphabetic layout, owning scenes swap to
+`'123'` / `'ABC'` etc. when changing layouts. It's purely visual —
+doesn't affect input.
+
+The lang key itself uses a private-use-area sentinel (`'⌘'`,
+`KEYBOARD_LANG_CHAR` in `ui.js`); pressing it currently no-ops at
+the component layer. The owning scene watches selection + the
+press flash externally and swaps `keyboard.rows` to do the actual
+layout change.
+
+`KEYBOARD_SHIFT_CHAR = '⇧'` is the matching sentinel for the
+shift cell.
+
+### Touchpad navigation
+
+The screen-keyboard test scene wires the same SSE → velocity
+machinery as App Switcher, but **linear without projection** —
+slow finger movement scaled with a fixed divider so the cursor
+moves cell-by-cell predictably. Earlier iterations included
+axis-favouring (extra-distance for diagonals to lock to the
+nearest row/col); that was removed by user request as a mistake.
+
+### Diagnostics gotcha
+
+The `KEYBOARD_LANG_CHAR` sentinel must be byte-identical between
+`canvas.js` (the renderer) and `ui.js` / consumer scenes. An
+earlier version stored U+E002 in canvas.js but an empty string
+(invisible glyph dropped during copy/paste) in ui.js, leading to
+the lang icon never rendering. Fixed by switching to a visible
+codepoint (`'⌘'`) and asserting equality across files.
+
+---
+
+## Wi-Fi sub-page (`js/apps/wifi.js`)
+
+Reachable from `Network → Wi-Fi`. Bread-crumb trail
+`> Network > Wi-Fi` driven by `SceneManager.breadcrumb()` walking
+the scene stack collecting each scene's `breadcrumbTitle`.
+
+### Page layout (`_buildItems`)
+
+Rebuilt every render so the list stays in sync with the live
+radio state:
+
+| Row | When shown |
+|-----|-----------|
+| **Wi-Fi toggle** (ON/OFF) | always |
+| **`<SSID>`** chevron row (connected network) | only if `enabled && wifi.connected && wifi.ssid` |
+| **See visible networks** chevron row | only if `enabled` |
+
+When the radio is OFF every secondary row vanishes — there's
+nothing useful to do with them while the radio is down, and
+showing them would be lying to the user about what the device can
+do right now. Selection clamps to `items.length - 1` so the
+highlight survives the list shrinking under it.
+
+### Wi-Fi power toggle (optimistic)
+
+`UI.getWifiEnabled()` / `UI.setWifiEnabled()` in `js/ui.js`:
+
+- `setWifiEnabled(enabled)` flips the local `wifiEnabled` flag
+  *immediately*, requests a render, then POSTs `{enabled}` to
+  `/api/wifi/power`. The UI never blocks on the round-trip.
+- `pollWifiPower()` (3-s interval, also fired once on module init)
+  reconciles by GETting `/api/wifi/power`. If the server's
+  authoritative value differs, the local flag follows and a render
+  is requested. This handles `nmcli radio wifi off` from a
+  different control path.
+
+Server side:
+
+```js
+var wifiPowerCache = { enabled: true };
+async function refreshWifiPower() {
+    var line = await tryExec('nmcli radio wifi', { ... });
+    wifiPowerCache = { enabled: line.trim() === 'enabled' };
+}
+function setWifiPower(enabled, cb) {
+    exec('nmcli radio wifi ' + (enabled ? 'on' : 'off'), ...);
+}
+```
+
+POST handler updates the cache **before** the shell command
+returns, so the very next GET on the same poller tick reflects the
+write — closes the optimistic loop without waiting for nmcli.
+
+### Visible networks scan (`/api/wifi/scan`)
+
+The "spinner forever vs no networks" ambiguity is the central
+problem this endpoint solves:
+
+```js
+var wifiScanCache       = { ready: false, networks: [] };
+var wifiRescanCompletedAt = 0;
+var wifiScanStartedAt   = Date.now();
+var WIFI_SCAN_GRACE_MS  = 30000;
+```
+
+Three loops feed it:
+
+| Loop | Period | Job |
+|------|--------|-----|
+| `triggerWifiRescan` | 20 s | `nmcli dev wifi rescan` — kicks the supplicant. First success stamps `wifiRescanCompletedAt`. |
+| `refreshWifiScan`   | 5 s  | `nmcli dev wifi list` — parses output. |
+| `refreshWifi`       | 2 s  | `/api/wifi` (active connection state, IP addresses). |
+
+The scan endpoint returns `{ ready, networks }`. `ready` is gated
+to **prevent flashing "No networks"** during the cold start before
+nmcli has actually completed a scan:
+
+```js
+var inGrace    = (Date.now() - wifiScanStartedAt) < WIFI_SCAN_GRACE_MS;
+var rescanDone = wifiRescanCompletedAt !== 0;
+if (nets.length === 0 && !rescanDone && inGrace) return;   // keep ready:false
+wifiScanCache = { ready: true, networks: nets };
+```
+
+So an empty result only flips `ready: true` once we've seen at
+least one rescan complete, OR the 30-s grace has elapsed (a
+genuinely empty area shouldn't spin forever either).
+
+### Visible-networks modal (`_openNetworksModal`)
+
+Same design language as the text-input box: `ResponsiveFrame` body
++ black `TabHeader` ("Visible networks") with rounded corners.
+
+- **Geometry**: 4 px padding from the canvas left/right/top.
+  `ResponsiveFrame` corner radius **4 px**, top edge sits flush
+  with the bottom of the tab header (so the tab looks "attached").
+  Top-left corner radius is **0** to fuse with the tab.
+- **Dynamic height**: count rendered rows, add tab header,
+  centre vertically. Hard cap at `MAX_BOTTOM_Y = 128` (1 px below
+  what straight padding would give, matching a `+1` bottom-pad
+  bump that gives the last row breathing space). Anything above
+  the cap pages into the scroll.
+- **Row contents**: SSID (ellipsised to the available width), a
+  small WPA/WPA2/WPA3/WEP/Open security label, and a 4-bar signal
+  icon **identical to the status-bar Wi-Fi icon** (so signal
+  strength reads consistently between the two locations).
+- **Scrollbar**: `UI.Scrollbar` shown only when content overflows.
+  When scrollbar is hidden, the row's right edge extends to the
+  inner frame edge (no wasted gutter for an absent thumb).
+- **Loading state**: client tracks `_scanLoaded` separately from
+  `_visibleNetworks.length` — only flips true when the server
+  responds with `data.ready === true`. While `_scanLoaded` is
+  false, the modal renders the 8-frame `spinner_22x20` looped at
+  ~80 ms ticked by a `setInterval` requesting renders.
+- **Empty state**: `ready: true` + `networks.length === 0` →
+  centred "No networks" text. Distinct from the spinner.
+
+### Security label
+
+Parsed from nmcli's `SECURITY` field. The server returns the raw
+string, the client maps it to a short label:
+
+```
+'WPA2'        → 'WPA2'
+'WPA1 WPA2'   → 'WPA1/2'
+'WPA3'        → 'WPA3'
+''            → 'Open'
+'WEP'         → 'WEP'
+```
+
+Whatever specific WPA flavour nmcli hands us makes it through —
+not a "WPA-anything" lump.
+
+### Connected-network details modal (`_openConnectedDetailsModal`)
+
+Pressing OK on the connected-network row opens a second modal
+sharing the design language of the Ethernet verbose modal but
+unified into a **single scrollable selectable list**:
+
+| Row kind | Selectable | Notes |
+|----------|-----------|-------|
+| `action` (Forget this network, Auto-join, Password) | yes | OK fires the action |
+| `kv` (DHCP method, simple labels) | yes | Edit not yet wired |
+| `sub` (IPv4: / IPv6: / DNS: section heads, multi-entry only) | yes | |
+| `value` (indented address / gateway / DNS entry) | yes | |
+| `divider` / `sectionDivider` | no  | Skipped by `nextSelectable` |
+| `unavailable` | no | Rendered greyed when section has no data |
+
+- **All non-divider rows are `selectable: true`** — even the info
+  rows — so future edit flows can hook in without re-plumbing the
+  list. Today only `action` rows do anything on OK.
+- `nextSelectable(rows, idx, dir)` walks past dividers when the
+  user navigates with up/down.
+- `ensureSelectedVisible()` auto-scrolls so the highlight stays
+  inside the viewport (matches the keyboard interaction in long
+  menus).
+- Touchpad uses the same SSE → velocity → `easeOutCubic` snap
+  pattern documented under App Switcher above; the only diff is
+  the unit (pixels) and clamp (`[0, contentH − viewportH]`).
+- `computeLayout()` returns `{rows, rowOffsets, contentH}` per
+  render, so the scroll math is always against the latest poll's
+  data.
+
+### Forget action wiring
+
+`POST /api/wifi/forget` runs `nmcli connection delete <name>`
+server-side, then synchronously kicks `refreshWifi()` and
+`refreshWifiScan()` so the next client poll already reflects the
+removal — no waiting for the 2-s tick to catch up. Auto-join /
+Password rows are present but currently no-op; backend hooks for
+auto-join change are still pending.
+
+### Endpoint summary
+
+| Endpoint | Method | Role |
+|----------|--------|------|
+| `/api/wifi`           | GET  | Active connection: `{connected, ssid, ip4[], ip6[], gateway4, gateway6, dns[], method}` |
+| `/api/wifi/scan`      | GET  | `{ready, networks: [{ssid, signal, security}]}` |
+| `/api/wifi/power`     | GET  | `{enabled}` |
+| `/api/wifi/power`     | POST | `{enabled}` → `nmcli radio wifi on/off` |
+| `/api/wifi/forget`    | POST | `{name}` → `nmcli connection delete` |
+| `/api/wifi/connection`| GET  | `?name=…` → full `nmcli connection show` for that profile |
+
+---
+
 ## References
 
 - **Grayscale sprite example**: Dolphins (`js/sprites.js`) — 150×114 at 6-bit grayscale

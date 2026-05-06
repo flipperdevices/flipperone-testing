@@ -22,6 +22,12 @@ var UI = (function() {
     // icon depends on which kind of link is actually carrying data.
     var ethernetStatus = 'none';
     var airplaneEnabled = false;
+    // Local Wi-Fi power toggle. Defaults to true ("Wi-Fi on") and
+    // is flipped purely client-side for now — no /api/wifi/power
+    // call yet. The Wi-Fi sub-page reads/writes via
+    // get/setWifiEnabled and renders the on/off state in its
+    // toggle row.
+    var wifiEnabled = true;
 
     function pollBattery() {
         var xhr = new XMLHttpRequest();
@@ -157,6 +163,42 @@ var UI = (function() {
         return { connected: wifiConnected, quality: wifiQuality, ssid: wifiSSID };
     }
 
+    // Wi-Fi radio power. Polled from /api/wifi/power every 3 s
+    // (see pollWifiPower below); flipped optimistically by
+    // setWifiEnabled then reconciled with the server response.
+    function pollWifiPower() {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', '/api/wifi/power', true);
+        xhr.timeout = 3000;
+        xhr.onload = function() {
+            if (xhr.status !== 200) return;
+            try {
+                var data = JSON.parse(xhr.responseText);
+                var next = !!data.enabled;
+                if (next !== wifiEnabled) {
+                    wifiEnabled = next;
+                    if (window.requestRender) window.requestRender();
+                }
+            } catch (e) { /* ignore parse errors */ }
+        };
+        xhr.send();
+    }
+
+    function getWifiEnabled() { return wifiEnabled; }
+    function setWifiEnabled(enabled) {
+        // Optimistic: flip local state and trigger a render
+        // immediately so the toggle feels instant. The 3 s
+        // poller will reconcile if the actual radio state ends
+        // up differently.
+        wifiEnabled = !!enabled;
+        if (window.requestRender) window.requestRender();
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/wifi/power', true);
+        xhr.timeout = 3000;
+        xhr.setRequestHeader('Content-Type', 'application/json');
+        xhr.send(JSON.stringify({ enabled: wifiEnabled }));
+    }
+
     function pollAirplane() {
         var xhr = new XMLHttpRequest();
         xhr.open('GET', '/api/airplane', true);
@@ -226,6 +268,14 @@ var UI = (function() {
     // Poll airplane-mode state every 3 seconds.
     pollAirplane();
     setInterval(pollAirplane, 3000);
+
+    // Wi-Fi radio power state — kept in sync with `nmcli radio
+    // wifi`. The toggle in the Wi-Fi sub-page calls
+    // setWifiEnabled() which optimistically flips the local flag
+    // and POSTs to /api/wifi/power; this 3 s poller reconciles in
+    // case the server-side state differs.
+    pollWifiPower();
+    setInterval(pollWifiPower, 3000);
 
     function formatDateTime() {
         var now = new Date();
@@ -571,23 +621,85 @@ var UI = (function() {
             '#fff', '#000', this.shiftState, this.langLabel);
     };
 
+    // Geometry constants kept in lock-step with `canvas.drawKeyboard`
+    // so the Keyboard component can reason about visual column
+    // positions without having to ask the renderer. If those
+    // change, update both places.
+    var KB_BTN_W   = 15;
+    var KB_SHIFT_W = 35;
+    // Width of a single cell at (rowIdx, colIdx). Wide cells
+    // (object form with `wide:true`, or the row-positional
+    // SHIFT_CHAR / LANG_CHAR sentinels) measure SHIFT_W; everything
+    // else measures BTN_W.
+    function kbCellIsWide(rows, rowIdx, colIdx) {
+        var raw = rows[rowIdx][colIdx];
+        if (raw && typeof raw === 'object') return !!raw.wide;
+        var lastRow      = rowIdx === rows.length - 1;
+        var aboveLastRow = rowIdx === rows.length - 2;
+        if (lastRow      && colIdx === 0 && raw === KEYBOARD_SHIFT_CHAR) return true;
+        if (aboveLastRow && colIdx === 0 && raw === KEYBOARD_LANG_CHAR)  return true;
+        return false;
+    }
+    function kbCellW(rows, rowIdx, colIdx) {
+        return kbCellIsWide(rows, rowIdx, colIdx) ? KB_SHIFT_W : KB_BTN_W;
+    }
+    // Per-row leading-wide width: equals SHIFT_W if the row's
+    // first cell is wide, else 0. Used to align the alphabetic
+    // columns across rows that have / don't have a shift / lang
+    // key on the left.
+    function kbRowLeadingWide(rows, rowIdx) {
+        return kbCellIsWide(rows, rowIdx, 0) ? KB_SHIFT_W : 0;
+    }
+    function kbMaxLeadingWide(rows) {
+        var m = 0;
+        for (var r = 0; r < rows.length; r++) {
+            var lw = kbRowLeadingWide(rows, r);
+            if (lw > m) m = lw;
+        }
+        return m;
+    }
+    function kbRowLeftOffset(rows, rowIdx) {
+        return kbMaxLeadingWide(rows) - kbRowLeadingWide(rows, rowIdx);
+    }
+    // Visual centre x of a cell, measured from the keyboard's
+    // left edge. Sums the leading offset + every cell width to
+    // the left of `colIdx`, plus half this cell's own width.
+    function kbCellCenterX(rows, rowIdx, colIdx) {
+        var x = kbRowLeftOffset(rows, rowIdx);
+        for (var c = 0; c < colIdx; c++) x += kbCellW(rows, rowIdx, c);
+        return x + kbCellW(rows, rowIdx, colIdx) / 2;
+    }
+    // Walk every cell in `rowIdx` and return the column index
+    // whose centre is closest to `targetX`. Used by up / down
+    // navigation to land on the visually-aligned cell instead
+    // of the same array index (which can drift when adjacent
+    // rows differ in their leading wide cell).
+    function kbClosestCol(rows, rowIdx, targetX) {
+        var best = 0, bestDist = Infinity;
+        for (var c = 0; c < rows[rowIdx].length; c++) {
+            var d = Math.abs(kbCellCenterX(rows, rowIdx, c) - targetX);
+            if (d < bestDist) { bestDist = d; best = c; }
+        }
+        return best;
+    }
+
     Keyboard.prototype.handleInput = function(action) {
         if (action === 'left') {
             this.selectedCol = (this.selectedCol - 1 + this.rows[this.selectedRow].length) % this.rows[this.selectedRow].length;
         } else if (action === 'right') {
             this.selectedCol = (this.selectedCol + 1) % this.rows[this.selectedRow].length;
         } else if (action === 'up') {
+            // Capture current visual centre BEFORE advancing the
+            // row so the column-alignment algorithm sees the
+            // source row's geometry. Wrap row index, then snap to
+            // the column whose centre lines up.
+            var upX = kbCellCenterX(this.rows, this.selectedRow, this.selectedCol);
             this.selectedRow = (this.selectedRow - 1 + this.rows.length) % this.rows.length;
-            // Adjust column if new row is shorter
-            if (this.selectedCol >= this.rows[this.selectedRow].length) {
-                this.selectedCol = this.rows[this.selectedRow].length - 1;
-            }
+            this.selectedCol = kbClosestCol(this.rows, this.selectedRow, upX);
         } else if (action === 'down') {
+            var dnX = kbCellCenterX(this.rows, this.selectedRow, this.selectedCol);
             this.selectedRow = (this.selectedRow + 1) % this.rows.length;
-            // Adjust column if new row is shorter
-            if (this.selectedCol >= this.rows[this.selectedRow].length) {
-                this.selectedCol = this.rows[this.selectedRow].length - 1;
-            }
+            this.selectedCol = kbClosestCol(this.rows, this.selectedRow, dnX);
         } else if (action === 'ok') {
             // Cells can be strings (single-char keys) OR objects
             // {text, isShift, isLang, onPress, ...} (custom wide
@@ -811,6 +923,8 @@ var UI = (function() {
         DeleteConfirmDialog: DeleteConfirmDialog,
         Scrollbar:      Scrollbar,
         getWifiInfo:    getWifiInfo,
+        getWifiEnabled: getWifiEnabled,
+        setWifiEnabled: setWifiEnabled,
         getAirplaneMode: getAirplaneMode,
         setAirplaneMode: setAirplaneMode,
         STATUS_BAR_H:   STATUS_BAR_H,

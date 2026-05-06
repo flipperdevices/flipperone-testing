@@ -25,13 +25,33 @@ var Input = (function() {
 
     function Input() {
         this._queue = [];
+        // `_held` mirrors which mapped actions currently have
+        // their key down. Used by push-to-reveal style features
+        // (e.g. the Wi-Fi password modal) that need continuous
+        // state instead of a one-shot action. The browser
+        // delivers auto-repeat keydown events while a key is
+        // held, so this map flips back to false ONLY on keyup.
+        this._held = {};
         var self = this;
         document.addEventListener('keydown', function(e) {
             var action = KEY_MAP[e.key];
             if (action) {
                 e.preventDefault();
                 self._queue.push(action);
+                self._held[action] = true;
             }
+        });
+        document.addEventListener('keyup', function(e) {
+            var action = KEY_MAP[e.key];
+            if (action) {
+                self._held[action] = false;
+            }
+        });
+        // Window-blur safety net: if the user Alt-Tabs while
+        // holding a key, the browser may swallow the keyup. Reset
+        // every held flag so push-to-reveal doesn't get stuck on.
+        window.addEventListener('blur', function() {
+            self._held = {};
         });
     }
 
@@ -39,6 +59,10 @@ var Input = (function() {
         var queue = this._queue;
         this._queue = [];
         return queue;
+    };
+
+    Input.prototype.isHeld = function(action) {
+        return !!this._held[action];
     };
 
     return Input;
