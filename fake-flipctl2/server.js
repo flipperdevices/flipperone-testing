@@ -39,6 +39,157 @@ function startRefreshLoop(name, fn, ms) {
     tick();
 }
 
+// ── LED control ──────────────────────────────────────────────────
+// Drives the four RGB LEDs on the Flipper One via sysfs at
+// /sys/class/leds/. Sysfs entries are root-owned so every write
+// goes through `sudo sh -c 'echo X > /path'` — passwordless sudo
+// is configured for the `user` account on these devices, so the
+// shell call returns without prompting.
+//
+// Usage model:
+//   • ledState['name'] holds the LAST-applied target so we only
+//     rewrite when something actually changes (cuts unnecessary
+//     sysfs writes during the 1 Hz tick).
+//   • applyLedTarget(name, target) writes only the diff,
+//     respecting the kernel's ordering rules (set trigger=none
+//     before manual color/brightness, set color BEFORE trigger
+//     when activating one).
+//   • applyLedsFromState() runs every second + after every wifi
+//     state change, mapping (wifiCache + ethernetCache + the
+//     transient `ledWifiConnecting` flag) → LED states.
+var ledState = {};
+function _shellQuote(s) { return JSON.stringify(String(s)); }
+function _writeLedFile(led, file, value) {
+    var path = '/sys/class/leds/' + led + '/' + file;
+    var inner = 'echo ' + value + ' > ' + path;
+    var cmd = 'sudo sh -c ' + _shellQuote(inner);
+    exec(cmd, { encoding: 'utf8', timeout: 2000 }, function() {});
+}
+// Apply a target {trigger, multi_intensity?, brightness?,
+// delay_on?, delay_off?} to `led`. Diffs against the last
+// applied target so untouched fields skip the write.
+function applyLedTarget(led, target) {
+    var prev = ledState[led] || {};
+    var t    = target.trigger || 'none';
+    if (t === 'none') {
+        // Manual control — release any active trigger first so
+        // subsequent multi_intensity / brightness writes stick.
+        if (prev.trigger !== 'none') {
+            _writeLedFile(led, 'trigger', 'none');
+        }
+        if (target.multi_intensity != null
+            && target.multi_intensity !== prev.multi_intensity) {
+            _writeLedFile(led, 'multi_intensity', target.multi_intensity);
+        }
+        if (target.brightness != null
+            && target.brightness !== prev.brightness) {
+            _writeLedFile(led, 'brightness', target.brightness);
+        }
+    } else {
+        // Trigger-driven (e.g. timer for breathing). Set
+        // multi_intensity FIRST so the trigger has a colour
+        // when it activates, then switch trigger, then any
+        // trigger-specific knobs.
+        if (target.multi_intensity != null
+            && target.multi_intensity !== prev.multi_intensity) {
+            _writeLedFile(led, 'multi_intensity', target.multi_intensity);
+        }
+        if (t !== prev.trigger) {
+            _writeLedFile(led, 'trigger', t);
+        }
+        if (target.delay_on != null
+            && target.delay_on !== prev.delay_on) {
+            _writeLedFile(led, 'delay_on', target.delay_on);
+        }
+        if (target.delay_off != null
+            && target.delay_off !== prev.delay_off) {
+            _writeLedFile(led, 'delay_off', target.delay_off);
+        }
+    }
+    ledState[led] = target;
+}
+function ledOff(led) {
+    applyLedTarget(led, { trigger: 'none', brightness: '0' });
+}
+// Transient flag — set true at the start of POST /api/wifi/connect,
+// flipped back to false when the call resolves. Drives the wifi
+// LED's "breathing blue" pattern via the timer trigger.
+var ledWifiConnecting = false;
+// Link LED state — driven entirely by POST /api/led/link from
+// other applications. Kept here so applyLedsFromState() doesn't
+// stomp it during periodic ticks.
+var ledLinkOn = false;
+function applyLedsFromState() {
+    // ── Wi-Fi ──
+    var wifiLed = 'flipper-one:rgb:wifi';
+    if (ledWifiConnecting) {
+        // Breathing blue while a connect is in flight. Timer
+        // trigger gives a slow blink (500/500); not a true
+        // sine "breath" but cheap and recognisable.
+        applyLedTarget(wifiLed, {
+            trigger:         'timer',
+            multi_intensity: '0 0 255',
+            delay_on:        '500',
+            delay_off:       '500'
+        });
+    } else if (wifiCache && wifiCache.connected) {
+        applyLedTarget(wifiLed, {
+            trigger:         'none',
+            multi_intensity: '0 0 255',
+            brightness:      '255'
+        });
+    } else {
+        ledOff(wifiLed);
+    }
+    // ── Ethernet ── interface name → LED slot:
+    //   end0 → flipper-one:rgb:eth0
+    //   end1 → flipper-one:rgb:eth1
+    var ethMap = { 'end0': 'flipper-one:rgb:eth0',
+                   'end1': 'flipper-one:rgb:eth1' };
+    for (var ei = 0; ei < (ethernetCache || []).length; ei++) {
+        var iface = ethernetCache[ei];
+        var led   = ethMap[iface.name];
+        if (!led) continue;
+        // "Connected" = state string contains the word
+        // (matches both nmcli's cleaned output and our
+        // ip-address fallback).
+        var isUp = !!(iface.state
+                      && iface.state.indexOf('connected') !== -1
+                      && iface.state.indexOf('disconnected') === -1);
+        if (isUp) {
+            applyLedTarget(led, {
+                trigger:         'none',
+                multi_intensity: '0 255 0',
+                brightness:      '255'
+            });
+        } else {
+            ledOff(led);
+        }
+    }
+    // Always ensure unmapped eth slot is off (e.g. eth1 LED
+    // when only end0 is wired).
+    for (var k in ethMap) {
+        var found = false;
+        for (var ej = 0; ej < (ethernetCache || []).length; ej++) {
+            if (ethernetCache[ej].name === k) { found = true; break; }
+        }
+        if (!found) ledOff(ethMap[k]);
+    }
+    // ── Link ──  Driven by /api/led/link; this branch just
+    // re-asserts the flag every tick so nothing else can drift
+    // it (e.g. the kernel default coming back after a reboot).
+    var linkLed = 'flipper-one:rgb:link';
+    if (ledLinkOn) {
+        applyLedTarget(linkLed, {
+            trigger:         'none',
+            multi_intensity: '0 0 255',
+            brightness:      '255'
+        });
+    } else {
+        ledOff(linkLed);
+    }
+}
+
 var PORT = 8899;
 var BIND = '0.0.0.0';
 
@@ -1107,9 +1258,16 @@ var server = http.createServer(function(req, res) {
             // shell-special characters.
             var cmd = 'nmcli device wifi connect ' + ssidQ;
             if (pwd) cmd += ' password ' + JSON.stringify(pwd);
+            // Flip the wifi LED to "breathing blue" while the
+            // connect runs. Cleared in every exit path so a
+            // failed / timed-out attempt doesn't leave the LED
+            // pulsing forever.
+            ledWifiConnecting = true;
+            applyLedsFromState();
             exec(cmd,
                 { encoding: 'utf8', timeout: 30000 },
                 function(execErr, stdout, stderr) {
+                    ledWifiConnecting = false;
                     if (execErr) {
                         // nmcli writes the user-facing reason to
                         // stderr ("Secrets were required, but not
@@ -1117,11 +1275,12 @@ var server = http.createServer(function(req, res) {
                         // found", etc.). Pass it through verbatim
                         // so the client can surface it.
                         var msg = String(stderr || execErr.message || execErr).trim();
+                        applyLedsFromState();
                         res.writeHead(500, { 'Content-Type': 'application/json' });
                         res.end(JSON.stringify({ ok: false, error: msg }));
                         return;
                     }
-                    refreshWifi();
+                    refreshWifi().then(function() { applyLedsFromState(); });
                     refreshWifiScan();
                     res.writeHead(200, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ ok: true, output: String(stdout || '').trim() }));
@@ -1359,6 +1518,31 @@ var server = http.createServer(function(req, res) {
         res.end(JSON.stringify(airplaneCache));
         return;
     }
+    if (req.url === '/api/led/link' && req.method === 'GET') {
+        // Tiny status query so callers can confirm what they
+        // last set without keeping their own bookkeeping.
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ on: ledLinkOn, color: 'blue' }));
+        return;
+    }
+    if (req.url === '/api/led/link' && req.method === 'POST') {
+        // Hand-off endpoint for OTHER applications to control the
+        // physical "Link" RGB LED. Body: `{ on: bool }`. Solid
+        // blue at full brightness when on; off (brightness 0)
+        // when off. Colour is hard-wired — callers don't pick.
+        readJsonBody(req, function(err, data) {
+            if (err) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Invalid request' }));
+                return;
+            }
+            ledLinkOn = !!(data && data.on);
+            applyLedsFromState();
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, on: ledLinkOn }));
+        });
+        return;
+    }
     if (req.url === '/api/airplane' && req.method === 'POST') {
         readJsonBody(req, function(err, data) {
             if (err) {
@@ -1583,5 +1767,10 @@ server.listen(PORT, BIND, function() {
         startRefreshLoop('routing',  refreshRouting,  5000);
         startRefreshLoop('airplane', refreshAirplane, 3000);
         startRefreshLoop('disk',     refreshDisk,    30000);
+        // LED refresher — diff-applies the current target state
+        // every second. Cheap (no shell call when nothing
+        // changed) and keeps the LEDs in sync with the wifi /
+        // ethernet caches even if a refresh cycle skips a beat.
+        startRefreshLoop('leds',     applyLedsFromState, 1000);
     }
 });
