@@ -39,12 +39,14 @@ function startRefreshLoop(name, fn, ms) {
     tick();
 }
 
-// ── LED control ──────────────────────────────────────────────────
-// Drives the four RGB LEDs on the Flipper One via sysfs at
-// /sys/class/leds/. Sysfs entries are root-owned so every write
-// goes through `sudo sh -c 'echo X > /path'` — passwordless sudo
-// is configured for the `user` account on these devices, so the
-// shell call returns without prompting.
+// ── Network LEDs ─────────────────────────────────────────────────
+// "Network LEDs" — the four RGB LEDs along the top of the Flipper
+// One that surface networking state: wifi, eth0, eth1, link.
+// Backed by sysfs at /sys/class/leds/. Sysfs entries are
+// root-owned so every write goes through
+// `sudo sh -c 'echo X > /path'` — passwordless sudo is configured
+// for the `user` account on these devices, so the shell call
+// returns without prompting.
 //
 // Usage model:
 //   • ledState['name'] holds the LAST-applied target so we only
@@ -119,23 +121,31 @@ var ledWifiConnecting = false;
 // other applications. Kept here so applyLedsFromState() doesn't
 // stomp it during periodic ticks.
 var ledLinkOn = false;
+// Manual override — when true, applyLedsFromState() bows out so
+// the testing scene's direct /api/led/set writes stick. Toggled
+// via /api/led/manual.
+var ledManualMode = false;
 function applyLedsFromState() {
+    if (ledManualMode) return;
     // ── Wi-Fi ──
+    // Status colour is full cyan (0,255,255) — picked in the
+    // Network LEDs testing scene and confirmed against the
+    // physical hardware.
     var wifiLed = 'flipper-one:rgb:wifi';
     if (ledWifiConnecting) {
-        // Breathing blue while a connect is in flight. Timer
+        // Breathing cyan while a connect is in flight. Timer
         // trigger gives a slow blink (500/500); not a true
         // sine "breath" but cheap and recognisable.
         applyLedTarget(wifiLed, {
             trigger:         'timer',
-            multi_intensity: '0 0 255',
+            multi_intensity: '0 255 255',
             delay_on:        '500',
             delay_off:       '500'
         });
     } else if (wifiCache && wifiCache.connected) {
         applyLedTarget(wifiLed, {
             trigger:         'none',
-            multi_intensity: '0 0 255',
+            multi_intensity: '0 255 255',
             brightness:      '255'
         });
     } else {
@@ -157,9 +167,12 @@ function applyLedsFromState() {
                       && iface.state.indexOf('connected') !== -1
                       && iface.state.indexOf('disconnected') === -1);
         if (isUp) {
+            // Status colour for both ETH LEDs is a lime green
+            // (120,255,0) — picked in the Network LEDs testing
+            // scene against the physical hardware.
             applyLedTarget(led, {
                 trigger:         'none',
-                multi_intensity: '0 255 0',
+                multi_intensity: '120 255 0',
                 brightness:      '255'
             });
         } else {
@@ -1518,6 +1531,77 @@ var server = http.createServer(function(req, res) {
         res.end(JSON.stringify(airplaneCache));
         return;
     }
+    if (req.url === '/api/led/manual' && req.method === 'POST') {
+        // Network-LED tuning takeover. When `enabled: true` the
+        // periodic apply loop steps aside so direct /api/led/set
+        // writes from the testing scene aren't trampled. When
+        // `enabled: false` the auto state takes over again
+        // immediately (fires applyLedsFromState() so the LEDs
+        // snap back to their state-driven look without waiting
+        // for the next tick).
+        readJsonBody(req, function(err, data) {
+            if (err) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Invalid request' }));
+                return;
+            }
+            ledManualMode = !!(data && data.enabled);
+            if (!ledManualMode) applyLedsFromState();
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, enabled: ledManualMode }));
+        });
+        return;
+    }
+    if (req.url === '/api/led/set' && req.method === 'POST') {
+        // Direct LED control — used by the Network LEDs testing
+        // scene. Body: { led: 'wifi'|'eth0'|'eth1'|'link',
+        //                 r, g, b, on }.  RGB values clamped to
+        // 0-255. When on=false the LED is turned off (brightness
+        // 0) regardless of the colour values. Effective only in
+        // manual mode (the auto-loop will overwrite otherwise).
+        readJsonBody(req, function(err, data) {
+            if (err) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Invalid request' }));
+                return;
+            }
+            var ledMap = {
+                'wifi': 'flipper-one:rgb:wifi',
+                'eth0': 'flipper-one:rgb:eth0',
+                'eth1': 'flipper-one:rgb:eth1',
+                'link': 'flipper-one:rgb:link'
+            };
+            var sysled = ledMap[(data && data.led) || ''];
+            if (!sysled) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Unknown LED' }));
+                return;
+            }
+            function clamp(v) {
+                v = parseInt(v, 10);
+                if (isNaN(v)) v = 0;
+                if (v < 0)   v = 0;
+                if (v > 255) v = 255;
+                return v;
+            }
+            var r  = clamp(data.r);
+            var g  = clamp(data.g);
+            var b  = clamp(data.b);
+            var on = !!(data && data.on);
+            if (on) {
+                applyLedTarget(sysled, {
+                    trigger:         'none',
+                    multi_intensity: r + ' ' + g + ' ' + b,
+                    brightness:      '255'
+                });
+            } else {
+                ledOff(sysled);
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, led: data.led, r: r, g: g, b: b, on: on }));
+        });
+        return;
+    }
     if (req.url === '/api/led/link' && req.method === 'GET') {
         // Tiny status query so callers can confirm what they
         // last set without keeping their own bookkeeping.
@@ -1767,10 +1851,11 @@ server.listen(PORT, BIND, function() {
         startRefreshLoop('routing',  refreshRouting,  5000);
         startRefreshLoop('airplane', refreshAirplane, 3000);
         startRefreshLoop('disk',     refreshDisk,    30000);
-        // LED refresher — diff-applies the current target state
-        // every second. Cheap (no shell call when nothing
-        // changed) and keeps the LEDs in sync with the wifi /
-        // ethernet caches even if a refresh cycle skips a beat.
-        startRefreshLoop('leds',     applyLedsFromState, 1000);
+        // Network LEDs refresher — diff-applies the current
+        // target state every second. Cheap (no shell call when
+        // nothing changed) and keeps the LEDs in sync with the
+        // wifi / ethernet caches even if a refresh cycle skips
+        // a beat.
+        startRefreshLoop('network-leds', applyLedsFromState, 1000);
     }
 });
