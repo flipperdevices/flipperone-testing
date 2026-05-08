@@ -31,8 +31,8 @@ var ComponentSelectorFrame = (function() {
         // a ">" glyph centred inside it. Acts as a "drill in"
         // affordance for component cards.
         this.showChevron       = options.showChevron       !== undefined ? options.showChevron       : true;
-        this.chevronWidth      = options.chevronWidth      !== undefined ? options.chevronWidth      : 6;
-        this.chevronColor      = options.chevronColor      || '#000000';   // bar background
+        this.chevronWidth      = options.chevronWidth      !== undefined ? options.chevronWidth      : 7;
+        this.chevronColor      = options.chevronColor      || '#666666';   // bar background (mid-grey by default)
         this.chevronGlyphColor = options.chevronGlyphColor || '#ffffff';
     }
 
@@ -76,6 +76,40 @@ var ComponentSelectorFrame = (function() {
             }
         }
 
+        // Right-side chevron — drawn at the FILL level so the
+        // stroke + shadow lines + BR shadow-corner pixels below
+        // paint OVER it. This way the chevron tucks behind the
+        // frame's outline rather than spilling onto it (matters
+        // when chevronColor differs from strokeColor, or when
+        // future tweaks adjust the BR silhouette).
+        if (this.showChevron && this.chevronWidth > 0) {
+            var cw = this.chevronWidth;
+            ctx.fillStyle = this.chevronColor;
+            for (var cy = 0; cy < h; cy++) {
+                var ri = 0;
+                if (cy < rTR)      ri = Math.max(ri, rTR - 1 - cy);
+                if (cy >= h - rBR) ri = Math.max(ri, cy - (h - rBR));
+                var barStart = w - cw;
+                if (barStart < 0) barStart = 0;
+                var barEnd = w - 1 - ri;
+                var barW = barEnd - barStart + 1;
+                if (barW > 0) ctx.fillRect(x + barStart, y + cy, barW, 1);
+            }
+
+            // ">" glyph centred in the bar. HaxrcorpFont16 glyphs render
+            // inside an 11-row frame with the visible cap at row 2, so
+            // shift the draw y by −2 so the cap top lands at the bar's
+            // visual centre. No horizontal nudge — geometric centre
+            // works once the bar widened to 7 px.
+            if (typeof HaxrcorpFont16 !== 'undefined') {
+                var glyph = '>';
+                var glyphW = HaxrcorpFont16.textWidth(glyph);
+                var glyphX = x + (w - cw) + Math.floor((cw - glyphW) / 2);
+                var glyphY = y + Math.floor((h - 7) / 2) - 2;
+                HaxrcorpFont16.draw(canvas.ctx, glyph, glyphX, glyphY, this.chevronGlyphColor);
+            }
+        }
+
         if (this.showStroke) {
             ctx.fillStyle = this.strokeColor;
 
@@ -116,43 +150,17 @@ var ComponentSelectorFrame = (function() {
             ctx.fillRect(x + w, y + r, 1, shadowVLen);
         }
 
-        // Two corner pixels at the bottom-right: inset (right 2 / bottom 1)
-        // and (right 1 / bottom 2) from the container edges. They fill the
-        // cut-corner region to give the selection frame extra weight there.
+        // Two corner pixels at the bottom-right: inset (right 2 /
+        // bottom 1) and (right 1 / bottom 2) from the container
+        // edges. Mirrors the MenuSelectorFrame's BR shadow-corner
+        // treatment so component-selector and menu-selector
+        // siblings share the same drop-shadow silhouette. Sits
+        // alongside the bottom + right shadow lines above to
+        // give the BR a solid "lifted" look.
         ctx.fillStyle = this.strokeColor;
         ctx.fillRect(x + w - 2, y + h - 1, 1, 1);
         ctx.fillRect(x + w - 1, y + h - 2, 1, 1);
 
-        // Right-side chevron: a solid black bar `chevronWidth` px wide
-        // anchored to the frame's right edge, with a ">" glyph centred
-        // inside. The bar respects the TR and BR rounded corners so it
-        // blends into the frame silhouette rather than squaring it off.
-        if (this.showChevron && this.chevronWidth > 0) {
-            var cw = this.chevronWidth;
-            ctx.fillStyle = this.chevronColor;
-            for (var cy = 0; cy < h; cy++) {
-                var ri = 0;
-                if (cy < rTR)      ri = Math.max(ri, rTR - 1 - cy);
-                if (cy >= h - rBR) ri = Math.max(ri, cy - (h - rBR));
-                var barStart = w - cw;
-                if (barStart < 0) barStart = 0;
-                var barEnd = w - 1 - ri;
-                var barW = barEnd - barStart + 1;
-                if (barW > 0) ctx.fillRect(x + barStart, y + cy, barW, 1);
-            }
-
-            // ">" glyph centred in the bar. HaxrcorpFont16 glyphs render
-            // inside an 11-row frame with the visible cap at row 2, so
-            // shift the draw y by −2 so the cap top lands at the bar's
-            // visual centre.
-            if (typeof HaxrcorpFont16 !== 'undefined') {
-                var glyph = '>';
-                var glyphW = HaxrcorpFont16.textWidth(glyph);
-                var glyphX = x + (w - cw) + Math.floor((cw - glyphW) / 2) + 1;
-                var glyphY = y + Math.floor((h - 7) / 2) - 2;
-                HaxrcorpFont16.draw(canvas.ctx, glyph, glyphX, glyphY, this.chevronGlyphColor);
-            }
-        }
     };
 
     ComponentSelectorFrame.prototype.setPosition = function(x, y) { this.x = x; this.y = y; };
@@ -199,7 +207,7 @@ ComponentSelectorFrame.tweakables = [
     { key: 'corners.br',   type: 'bool', default: true, label: 'bottom-right' },
     { section: 'chevron' },
     { key: 'showChevron',       type: 'bool',  default: true, label: 'show chevron' },
-    { key: 'chevronWidth',      type: 'range', min: 0, max: 16, default: 6, label: 'bar width' },
-    { key: 'chevronColor',      type: 'color', default: '#000000', label: 'bar color' },
+    { key: 'chevronWidth',      type: 'range', min: 0, max: 16, default: 7, label: 'bar width' },
+    { key: 'chevronColor',      type: 'color', default: '#666666', label: 'bar color' },
     { key: 'chevronGlyphColor', type: 'color', default: '#ffffff', label: 'glyph color' }
 ];

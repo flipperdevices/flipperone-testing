@@ -53,7 +53,13 @@ var NetworkLedsScene = (function() {
 
     // Per-field padding — gives the highlight rectangle some
     // breathing room around the text.
-    var FIELD_PAD_X = 2;
+    // Highlight extends 4 px past the selected field's text on
+    // each side — that's `FIELD_GAP / 2`, so the highlight's
+    // edge lands right on the gray divider that sits at the
+    // midpoint of the gap. Net visual: the divider on either
+    // side of the selected field is HIDDEN behind the black
+    // highlight, while the other dividers stay visible.
+    var FIELD_PAD_X = 4;
 
     // Long-press threshold: hold > this many ms and the step
     // ramps from ±1 to ±10.
@@ -62,15 +68,17 @@ var NetworkLedsScene = (function() {
 
     // LED registry. Order matters — drives the "next LED" cycle.
     // `key` matches the server's /api/led/set vocabulary.
-    // `nameDy` is a per-name vertical-render offset to fix
-    // glyph alignment quirks in Born2bSportyV2Medium — `LINK`
-    // sits visually high vs the other labels, so we drop it
-    // 2 px so all four LED labels share a baseline.
+    // `nameDy` is a per-name vertical-render offset reserved
+    // for glyph-alignment tweaks in Born2bSportyV2Medium. All
+    // four LEDs currently share the same baseline (=0) so the
+    // row's y position stays identical regardless of which LED
+    // is selected. Bump a value here if a future label glyph
+    // demands compensation.
     var LEDS = [
         { key: 'wifi', name: 'WIFI',  nameDy: 0 },
         { key: 'eth0', name: 'ETH 0', nameDy: 0 },
         { key: 'eth1', name: 'ETH 1', nameDy: 0 },
-        { key: 'link', name: 'LINK',  nameDy: 2 }
+        { key: 'link', name: 'LINK',  nameDy: 0 }
     ];
 
     function NetworkLedsScene(sceneManager) {
@@ -137,9 +145,18 @@ var NetworkLedsScene = (function() {
     NetworkLedsScene.prototype.enter = function() {
         // Take over.
         this._setManualMode(true);
-        // Push initial state of the currently-displayed LED so
-        // the user starts from a known baseline.
-        this._pushLed(LEDS[this._ledIdx].key);
+        // Reset every LED to OFF on entry so the user starts
+        // from a clean baseline — whichever colours the auto
+        // state was driving before the takeover are wiped, and
+        // the on-screen `on:false` flag matches the physical
+        // LED. Pushes the OFF state to the device for each LED
+        // explicitly (just flipping `_ledState[k].on = false`
+        // wouldn't update the hardware otherwise).
+        for (var i = 0; i < LEDS.length; i++) {
+            var k = LEDS[i].key;
+            this._ledState[k].on = false;
+            this._pushLed(k);
+        }
     };
     NetworkLedsScene.prototype.exit = function() {
         // Release. Server will snap LEDs back to auto-driven
@@ -172,6 +189,8 @@ var NetworkLedsScene = (function() {
         var key   = LEDS[this._ledIdx].key;
         var s     = this._ledState[key];
 
+        // Field order:
+        //   0 Name   1 ON/OFF   2 R   3 G   4 B
         switch (this._fieldIdx) {
             case 0:
                 // Cycle LED name. Wrap. Step magnitude doesn't
@@ -181,23 +200,23 @@ var NetworkLedsScene = (function() {
                 this._pushLed(LEDS[this._ledIdx].key);
                 return;
             case 1:
+                // Toggle. Direction doesn't matter, just flip.
+                s.on = !s.on;
+                break;
+            case 2:
                 s.r += step;
                 if (s.r < 0)   s.r = 0;
                 if (s.r > 255) s.r = 255;
                 break;
-            case 2:
+            case 3:
                 s.g += step;
                 if (s.g < 0)   s.g = 0;
                 if (s.g > 255) s.g = 255;
                 break;
-            case 3:
+            case 4:
                 s.b += step;
                 if (s.b < 0)   s.b = 0;
                 if (s.b > 255) s.b = 255;
-                break;
-            case 4:
-                // Toggle. Direction doesn't matter, just flip.
-                s.on = !s.on;
                 break;
         }
         this._pushLed(key);
@@ -266,19 +285,29 @@ var NetworkLedsScene = (function() {
 
         // Each field carries its width; x is filled in once we
         // know the frame's left edge. font drives the renderer
-        // in the second pass.
+        // in the second pass. `groupBreakBefore: true` marks a
+        // logical-block boundary — the renderer paints a thin
+        // gray vertical divider in the gap to the LEFT of these
+        // fields. Three logical blocks:
+        //   1. Name           (idx 0)
+        //   2. ON/OFF         (idx 1)
+        //   3. RGB triplet    (idx 2-4: R, G, B)
         var fields = [
             { font: 'born2b', text: name,
               w: Born2bSportyV2Medium.textWidth(name),
               dy: led.nameDy || 0 },
-            { font: 'haxr',   text: rTxt,
-              w: HaxrcorpFont16.textWidth(rTxt) },
-            { font: 'haxr',   text: gTxt,
-              w: HaxrcorpFont16.textWidth(gTxt) },
-            { font: 'haxr',   text: bTxt,
-              w: HaxrcorpFont16.textWidth(bTxt) },
             { font: 'haxr',   text: onTxt,
-              w: HaxrcorpFont16.textWidth(onTxt) }
+              w: HaxrcorpFont16.textWidth(onTxt),
+              groupBreakBefore: true },
+            { font: 'haxr',   text: rTxt,
+              w: HaxrcorpFont16.textWidth(rTxt),
+              groupBreakBefore: true },
+            { font: 'haxr',   text: gTxt,
+              w: HaxrcorpFont16.textWidth(gTxt),
+              groupBreakBefore: true },
+            { font: 'haxr',   text: bTxt,
+              w: HaxrcorpFont16.textWidth(bTxt),
+              groupBreakBefore: true }
         ];
 
         // Total inner content width: sum of field widths + a gap
@@ -313,14 +342,65 @@ var NetworkLedsScene = (function() {
         });
         frame.render(canvas);
 
+        // ── Group dividers (between logical blocks) ──────────
+        // 1-px-wide vertical line in the gap to the left of any
+        // field flagged `groupBreakBefore`. Sits at the gap's
+        // mid-column so the line reads as evenly spaced from
+        // both adjacent fields. Drawn BEFORE the selection
+        // highlight so the highlight rectangle paints over it
+        // when the user lands on the next field.
+        for (var gi = 1; gi < fields.length; gi++) {
+            if (!fields[gi].groupBreakBefore) continue;
+            var prev = fields[gi - 1];
+            var prevRight = prev.x + prev.w;
+            var divX = Math.floor((prevRight + fields[gi].x) / 2);
+            canvas.drawVLine(divX, FRAME_Y + 2, FRAME_H - 4, '#CCCCCC');
+        }
+
         // ── Selection highlight (under the text) ──────────────
+        // Spans the FULL inner height of the frame (1 px below
+        // the top stroke, 1 px above the bottom stroke) — no gap
+        // above / below the selected parameter. When the
+        // highlighted field is the very first or last in the
+        // row, the highlight's far side stretches to the frame's
+        // edge and ROUNDS at the frame's corner radius so the
+        // black fill sits flush against the body's rounded
+        // silhouette. Middle fields stay as a plain rectangle.
         var sel = fields[this._fieldIdx];
-        var highlightY = FRAME_Y + 2;
-        var highlightH = FRAME_H - 4;
-        var highlightX = sel.x - FIELD_PAD_X;
-        var highlightW = sel.w + FIELD_PAD_X * 2;
-        ctx.fillStyle = '#000';
-        ctx.fillRect(highlightX, highlightY, highlightW, highlightH);
+        var isFirstField = (this._fieldIdx === 0);
+        var isLastField  = (this._fieldIdx === fields.length - 1);
+
+        var highlightY = FRAME_Y + 1;
+        var highlightH = FRAME_H - 2;
+        var highlightX, highlightW;
+        if (isFirstField) {
+            highlightX = frameX + 1;
+            highlightW = (sel.x + sel.w + FIELD_PAD_X) - highlightX;
+        } else if (isLastField) {
+            highlightX = sel.x - FIELD_PAD_X;
+            highlightW = (frameX + frameW - 1) - highlightX;
+        } else {
+            highlightX = sel.x - FIELD_PAD_X;
+            highlightW = sel.w + FIELD_PAD_X * 2;
+        }
+        // Use a ResponsiveFrame so we can selectively round only
+        // the side that meets the frame's edge. Inner radius is
+        // FRAME_R − 1 so the rounded fill tucks just inside the
+        // 1-px frame stroke.
+        var hlRadius = (isFirstField || isLastField) ? Math.max(0, FRAME_R - 1) : 0;
+        var hlFrame = new ResponsiveFrame({
+            x: highlightX, y: highlightY,
+            width: highlightW, height: highlightH,
+            anchorH: 'left', anchorV: 'top',
+            showStroke: false,
+            fillColor: '#000', showFill: true,
+            cornerRadius: hlRadius,
+            corners: {
+                tl: isFirstField, bl: isFirstField,
+                tr: isLastField,  br: isLastField
+            }
+        });
+        hlFrame.render(canvas);
 
         // ── Field text ────────────────────────────────────────
         // Born2bSporty's cap sits high inside its 18-row glyph
@@ -342,7 +422,11 @@ var NetworkLedsScene = (function() {
         }
 
         // ── Up / down chevrons ────────────────────────────────
-        var triCx = highlightX + Math.floor(highlightW / 2);
+        // Centred on the SELECTED FIELD's text (not the highlight
+        // rectangle, which can extend to the frame edge for the
+        // first / last fields). Keeps the arrows visually
+        // anchored on the value the user is editing.
+        var triCx = sel.x + Math.floor(sel.w / 2);
         var triW  = 5;
         var triH  = 3;
         var topTriY    = FRAME_Y - triH - 2;

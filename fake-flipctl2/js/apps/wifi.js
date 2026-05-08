@@ -185,8 +185,8 @@ var WifiScene = (function() {
             showFill: false,
             cornerRadius: 3,
             showChevron: true,
-            chevronWidth: 6,
-            chevronColor: '#000',
+            chevronWidth: 7,
+            chevronColor: '#666666',
             chevronGlyphColor: '#ffffff'
         });
     }
@@ -696,7 +696,13 @@ var WifiScene = (function() {
                     anchorH: 'left', anchorV: 'top',
                     strokeColor: '#000', showStroke: true,
                     fillColor: '#ffffff', showFill: true,
-                    cornerRadius: 4,
+                    // 3 px corner radius across both sides of the
+                    // body — keeps left (BL) and right (TR/BR)
+                    // visually consistent, and matches the
+                    // ComponentSelectorFrame chevron-bar curvature
+                    // on screens where the bar runs along the
+                    // right edge.
+                    cornerRadius: 3,
                     corners: { tl: false, tr: true, bl: true, br: true }
                 });
                 frame.render(canvas);
@@ -1171,7 +1177,13 @@ var WifiScene = (function() {
                     anchorH: 'left', anchorV: 'top',
                     strokeColor: '#000', showStroke: true,
                     fillColor: '#ffffff', showFill: true,
-                    cornerRadius: 4,
+                    // 3 px corner radius across both sides of the
+                    // body — keeps left (BL) and right (TR/BR)
+                    // visually consistent, and matches the
+                    // ComponentSelectorFrame chevron-bar curvature
+                    // on screens where the bar runs along the
+                    // right edge.
+                    cornerRadius: 3,
                     corners: { tl: false, tr: true, bl: true, br: true }
                 });
                 frame.render(canvas);
@@ -1289,17 +1301,27 @@ var WifiScene = (function() {
         // (Saved-list rows carry a chevron-bar selector; the
         // extra slack at the bottom looked unbalanced once that
         // bar was added.)
+        // Layout constants. FRAME_W is now ADAPTIVE — recomputed
+        // per render in computeLayout() based on the longest
+        // SSID currently in the list. Min width is the tab
+        // header's natural width + 20 px so the bar never looks
+        // cramped against its label. Max width caps at the
+        // canvas edge minus SCREEN_PAD on each side.
         var SCREEN_PAD       = 4;
         var TAB_H            = 16;
-        var FRAME_X          = SCREEN_PAD;
-        var FRAME_W          = 256 - SCREEN_PAD * 2;
         var FRAME_PAD_TOP    = 3;
-        var FRAME_PAD_BOTTOM = 1;
+        // Bottom padding tightened another 2 px (was 1). Combined
+        // with the trailing-gap removal in computeLayout below,
+        // the visible white space below the last row shrinks by
+        // 2 px without clipping the row's content.
+        var FRAME_PAD_BOTTOM = -1;
         var SCROLLBAR_GUTTER = 6;
-        var SCROLLBAR_X      = FRAME_X + FRAME_W - 5;
         var ROW_PITCH        = ROW_H + 1;
         var MAX_BOTTOM_Y     = 128;
         var CANVAS_H         = 144;
+        var TAB_TEXT         = 'Saved networks';
+        var FRAME_W_MAX      = 256 - SCREEN_PAD * 2;
+        var FRAME_W_MIN      = HaxrcorpFont16.textWidth(TAB_TEXT) + 6 + 20;
 
         // Fetch state.
         var loaded   = false;
@@ -1335,13 +1357,14 @@ var WifiScene = (function() {
             fillColor: '#ffffff', showFill: false,
             cornerRadius: 3,
             showChevron: true,
-            chevronWidth: 6,
-            chevronColor: '#000',
+            chevronWidth: 7,
+            chevronColor: '#666666',
             chevronGlyphColor: '#ffffff'
         });
 
-        var tab = new UI.TabHeader('Saved networks');
-        tab.x = FRAME_X;
+        var tab = new UI.TabHeader(TAB_TEXT);
+        // tab.x is recomputed each render to track the modal's
+        // adaptive frame x.
         tab.h = TAB_H;
 
         // Modal state, kept on the scene so input + render see
@@ -1351,8 +1374,15 @@ var WifiScene = (function() {
         self._savedPressed  = -1;
 
         function computeLayout() {
+            // ── Vertical sizing first (independent of width) ──
             var rowsCount = networks.length;
-            var contentH  = rowsCount * ROW_PITCH;
+            // Drop the trailing ROW_PITCH gap from the last row's
+            // height so the visible bottom-padding shrinks
+            // cleanly. Combined with FRAME_PAD_BOTTOM going
+            // from 1 → -1, the visible white space below the
+            // last row is 2 px less than before, without
+            // clipping the row's content into the frame stroke.
+            var contentH  = rowsCount > 0 ? rowsCount * ROW_PITCH - 1 : 0;
             var maxModalH = MAX_BOTTOM_Y - SCREEN_PAD;
             var maxFrameH = maxModalH - TAB_H;
             var frameH    = Math.min(maxFrameH,
@@ -1360,6 +1390,34 @@ var WifiScene = (function() {
             // Empty / loading state needs minimum height for the
             // placeholder text.
             if (frameH < 24) frameH = 24;
+            var innerH    = frameH - FRAME_PAD_TOP - FRAME_PAD_BOTTOM;
+            // Whether we'll need the scrollbar — drives the
+            // gutter reservation in the adaptive width below.
+            var willScroll = contentH > innerH;
+
+            // ── Adaptive width ────────────────────────────────
+            // Find the widest SSID currently in the list. The
+            // SSID renders at INNER_X + 5 inside the frame body
+            // and ellipsises to dynInnerW - 10. Reverse the math
+            // to get the frame width needed to fit the widest
+            // entry without truncation:
+            //   frameW = maxSsidW + 16  (no scrollbar)
+            //   frameW = maxSsidW + 22  (with scrollbar)
+            //  (10 ellipsis padding + 6 frame-side strokes/pads,
+            //   plus 6 for the scrollbar gutter.)
+            var maxSsidW = 0;
+            for (var i = 0; i < networks.length; i++) {
+                var ssid = (networks[i] && (networks[i].ssid || networks[i].name)) || '';
+                var w = HaxrcorpFont16.textWidth(ssid);
+                if (w > maxSsidW) maxSsidW = w;
+            }
+            var contentDrivenW = maxSsidW + (willScroll ? 22 : 16);
+            var frameW = Math.max(FRAME_W_MIN, contentDrivenW);
+            if (frameW > FRAME_W_MAX) frameW = FRAME_W_MAX;
+            var frameX = Math.floor((256 - frameW) / 2);
+            var scrollbarX = frameX + frameW - 5;
+
+            // ── Final vertical placement ──────────────────────
             var modalH    = TAB_H + frameH;
             var centeredY = Math.floor((CANVAS_H - modalH) / 2);
             var pinnedY   = MAX_BOTTOM_Y - modalH;
@@ -1367,8 +1425,9 @@ var WifiScene = (function() {
             if (topY < SCREEN_PAD) topY = SCREEN_PAD;
             var frameY    = topY + TAB_H;
             var innerTop  = frameY + FRAME_PAD_TOP;
-            var innerH    = frameH - FRAME_PAD_TOP - FRAME_PAD_BOTTOM;
             return { topY: topY, frameY: frameY, frameH: frameH,
+                     frameX: frameX, frameW: frameW,
+                     scrollbarX: scrollbarX,
                      innerTop: innerTop, innerH: innerH,
                      contentH: contentH };
         }
@@ -1453,20 +1512,26 @@ var WifiScene = (function() {
                 ctx.fillRect(0, 0, canvas.w, canvas.h);
 
                 var L = computeLayout();
-                var INNER_X = FRAME_X + 3;
-                var dynInnerW = FRAME_W - 6;
+                var INNER_X = L.frameX + 3;
+                var dynInnerW = L.frameW - 6;
                 var needsScroll = L.contentH > L.innerH;
                 if (needsScroll) dynInnerW -= SCROLLBAR_GUTTER;
 
+                tab.x = L.frameX;
                 tab.y = L.topY;
 
                 var frame = new ResponsiveFrame({
-                    x: FRAME_X, y: L.frameY,
-                    width: FRAME_W, height: L.frameH,
+                    x: L.frameX, y: L.frameY,
+                    width: L.frameW, height: L.frameH,
                     anchorH: 'left', anchorV: 'top',
                     strokeColor: '#000', showStroke: true,
                     fillColor: '#ffffff', showFill: true,
-                    cornerRadius: 4,
+                    // 3 px corner radius — matches the chevron-bar
+                    // selector that sits along the right edge.
+                    // The TR / BR corners now share the same
+                    // radius as the bar so they read as one
+                    // continuous silhouette.
+                    cornerRadius: 3,
                     corners: { tl: false, tr: true, bl: true, br: true }
                 });
                 frame.render(canvas);
@@ -1474,7 +1539,7 @@ var WifiScene = (function() {
 
                 ctx.save();
                 ctx.beginPath();
-                ctx.rect(FRAME_X + 1, L.frameY + 1, FRAME_W - 2, L.frameH - 2);
+                ctx.rect(L.frameX + 1, L.frameY + 1, L.frameW - 2, L.frameH - 2);
                 ctx.clip();
 
                 if (!loaded) {
@@ -1499,14 +1564,10 @@ var WifiScene = (function() {
                             canvas.drawRoundRect(INNER_X, rowY - 1,
                                 dynInnerW, ROW_H + 2, 2, '#000');
                         }
-                        // Security tag right-aligned, SSID
-                        // ellipsised to fit the leftover space.
-                        var secTxt = savedSecLabel(net.security);
-                        var secW   = HaxrcorpFont16.textWidth(secTxt);
-                        var secX   = INNER_X + dynInnerW - secW - 4;
-                        HaxrcorpFont16.draw(ctx, secTxt,
-                            secX, rowY + 1, fgDim);
-                        var ssidMaxW = secX - (INNER_X + 5) - 4;
+                        // SSID only — no security tag in this list.
+                        // The drilldown verbose view already exposes
+                        // security flavour where it's actionable.
+                        var ssidMaxW = dynInnerW - 10;
                         var ssidTxt  = ellipsizeTo(net.ssid || net.name, ssidMaxW);
                         HaxrcorpFont16.draw(ctx, ssidTxt,
                             INNER_X + 5, rowY + 1, fg);
@@ -1521,7 +1582,7 @@ var WifiScene = (function() {
 
                 if (needsScroll) {
                     var sb = new UI.Scrollbar(L.contentH, L.innerH, self._savedScroll);
-                    sb.render(canvas, SCROLLBAR_X, L.innerTop, L.innerH, 1);
+                    sb.render(canvas, L.scrollbarX, L.innerTop, L.innerH, 1);
                 }
             }
         };
@@ -1695,17 +1756,16 @@ var WifiScene = (function() {
                 }
             });
             rows.push({ kind: 'pad', selectable: false });
-            // Password row — selectable for navigation but NOT
-            // clickable: pressing OK does nothing (no press flash,
-            // no callback). Reveal is push-to-show via PTT, which
-            // works regardless of whether the row is highlighted.
-            // Selectable so the user can land on it visually and
-            // hold PTT to reveal the masked PSK.
+            // Password row — selectable for navigation only.
+            // No onPress, so the OK handler's `hasAction` guard
+            // skips the 30 ms press flash; pressing/holding OK
+            // is silent. Reveal happens entirely through the
+            // render branch's `isSelected && Input.isHeld('ok')`
+            // check, so the asterisks swap to the real PSK
+            // without any black-row flash interfering.
             rows.push({
                 kind: 'passwordInline', text: 'Password',
                 selectable: true
-                // no onPress, no onToggle — see press-flash guard
-                // in the OK handler.
             });
             // 1 px pad row between Password and the section
             // divider below — pushes the divider 1 px further
@@ -2183,7 +2243,13 @@ var WifiScene = (function() {
                     anchorH: 'left', anchorV: 'top',
                     strokeColor: '#000', showStroke: true,
                     fillColor: '#ffffff', showFill: true,
-                    cornerRadius: 4,
+                    // 3 px corner radius across both sides of the
+                    // body — keeps left (BL) and right (TR/BR)
+                    // visually consistent, and matches the
+                    // ComponentSelectorFrame chevron-bar curvature
+                    // on screens where the bar runs along the
+                    // right edge.
+                    cornerRadius: 3,
                     corners: { tl: false, tr: true, bl: true, br: true }
                 });
                 frame.render(canvas);
@@ -2256,25 +2322,29 @@ var WifiScene = (function() {
                         }
                     } else if (row.kind === 'passwordInline') {
                         // "Password" label left-aligned, masked
-                        // PSK + PTT_reveal icon right-aligned. No
-                        // backing rectangle — the text sits flat
-                        // on the modal's white body. PTT (key 'a')
-                        // held → reveal real PSK; otherwise a
-                        // length-matched run of `*` characters.
-                        var pttIcon = (typeof Icons !== 'undefined') ? Icons.PTT_reveal : null;
-                        var iconW   = pttIcon ? pttIcon.w : 0;
-                        var iconH   = pttIcon ? pttIcon.h : 0;
-                        var ICON_GAP = 3;
+                        // PSK right-aligned. No icon, no backing
+                        // rectangle — the text sits flat on the
+                        // modal's white body. Reveal-while-held
+                        // is now driven by the OK key (no PTT
+                        // affordance icon since the verbose view
+                        // already has the row selected for OK
+                        // when the user wants to read the PSK).
                         var RIGHT_PAD = 2;
 
                         // Label.
                         HaxrcorpFont16.draw(ctx, row.text,
                             INNER_X + 5, rowAbsY + 1, fg);
 
-                        // Decide what text to render.
-                        var revealing = !!(window.input
+                        // Reveal trigger: hold the OK action
+                        // (Enter / k) WHILE THIS ROW IS HIGHLIGHTED.
+                        // Outside this row OK does its normal job
+                        // (e.g. pressing actions); only when the
+                        // selector is on the password row does
+                        // OK-held swap the asterisks for the
+                        // actual PSK.
+                        var revealing = isSelected && !!(window.input
                             && typeof window.input.isHeld === 'function'
-                            && window.input.isHeld('ptt'));
+                            && window.input.isHeld('ok'));
                         var pwText, pwColor, pwTextDy = 0;
                         if (loading) {
                             pwText = '…';            pwColor = '#999999';
@@ -2301,39 +2371,25 @@ var WifiScene = (function() {
                             // as visually centred against the row.
                             pwTextDy = 2;
                         }
-                        // Compute right-aligned x for the text,
-                        // leaving room for the icon + gap + edge
-                        // padding on the right side of the row.
+                        // Right-align the text against the inner
+                        // content edge. Truncate from the LEFT
+                        // (tail stays visible, which is the part
+                        // people glance at first) until the
+                        // remaining string fits between the
+                        // "Password" label and the right edge.
                         var rightAnchor = INNER_X + dynInnerW - RIGHT_PAD;
-                        var iconX = rightAnchor - iconW;
-                        // Truncate the revealed PSK from the LEFT
-                        // (so the tail stays visible — that's
-                        // usually the part the user wants to
-                        // verify) until it fits the gap between
-                        // label-end and the icon. Mask doesn't
-                        // need this since maskN tracks real
-                        // length and is short by definition for
-                        // typical PSKs.
                         var labelEnd = INNER_X + 5
                             + HaxrcorpFont16.textWidth(row.text) + 6;
-                        var maxTextW = iconX - ICON_GAP - labelEnd;
+                        var maxTextW = rightAnchor - labelEnd;
                         if (maxTextW < 0) maxTextW = 0;
                         var fitText = pwText;
                         while (fitText.length > 0
                                && HaxrcorpFont16.textWidth(fitText) > maxTextW) {
                             fitText = fitText.substring(1);
                         }
-                        var pwTextX = iconX - ICON_GAP - HaxrcorpFont16.textWidth(fitText);
+                        var pwTextX = rightAnchor - HaxrcorpFont16.textWidth(fitText);
                         HaxrcorpFont16.draw(ctx, fitText,
                             pwTextX, rowAbsY + 1 + pwTextDy, pwColor);
-
-                        // PTT_reveal icon at the right edge.
-                        if (pttIcon) {
-                            var iconY = rowAbsY + Math.floor((rh - iconH) / 2);
-                            var iconCol = isPressed ? '#fff' : '#000';
-                            if (pttIcon.grayscale) canvas.drawSprite(pttIcon, iconX, iconY, iconCol);
-                            else                   canvas.drawIcon(pttIcon, iconX, iconY, iconCol);
-                        }
                     } else if (row.kind === 'unavailable') {
                         HaxrcorpFont16.draw(ctx, row.text,
                             INNER_X + 5, rowAbsY + 1, '#999999');
@@ -2414,6 +2470,12 @@ var WifiScene = (function() {
                 // since each whole card is the selectable target;
                 // everything else uses the thin per-row
                 // MenuSelectorFrame.
+                //
+                // CLIPPED to the modal body interior (same rect
+                // the row-text loop above uses) so the selector
+                // outline can't bleed past the modal's rounded
+                // frame edges when the highlighted row is at
+                // the very top or bottom of the visible area.
                 if (selectedY >= 0 && self._cdPressed !== self._cdSelected) {
                     var selRow = rows[self._cdSelected];
                     // Password row needs an extra 2 px above and
@@ -2424,6 +2486,10 @@ var WifiScene = (function() {
                     var topPad  = isPwRow ? 3 : 1;
                     var botPad  = isPwRow ? 3 : 1;
                     var sH      = rowHeightOf(selRow) + topPad + botPad;
+                    ctx.save();
+                    ctx.beginPath();
+                    ctx.rect(FRAME_X + 1, L.frameY + 1, FRAME_W - 2, L.frameH - 2);
+                    ctx.clip();
                     if (selRow.kind === 'cardBlock') {
                         var csf = new ComponentSelectorFrame({
                             x: INNER_X, y: selectedY - topPad,
@@ -2433,8 +2499,8 @@ var WifiScene = (function() {
                             strokeColor: '#000', showStroke: true,
                             fillColor: '#ffffff', showFill: false,
                             showChevron: true,
-                            chevronWidth: 6,
-                            chevronColor: '#000',
+                            chevronWidth: 7,
+                            chevronColor: '#666666',
                             chevronGlyphColor: '#ffffff'
                         });
                         csf.render(canvas);
@@ -2443,6 +2509,7 @@ var WifiScene = (function() {
                         listSelector.setPosition(INNER_X, selectedY - topPad);
                         listSelector.render(canvas);
                     }
+                    ctx.restore();
                 }
 
                 // Scrollbar — shown whenever content exceeds the

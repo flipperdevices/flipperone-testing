@@ -146,11 +146,17 @@ var MenuScene = (function() {
             subMenu.items[i].iconAnimated = animatedIconMap[name] || null;
         }
 
-        // Wi-Fi row shows the current SSID, or "not connected" — pulled
-        // live from the UI polling state each render.
+        // Wi-Fi row shows the current state pulled live from the
+        // UI polling state each render. Three branches:
+        //   • radio off  → 'OFF' (matches the toggle label inside
+        //                  the Wi-Fi page so the two screens
+        //                  agree at a glance)
+        //   • connected  → SSID (or 'connected' fallback)
+        //   • idle       → 'not connected'
         for (var j = 0; j < subMenu.items.length; j++) {
             if (subMenu.items[j].text === 'Wi-Fi') {
                 subMenu.items[j].statusProvider = function() {
+                    if (!UI.getWifiEnabled()) return 'OFF';
                     var w = UI.getWifiInfo();
                     if (!w.connected) return 'not connected';
                     return w.ssid || 'connected';
