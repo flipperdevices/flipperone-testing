@@ -2634,3 +2634,458 @@ curl -X POST -H 'Content-Type: application/json' \
 
 For UI testing, navigate **Menu → Testing → Voice recorder** in cog after a
 service restart (the page auto-reloads on `/api/version` change).
+
+# Internet radio
+
+Streaming-radio app under **Apps → Internet radio**. Lets the user pick a
+city, pick a station within that city, set volume, route audio to a chosen
+output, and play/stop an MP3 stream — all via a single screen with a
+stacked-row settings layout and a dropdown picker overlay.
+
+## At a glance
+
+- **Stream player:** `mpg123` (auto-prompted to install if missing)
+- **Stream format:** any URL `mpg123` accepts — we hard-code MP3 ICY
+  endpoints; the server pipes them straight to ALSA
+- **Settings rows:** City, Station, Volume (slider), Audio device — 4
+  rows, divider before Audio device
+- **State persistence:** in-memory across scene re-entries (city, station
+  per city, volume, currently-playing) so re-launching from the App
+  Switcher doesn't reset the user's pick
+- **Audio routing:** Speaker / Headphone / HDMI / DisplayPort, fed by the
+  `/api/sound/outputs` enumerator
+- **Volume:** master Speaker + Headphone via amixer; chains
+  `mute`/`unmute` so 0 % is genuine silence
+
+## Files touched
+
+- `js/apps/internet_radio.js` — `InternetRadioScene` (full app, ~1.2k LOC)
+- `js/component-library/MenuDropdownLine.js` — settings-row component
+- `js/animated_icons.js` — `internet_radio_anim` (14×14 strip, 8 frames)
+- `js/apps/menu.js` — Apps submenu entry with `icon` / `iconAnimated`
+- `js/main.js` — `_isApp` opt-in for the Tab handler
+- `js/apps/app_switcher.js` — animated-icon awareness + multi-app
+  intro that anchors A's screenshot from the live canvas
+- `server.js` — `/api/radio/*` endpoints, `/api/sound/output{,s}`,
+  amixer `mute`/`unmute` chaining
+
+## Scene state
+
+`InternetRadioScene` is constructed fresh by the App Switcher each time
+the user re-enters from elsewhere. Cross-launch state is parked in an
+**IIFE-scoped `saved` object** so it survives constructor calls without
+needing global storage:
+
+```js
+var saved = {
+    city:           'London',
+    stationByCity:  {},        // per-city memory
+    volume:         50,
+    playingStation: null
+};
+```
+
+`stationByCity[cityName]` records the last station the user picked for
+each city, so coming back to a city restores their previous pick instead
+of snapping to the city's first entry.
+
+The scene also tags itself as an app:
+
+```js
+this._isApp = true;
+```
+
+…which `main.js`'s Tab handler reads to skip the transient-snapshot path
+that would otherwise add a duplicate card to the App Switcher and play
+the slide-up-from-bottom intro intended for non-app scenes (Desktop /
+Menu / Submenu).
+
+## Layout
+
+```
+┌──────────── status bar ────────────────────────────────────┐
+├─[icon] Internet radio (gray title bar, Born2bSporty) ──────┤
+│ City                ┌──────── London ────────────┐         │
+│ Station             ┌──── Heart London ──────────┐         │
+│ Volume              ┌███████████░░░░░░░░░░░  60% ┐         │
+├──────────── divider (1 px gray rule) ──────────────────────┤
+│ Audio device        ┌──── Speaker ───────────────┐         │
+│                                                            │
+│                                                  [Play]    │
+└────────────────────────────────────────────────────────────┘
+```
+
+Constants (in the scene's render function):
+
+```js
+var TITLE_H            = 16;             // gray title bar height
+var ROW_GAP            = 3;
+var DIVIDER_AFTER      = 3;              // rows 0..2 above, 3+ below
+var DIVIDER_OFFSET_Y   = 49;             // px below title bar bottom
+var DIVIDER_PAD_AFTER  = 3;              // gap below divider
+var SELECTOR_X         = 2;
+var SELECTOR_W         = 252;
+var SELECTOR_H         = 15;
+```
+
+The first three rows stack at `MenuDropdownLine.HEIGHT + ROW_GAP = 17` px
+pitch starting at the title bar's bottom. Anything past `DIVIDER_AFTER`
+drops below the gray rule, anchored at `dividerY + 1 + DIVIDER_PAD_AFTER`
+and stacking at the same pitch from there. `rowYAt(i)` does the math.
+
+Title bar carries:
+- A **static icon** (frame 0 of `internet_radio_anim`, 14×14) at
+  `(2, TITLE_Y + 1)` — 2 px from left, 1 px from top.
+- The label `Internet radio` in `Born2bSportyV2Medium` at
+  `(18, STATUS_BAR_H + 1)`.
+- 2 px gap between icon and label.
+
+## `MenuDropdownLine` (`js/component-library/MenuDropdownLine.js`)
+
+Reusable settings row used by every line in the Internet Radio body. Two
+visual modes share the same shell — title on the left (HaxrcorpFont16,
+black, 6 px from canvas edge), 180 × 11 chip on the right (5 px from
+canvas right edge, 3 px corner radius, `#E5E5E5` fill).
+
+### Plain mode (City / Station / Audio device)
+
+Constructor: `{ y, title, value, selected }`.
+
+- **Value** drawn centered horizontally inside the chip in black.
+- **Long values** trim from the right with a trailing `…` once
+  `HaxrcorpFont16.textWidth` overflows the chip width minus 4 px (or
+  more when the row is selected; see arrows below).
+- **Selected state** paints `<` / `>` glyphs at the chip's left/right
+  inner edges — advertises that left/right will cycle the picker
+  without opening the dropdown.
+
+### Slider mode (Volume)
+
+Pass `slider: <0..1>` to flip the chip into a horizontal progress bar:
+
+1. Gray base `ResponsiveFrame` (full chip).
+2. Black `ResponsiveFrame` on top, width = `slider × CHIP_W`. Left
+   corners follow the chip curvature; right corners are square unless
+   the fill covers the whole chip.
+3. Centered value text drawn TWICE at the same x/y, once clipped to
+   the black region (white) and once to the gray remainder (black).
+   Reads as one continuous label flipping color pixel-by-pixel across
+   the fill edge.
+4. When `selected`, `<` / `>` glyphs drawn at chip edges with the
+   same split-color clipping — they invert when the bar reaches them.
+
+**Minimum visible fill** is hardcoded at 5 % so the bar never reads as
+an empty line. At `slider = 0` the chip still shows a small black nub
+on the left edge so the user has a visible anchor at the bottom of the
+range. Above 5 % the fill tracks the actual slider value.
+
+### Static metrics
+
+```js
+MenuDropdownLine.HEIGHT       // 14 px (TOP_PAD 3 + CHIP_H 11)
+MenuDropdownLine.TOP_PAD      // 3
+MenuDropdownLine.CHIP_HEIGHT  // 11
+MenuDropdownLine.CHIP_WIDTH   // 180
+MenuDropdownLine.CHIP_FILL    // '#E5E5E5'
+```
+
+Exposed so caller scenes can stack rows without re-deriving the math.
+
+## Pickers
+
+The scene holds three pickers in a single keyed structure:
+
+```js
+this._pickers = {
+    city:        { options: [...], current: 'London' },
+    station:     { options: [],     current: '' },        // populated by _refreshStationList
+    audioDevice: { options: ['Updating...'], current: 'Updating...' }
+};
+```
+
+Each settings row tags itself with `pickerKey: 'city' | 'station' |
+'audioDevice'`, so OK / left-right routes uniformly through
+`_pickers[pickerKey]` regardless of which row is active. `Volume` is the
+exception — flagged `isVolume: true` and routed to `_setVolume()` which
+posts to amixer.
+
+**`_refreshStationList()`** keeps the Station picker in sync with the
+current city. Called from the constructor (to seed the initial state)
+and from `_commitPickerChange('city')` (after a city change). It:
+
+1. Reads `_stationsByCity[currentCity]` to build the new options list.
+2. Reads `saved.stationByCity[currentCity]` for the city's last pick;
+   falls back to the city's first entry on first visit or if the
+   remembered value isn't in the new list.
+3. Writes the resolved value back into `saved.stationByCity` so the
+   next visit honors it.
+
+**`_initSettings()`** (in `enter()`) hydrates `_volume` from
+`/api/sound/volume` and the `audioDevice` picker from `/api/sound/outputs`
+in parallel XHRs — neither blocks UI on the other.
+
+## Dropdown overlay
+
+OK on a row tagged with `pickerKey` opens an inline dropdown picker
+anchored at the chip's top-left. Spec:
+
+- **Width** = `CHIP_WIDTH` (180).
+- **Height** = `13 × N + (N − 1) + 2` (per-line content + dividers
+  between items + 2 px borders). 3 items = 43 px.
+- **Wash**: `rgba(255, 255, 255, 0.75)` over the whole canvas — every
+  other element fades out, the dropdown is the only crisp UI.
+- **Body**: `ResponsiveFrame`, 3 px corner radius, `#E5E5E5` fill,
+  **no stroke** (matches the chip's strokeless silhouette so the
+  dropdown reads as the chip "growing downward").
+- **Items**: `HaxrcorpFont16` black, centered horizontally; 1 px
+  `#999999` divider between items.
+- **Inner selector**: `MenuSelectorFrame` outline, width = `CHIP_W - 1`
+  so the BR shadow pixel stays inside the dropdown silhouette.
+- **Title text** (e.g. "City") is re-drawn in solid black on top of the
+  wash so the user sees which row they're editing.
+- **Page-level selector outline is hidden** while the dropdown is open
+  — only the inner one reads as active focus.
+
+Input handler:
+- `up` / `down` cycle `_dropdownIndex` mod `picker.options.length`.
+- `ok` / `run` commit: `picker.current = picker.options[idx]`, then call
+  `_commitPickerChange(key)` which:
+  - Writes city to `saved.city` and calls `_refreshStationList()` (the
+    cascade — switching city resets / restores the station list).
+  - Writes station to `saved.stationByCity[saved.city]`.
+  - For audio device: hits `/api/sound/output` to switch ALSA routing.
+  - **Hot-swaps the running stream** — if `_playingStation` is non-null,
+    re-fires `_playRadio` with the new value. mpg123 doesn't reroute
+    mid-stream, so the device change has to restart the child.
+- `back` / `esc` cancels.
+
+Left/right on a row with `pickerKey` cycles the picker INLINE without
+opening the dropdown — same `_commitPickerChange` runs, so persistence
++ hot-swap stay consistent.
+
+## Volume
+
+`_setVolume(pct)` clamps to 0–100, writes optimistically into `_volume`
++ `saved.volume`, then POSTs to `/api/sound/volume` for both `Speaker`
+and `Headphone` controls so the slider behaves like a master volume
+regardless of routing. Server-side, `setVolume` chains `mute` /
+`unmute` onto the same amixer call:
+
+```bash
+amixer -c <card> set Speaker 0% mute     # at 0 %
+amixer -c <card> set Speaker 50% unmute  # at any non-zero
+```
+
+So 0 % genuinely silences the channel (some codec builds leak signal at
+0 %), and going from 0 → any value above zero auto-unmutes — without
+this, raising the slider after a previous 0 % wouldn't unmute the
+channel because we'd never have flipped the mute bit back.
+
+Step is 5 % per left/right press. Long press auto-repeats via the OS's
+keyboard repeat.
+
+## Audio device
+
+`/api/sound/outputs` returns `{ outputs: [{id, label}], current }` for
+the high-level targets — Speaker, Headphone, HDMI, DisplayPort. Server
+hides the loopback device and splits the NAU8822 card into Speaker /
+Headphone so the picker doesn't lie about what the user is choosing.
+
+The picker stores `{id, label}` records on `_audioDevices`; the chip
+shows labels but the API call uses the id. `_setAudioDevice(label)`
+resolves label → id and POSTs `/api/sound/output { id }`. Server then:
+
+1. Sets `selectedAlsaDevice` to the matching `hw:N,0`.
+2. For Speaker / Headphone, mutes the OTHER NAU8822 control so the
+   unwanted output is genuinely silent during the active route.
+
+If a stream is already playing, `_commitPickerChange('audioDevice')`
+restarts mpg123 — it doesn't reroute mid-stream.
+
+## Play / Stop
+
+`_playBtn` is a `UI.RightButton('Play', 48, 'run', ...)`. The label
+flips to `'Stop'` every render based on `_playingStation` so the user
+always sees the next action. `'run'` (mapped to the device's primary
+action key, same as Done in KeyboardTestScene) flashes the button and
+calls `_togglePlayback()`:
+
+- If `_playingStation` is set → `_stopRadio()` → POST `/api/radio/stop`.
+- Else → `_playRadio(stationName)` → POST `/api/radio/play { url }`.
+
+`_playingStation` is updated optimistically (immediate UI feedback) and
+rolled back on HTTP failure. Server's `playRadioStream` kills any
+existing mpg123 child via SIGTERM and waits for actual exit before
+spawning the new one (otherwise the new mpg123 would hit "Device or
+resource busy").
+
+## Persistent playback across scene exits
+
+The stream is INTENTIONALLY left running when the user backs out of the
+scene with Esc / Back — radio behaves like a "background music" app:
+tap Back, music keeps playing while you do something else. Three paths
+DO stop playback:
+
+| Path | Mechanism |
+|------|-----------|
+| Switcher kill | `RunningApps.open(..., onClose)` 5th-arg hook fires `POST /api/radio/stop` and clears `saved.playingStation` |
+| Tab close / refresh | `beforeunload` listener fires `navigator.sendBeacon('/api/radio/stop')` |
+| Manual Stop | Right button while playing |
+
+The user can also leave the app, change another setting, come back —
+the Play/Stop button reads "Stop" because `saved.playingStation` is
+non-null, and tapping Stop stops the still-running stream.
+
+## mpg123 install modal
+
+`mpg123` may not be installed. `enter()` fires `_checkMpg123()`:
+
+```js
+GET /api/radio/status   →   { mpg123Installed: bool }
+```
+
+When `mpg123Installed === false` (or the probe fails), the app opens an
+install modal that owns input ahead of the dropdown ahead of the page
+chrome. Three states:
+
+| State | UI |
+|---|---|
+| `missing` | Title `Install mpg123?`, body `MP3 decoder for radio streaming`, two stacked buttons: **Install** (primary) / **Cancel** |
+| `installing` | Title `Installing`, animated 22×20 spinner |
+| `failed` | Title `Install failed`, last non-empty stderr line in body, **Retry** / **Cancel** |
+
+`_runInstall()` POSTs `/api/radio/install`. Successful installs
+auto-dismiss the modal so the user lands on the live app immediately —
+no acknowledgement screen.
+
+The modal sits on top of the dropdown overlay so the user can never
+look at the app while the binary it depends on is missing.
+
+## Dependency probe + station URLs
+
+Stations are hard-coded in `_stationsByCity` (city → station-name list)
+and `_stationUrls` (station name → MP3 URL). Names are ASCII because
+`HaxrcorpFont16` tops out at codepoint 126 — Cyrillic / German
+diacritics would render as blank tofu. URLs were probed for an MP3 ICY
+response before being baked in; HTTP redirects are fine because mpg123
+follows them transparently.
+
+```js
+this._stationsByCity = {
+    'London':   ['Capital London',     'Heart London'],
+    'New York': ['WNYC-FM',            'WQXR Classical'],
+    'Tokyo':    ['J-Pop Sakura',       'Japan Hits'],
+    'Berlin':   ['Berliner Rundfunk',  'Spreeradio 105.5']
+};
+```
+
+Trivial to swap for a server-backed lookup later — only
+`_refreshStationList` needs to change.
+
+## Server endpoints
+
+| Endpoint | Method | Body / response |
+|---|---|---|
+| `/api/radio/status` | GET | `{ mpg123Installed: bool }` — probes `which mpg123` |
+| `/api/radio/play` | POST | `{ url }` → spawns `mpg123 -q <url>`; reuses `audioChild` so the mpg123 child shares lifecycle with /api/sound/play (one playback at a time) |
+| `/api/radio/stop` | POST | `{ success: true }`. Idempotent — survives `sendBeacon` from page unload |
+| `/api/radio/install` | POST | runs `apt-get install mpg123` with 90 s timeout; returns `{ success, output }` |
+| `/api/sound/volume` | POST | `{ control, volume }` — chains `mute` / `unmute` based on `volume === 0` |
+| `/api/sound/outputs` | GET | `{ outputs: [{id, label}], current }` |
+| `/api/sound/output` | POST | `{ id }` → flips ALSA routing; mutes the unused NAU8822 sub-channel for Speaker/Headphone |
+
+## Animated icon
+
+`internet_radio_anim` in `animated_icons.js` is a 14 × 14, 8-frame strip
+(grayscale 6-bit). Used in three places:
+
+| Where | Usage |
+|---|---|
+| **Apps submenu row** | `iconAnimated` field — MenuLine plays it at 200 ms cadence when the row is selected; renders frame 0 statically when unselected (fall-through path in MenuLine when `icon` is null). |
+| **App Switcher card title bar** | `this.icon` on the scene → `RunningApps.open(...)` 3rd arg → switcher draws **frame 0 only** (no animation in the switcher — see app_switcher.js's `iconFrameCount > 1 → drawSpriteFrame(icon, x, y, 0, color)` block). |
+| **Internet Radio scene's title bar** | Drawn directly via `canvas.drawSpriteFrame(AnimatedIcons.internet_radio_anim, 2, TITLE_Y + 1, 0, '#000')` at `(2, 14)` — 2 px left, 1 px top inside the gray title bar. |
+
+## App Switcher integration
+
+Three coordinated changes make Internet Radio behave correctly in the
+switcher:
+
+1. **`main.js#isAppScene` check** — accepts any scene with
+   `_isApp === true` in addition to `PlaceholderAppScene` /
+   `SubMenuScene._asApp`. Suppresses the transient capture so Tab from
+   inside the radio app doesn't add a duplicate card or trigger the
+   slide-up intro.
+2. **`buildCardsFromRunningApps` multi-app intro** — for any
+   `cards.length >= 2` (transient or in-app), the intro now does:
+   - `cards[0]` (current / transient): FULL APP → POSITIONS[+1],
+     `_imageFromFullApp` (live canvas), `_overlay = true` so it sits on
+     top during the intro.
+   - `cards[1]` (previous app): FULL APP → POSITIONS[0] (focused) —
+     B's saved snapshot is revealed underneath as A shrinks.
+   - `cards[2..N]`: park at -1, -2, … cyclical positions.
+
+   `focusedIdx = 1` so Tab → Tab from inside an app drops the user
+   straight onto the previous running app — the standard "swap to
+   last app" gesture without scrolling.
+3. **In-app reuse** — when picking an app from the switcher,
+   `PHASE_CLOSING` searches `sceneManager._stack` for an existing
+   instance with matching `displayName` and pops down to it instead of
+   constructing a fresh scene. This is what preserves Internet Radio's
+   in-memory state (selection index, dropdown state, etc.) across a
+   Tab → pick-another-app → Tab → pick-Internet-Radio cycle.
+
+The card-internal screenshot is anchored 12 px above the frame
+interior's top (was 9 px before; the user-visible 3 px lift) — both the
+REST path (`state.y + 1 - 13`) and the zoom-transition lerp target
+(`targetState.y - 12`) reference the same offset so there's no jump at
+the animation boundary.
+
+## Known constraints / future work
+
+- **Stations are hard-coded.** A real backend (radio-browser.info, etc.)
+  would replace the `_stationsByCity` / `_stationUrls` literals with an
+  async fetch in `_refreshStationList`. The rest of the picker plumbing
+  stays as is.
+- **No volume-button feedback for mute state.** At 0 % the audio is
+  genuinely silent (amixer mute) but the slider's 5 % visible nub stays
+  visible; there's no separate "muted" indicator beyond the `0%` label.
+- **mpg123 doesn't reroute mid-stream.** Audio device changes restart
+  the child — there's an audible gap of 1–2 s during the restart.
+- **HTTP-only stream URLs aren't TLS-validated.** The server passes the
+  URL straight to mpg123, which will fetch http(s) but won't enforce
+  certificate validation choices (relies on the system trust store).
+- **No favourites / recents stack.** Per-city memory is the entire
+  state model; scrolling to a previously-played station from a
+  different city requires city-switching first.
+
+## End-to-end test recipe
+
+```bash
+# Start a stream from the command line
+curl -X POST -H 'Content-Type: application/json' \
+    -d '{"url":"http://media-ice.musicradio.com/CapitalMP3"}' \
+    http://localhost:8899/api/radio/play
+
+# Stop it
+curl -X POST http://localhost:8899/api/radio/stop
+
+# Check mpg123 is installed
+curl http://localhost:8899/api/radio/status
+
+# Master-volume sweep (chains mute/unmute)
+curl -X POST -H 'Content-Type: application/json' \
+    -d '{"control":"Speaker","volume":0}'  http://localhost:8899/api/sound/volume
+curl -X POST -H 'Content-Type: application/json' \
+    -d '{"control":"Speaker","volume":40}' http://localhost:8899/api/sound/volume
+
+# Audio output enumerator + flip
+curl http://localhost:8899/api/sound/outputs
+curl -X POST -H 'Content-Type: application/json' \
+    -d '{"id":"speaker"}' http://localhost:8899/api/sound/output
+```
+
+UI testing: navigate **Menu → Apps → Internet radio**. The first launch
+on a fresh device hits the install modal; once mpg123 is installed
+subsequent launches go straight to the settings stack. Persistent
+state lives in JS memory — full page reload (auto-fires on
+`/api/version` change) resets `saved` to its IIFE defaults.
