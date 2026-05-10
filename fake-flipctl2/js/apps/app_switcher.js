@@ -325,13 +325,22 @@ var AppSwitcherScene = (function() {
         var labelStartX = null;
         if (icon) {
             var iconX = s.x + 3;
+            // For multi-frame animated icons the visible frame
+            // height is `icon.h / icon.frames`, NOT the full
+            // strip height. Centring against `icon.h` would push
+            // the icon way below the bar (the strip stacks all
+            // frames vertically). Same heuristic MenuLine uses.
+            var iconFrameCount = icon.frames || 1;
+            var iconVisH = (iconFrameCount > 1)
+                ? Math.floor(icon.h / iconFrameCount)
+                : icon.h;
             // Vertically centre the icon inside the title bar so
             // assets of different heights (e.g. 14-px square menu
             // icons vs. 9-px nmap_eye) all read centred against
             // the bar. Hardcoding +3 used to make 14-tall icons
             // sit 2 px below centre and bleed 1 px below the bar
             // onto the screenshot below.
-            var iconY = s.y + Math.floor((barH - icon.h) / 2);
+            var iconY = s.y + Math.floor((barH - iconVisH) / 2);
             // Optional per-icon nudge. Two channels of overrides so
             // the App Switcher title-bar position can be tuned
             // independently of the MenuLine row position (some
@@ -357,6 +366,10 @@ var AppSwitcherScene = (function() {
             var drawY = iconY + dy;
             // Pick the right renderer for the icon's storage format.
             // Same convention MenuLine uses:
+            //   - Multi-frame strip (`frames > 1`) → drawSpriteFrame
+            //     at the wall-clock-derived index, so the icon
+            //     animates in lockstep with the rest of the system
+            //     (same FRAME_MS cadence MenuLine uses).
             //   - 6-bit grayscale (`grayscale: true`) → drawSprite
             //     uses the gray value as opacity for the supplied
             //     tint, so anti-aliased edges survive.
@@ -366,7 +379,16 @@ var AppSwitcherScene = (function() {
             //     which expects a flat byte array, NOT the per-row
             //     hex format icons.js stores them in — that mismatch
             //     made router / minimal render as garbled pixels.
-            if (icon.grayscale) {
+            if (iconFrameCount > 1) {
+                // Animated icons render as frame 0 only here —
+                // the switcher is supposed to be a quiet
+                // overview of running apps; cycling glyphs in
+                // every card title bar would compete with the
+                // user's attention. Animation still plays in
+                // the Apps submenu underneath, where the row
+                // selection makes one specific icon "active".
+                canvas.drawSpriteFrame(icon, drawX, drawY, 0, TITLE_BAR_FG);
+            } else if (icon.grayscale) {
                 canvas.drawSprite(icon, drawX, drawY, TITLE_BAR_FG);
             } else {
                 canvas.drawIcon(icon, drawX, drawY, TITLE_BAR_FG);
@@ -578,7 +600,7 @@ var AppSwitcherScene = (function() {
                     // screenshot stays at its native pixel size
                     // (no resampling). Position lerps between
                     //   FULL APP   (0, 0)
-                    //   REST/POS X (IMG_X, target.y − 9)
+                    //   REST/POS X (IMG_X, target.y − 12)
                     // so at the animation boundary the image lands
                     // exactly where the standard REST path draws
                     // it — no jump when PHASE_OPENING settles into
@@ -586,8 +608,13 @@ var AppSwitcherScene = (function() {
                     // REST. Math.round on both coords keeps the
                     // draw on integer pixel boundaries → no sub-
                     // pixel blur. The body clip handles cropping.
+                    // Both REST and lerp target now use the same
+                    // -12 offset (was -9): screenshot rides 3 px
+                    // higher in the focused card so the source
+                    // app's content sits more visibly inside the
+                    // frame instead of being cropped low.
                     var targetState = POSITIONS[card.position] || POSITIONS[0];
-                    var targetImgY  = targetState.y - 9;
+                    var targetImgY  = targetState.y - 12;
                     var imgX, imgY;
                     if (phase === PHASE_CLOSING) {
                         imgX = Math.round(lerp(IMG_X, 0, e));
@@ -598,13 +625,17 @@ var AppSwitcherScene = (function() {
                     }
                     ictx.drawImage(img, imgX, imgY);
                 } else {
-                    // Standard: native size, raised 10 px above
-                    // the frame's interior top. The body clip mask
-                    // trims that overflow so the visible result is
-                    // the source image with its top 10 px cropped
-                    // off — keeps the focused card's title bar
-                    // free of the source's status-bar strip.
-                    var imgY = state.y + 1 - 10;
+                    // Standard: native size, raised 13 px above
+                    // the frame's interior top (was 10 — the
+                    // extra 3 px lifts the screenshot to match
+                    // the new -12 offset above so REST stays in
+                    // lockstep with the zoom-transition target).
+                    // The body clip mask trims the overflow so
+                    // the visible result is the source image
+                    // with its top cropped off — keeps the
+                    // focused card's title bar free of the
+                    // source's status-bar strip.
+                    var imgY = state.y + 1 - 13;
                     ictx.drawImage(img, IMG_X, imgY);
                 }
                 ictx.restore();
@@ -1047,6 +1078,7 @@ var AppSwitcherScene = (function() {
         } catch (err) {
             this._tpES = null;
         }
+
     };
     AppSwitcherScene.prototype.exit = function() {
         if (this._tpES) { this._tpES.close(); this._tpES = null; }

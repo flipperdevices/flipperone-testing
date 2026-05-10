@@ -54,10 +54,17 @@ var InternetRadioScene = (function() {
         // otherwise add a duplicate card to the switcher and
         // trigger the slide-up-from-bottom intro animation.
         this._isApp        = true;
-        // Static-PNG fallback for the App Switcher card. Real
-        // apps replace this with a runtime snapshot in exit().
-        this.icon          = (typeof Icons !== 'undefined' && Icons.tv_media_box)
-                                ? Icons.tv_media_box : null;
+        // Icon shown in the App Switcher's title bar for this
+        // app's card. The switcher is now animation-aware —
+        // multi-frame strips render via drawSpriteFrame at the
+        // same 200 ms cadence MenuLine uses, so the radio glyph
+        // animates in the switcher card too. Static fallback
+        // only kicks in if the animated strip didn't load.
+        this.icon = (typeof AnimatedIcons !== 'undefined'
+                        && AnimatedIcons.internet_radio_anim)
+                    ? AnimatedIcons.internet_radio_anim
+                    : ((typeof Icons !== 'undefined' && Icons.tv_media_box)
+                        ? Icons.tv_media_box : null);
         this.imagePath     = null;
 
         // Currently-highlighted dropdown row. Indexes into
@@ -785,6 +792,19 @@ var InternetRadioScene = (function() {
         var TITLE_Y = UI.STATUS_BAR_H;             // flush against the status bar
         ctx.fillStyle = '#D9D9D9';
         ctx.fillRect(0, TITLE_Y, canvas.w, TITLE_H);
+
+        // Static radio glyph — frame 0 of the animated strip,
+        // anchored 2 px from the title bar's left edge and 1 px
+        // from its top (was 2 px; the extra row lands the cap
+        // closer to the title text's baseline). 14 px wide
+        // sprite ends at column 15; title text starts at x = 18,
+        // leaving a 2 px gap between icon and label.
+        if (typeof AnimatedIcons !== 'undefined'
+                && AnimatedIcons.internet_radio_anim) {
+            canvas.drawSpriteFrame(
+                AnimatedIcons.internet_radio_anim,
+                2, TITLE_Y + 1, 0, '#000');
+        }
 
         // Title text — 18 px in from the left, 1 px below the
         // status bar's bottom edge. Born2bSporty's glyph cell

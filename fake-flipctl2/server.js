@@ -1401,8 +1401,18 @@ function setVolume(control, pct) {
     if (control !== 'Speaker' && control !== 'Headphone') return { success: false, error: 'Invalid control' };
     pct = Math.max(0, Math.min(100, parseInt(pct, 10)));
     try {
-        execSync('amixer -c ' + card + ' set ' + control + ' ' + pct + '% 2>/dev/null', { encoding: 'utf8', timeout: 2000 });
-        return { success: true, volume: pct };
+        // Chain `mute` / `unmute` onto the same amixer call so
+        // 0 % genuinely silences the channel (some codec builds
+        // still leak a small audible signal at 0 % volume), and
+        // anything > 0 actively un-mutes — handles the case
+        // where the user nudged volume up after a previous 0 %
+        // muted the channel without dragging the unmute state
+        // along for the ride.
+        var muteArg = (pct === 0) ? 'mute' : 'unmute';
+        execSync('amixer -c ' + card + ' set ' + control + ' '
+                 + pct + '% ' + muteArg + ' 2>/dev/null',
+                 { encoding: 'utf8', timeout: 2000 });
+        return { success: true, volume: pct, muted: pct === 0 };
     } catch (e) {
         return { success: false, error: e.message };
     }

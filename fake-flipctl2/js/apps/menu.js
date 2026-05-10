@@ -243,9 +243,31 @@ var MenuScene = (function() {
         // add an `image` + `icon` entry.
         // Adding a real app: register the script in index.html,
         // add an `icon` + `factory` entry below.
+        // Per-entry shape:
+        //   icon          — STATIC sprite (single frame) shown
+        //                   in the menu row when unselected,
+        //                   AND in the App Switcher card title
+        //                   bar (which is animation-unaware).
+        //   iconAnimated  — OPTIONAL multi-frame strip; MenuLine
+        //                   plays it at FRAME_MS cadence while
+        //                   the row is selected. Same convention
+        //                   the main menu's Settings / Network /
+        //                   etc. use.
+        //   image         — placeholder PNG mockup; only used by
+        //                   the PlaceholderAppScene factory.
+        //   factory       — custom scene factory; replaces the
+        //                   placeholder path entirely.
         var APPS = {
             'Internet radio':  { factory: function(sm) { return new InternetRadioScene(sm); },
-                                 icon: Icons.tv_media_box },
+                                 // No dedicated static — MenuLine
+                                 // draws frame 0 of `iconAnimated`
+                                 // when no `icon` is supplied,
+                                 // which is exactly the visual we
+                                 // want for the unselected row.
+                                 icon:         null,
+                                 iconAnimated: (typeof AnimatedIcons !== 'undefined')
+                                     ? AnimatedIcons.internet_radio_anim
+                                     : null },
             'Media':           { image: '/assets/apps/hdmi_screen.png',           icon: Icons.tv_media_box },
             'NMap':            { image: '/assets/apps/nmap_set_up_00.png',        icon: Icons.nmap_eye },
             'Yet another app': { image: '/assets/apps/nmap_set_up_03.png',        icon: Icons.minimal },
@@ -265,10 +287,14 @@ var MenuScene = (function() {
         var subMenu = new SubMenuScene(sm, 'Apps', order, factories);
 
         // Surface each app's icon in the menu row so the Apps list
-        // matches the App Switcher visually.
+        // matches the App Switcher visually. Animated strips live
+        // in `iconAnimated` — MenuLine plays them on selection;
+        // unselected rows render `icon` (the static frame).
         for (var i = 0; i < subMenu.items.length; i++) {
             var entryName = subMenu.items[i].text;
-            subMenu.items[i].icon = APPS[entryName].icon;
+            var entryDef  = APPS[entryName];
+            subMenu.items[i].icon         = entryDef.icon;
+            subMenu.items[i].iconAnimated = entryDef.iconAnimated || null;
         }
 
         return subMenu;
