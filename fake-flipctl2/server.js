@@ -813,6 +813,344 @@ function stopSound() {
     }
 }
 
+// ── Voice recorder ───────────────────────────────────────────────
+// Captures the on-board NAU8822 codec to 16 kHz mono S16_LE WAV
+// files via `sox`. arecord was tried first but its WAV header
+// patching is broken on this build (placeholder sizes survive
+// SIGINT/SIGTERM, files report ~18 hours long; mid-buffer stops
+// also doubled the recorded duration). sox handles SIGINT
+// cleanly + writes a valid header; the plug layer
+// (`plughw:N,0`) transparently resamples the codec's native
+// 48 kHz down to 16 kHz inside ALSA.
+//
+// `recordChild` and `recordState` are nulled together in the
+// child's exit listener so a crash mid-recording can't desync
+// them — every observer (status endpoint, the next start) sees
+// "not recording" once the OS has actually torn the process down.
+var RECORDINGS_DIR = '/flipperone-testing/sound/recordings';
+var recordChild    = null;            // sox ChildProcess while recording
+var recordState    = null;            // { file, startedAt: ms } while recording
+// Peak amplitude over the most recent sox output chunk,
+// normalised to 0..1. Updated synchronously by the sox-stdout
+// data handler in `startRecording()` (no polling); reset to 0
+// between recordings. Streamed to clients via the
+// `/api/record/level` SSE endpoint.
+var recordLevel    = 0;
+try { fs.mkdirSync(RECORDINGS_DIR, { recursive: true }); } catch (e) {}
+
+// ── Real-time level meter ──
+// We pipe sox's RAW PCM stdout through Node — Node writes the
+// WAV file AND computes the peak per chunk in the same pass.
+// File-tail polling (the previous approach) was hostage to
+// sox's stdio buffering: a recording that played back fine
+// could still leave the on-disk size unchanged for hundreds of
+// ms at a time, freezing the meter. Reading from sox.stdout
+// gets us samples within tens of ms of capture and decouples
+// the meter cadence from the file's flush schedule entirely.
+//
+// recordWavWriter holds the active fs.createWriteStream so the
+// data handler can append to it; recordWavBytes tracks the
+// total audio bytes written so we can patch the WAV header
+// sizes on stop. Both are nulled together with recordChild.
+var recordWavWriter = null;
+var recordWavBytes  = 0;
+
+function buildWavHeader(dataBytes, sampleRate, channels, bitsPerSample) {
+    var byteRate   = sampleRate * channels * bitsPerSample / 8;
+    var blockAlign = channels * bitsPerSample / 8;
+    var buf = Buffer.alloc(44);
+    buf.write('RIFF', 0, 'ascii');
+    buf.writeUInt32LE(36 + dataBytes, 4);          // ChunkSize
+    buf.write('WAVE', 8, 'ascii');
+    buf.write('fmt ', 12, 'ascii');
+    buf.writeUInt32LE(16, 16);                     // Subchunk1Size (PCM)
+    buf.writeUInt16LE(1, 20);                      // AudioFormat = PCM
+    buf.writeUInt16LE(channels, 22);
+    buf.writeUInt32LE(sampleRate, 24);
+    buf.writeUInt32LE(byteRate, 28);
+    buf.writeUInt16LE(blockAlign, 32);
+    buf.writeUInt16LE(bitsPerSample, 34);
+    buf.write('data', 36, 'ascii');
+    buf.writeUInt32LE(dataBytes, 40);              // Subchunk2Size
+    return buf;
+}
+
+// Patch the RIFF + data chunk size fields in a WAV file that
+// was written with placeholder zeros. Called once on
+// recording-stop, after the writer has fully drained.
+function patchWavHeader(filePath, dataBytes) {
+    try {
+        var fd = fs.openSync(filePath, 'r+');
+        var b  = Buffer.alloc(4);
+        b.writeUInt32LE(36 + dataBytes, 0);
+        fs.writeSync(fd, b, 0, 4, 4);              // RIFF ChunkSize
+        b.writeUInt32LE(dataBytes, 0);
+        fs.writeSync(fd, b, 0, 4, 40);             // data Subchunk2Size
+        fs.closeSync(fd);
+    } catch (e) { /* file may have been unlinked */ }
+}
+
+// Update `recordLevel` from a freshly-read S16LE chunk. Peak
+// over the chunk → normalised to 0..1.
+function updateLevelFromChunk(chunk) {
+    var peak = 0;
+    for (var i = 0; i + 1 < chunk.length; i += 2) {
+        var s = chunk.readInt16LE(i);
+        if (s < 0) s = -s;
+        if (s > peak) peak = s;
+    }
+    recordLevel = peak / 32768;
+    if (recordLevel > 1) recordLevel = 1;
+}
+
+// Reset the live level. Called from sox's `exit` / `error`
+// handlers via `finalize()` so the meter snaps back to 0 the
+// instant a recording ends — without this the last frame's
+// peak would linger until something else updated it.
+function stopLevelPoll() {
+    recordLevel = 0;
+}
+
+function buildRecordingFilename() {
+    // rec-YYYYMMDD-HHMMSS.wav — sortable, unique-per-second.
+    // Local time so the filename matches what the user sees on
+    // the device clock (the recordings list also uses local).
+    var d   = new Date();
+    var pad = function(n) { return n < 10 ? '0' + n : String(n); };
+    return 'rec-'
+         + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate())
+         + '-'
+         + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds())
+         + '.wav';
+}
+
+function getRecordings() {
+    var files = [];
+    try {
+        var entries = fs.readdirSync(RECORDINGS_DIR);
+        for (var i = 0; i < entries.length; i++) {
+            if (!/\.wav$/i.test(entries[i])) continue;
+            try {
+                var st = fs.statSync(path.join(RECORDINGS_DIR, entries[i]));
+                files.push({
+                    name:  entries[i],
+                    size:  st.size,
+                    mtime: st.mtimeMs
+                });
+            } catch (e) { /* skip unreadable */ }
+        }
+        // Newest first — list view always lands on most-recent.
+        files.sort(function(a, b) { return b.mtime - a.mtime; });
+    } catch (e) {}
+    return files;
+}
+
+// Pump the NAU8822's mic / capture chain to maximum-ish gain
+// via amixer. Different driver builds expose different control
+// names, so we fire off every plausible one and ignore failures
+// — the controls that don't exist throw and the ones that do
+// land. Hardware gain has a much cleaner SNR than the post-hoc
+// software gain in sox's effect chain, so we lean on it first.
+function bumpRecordingMicGain(card) {
+    if (!card) return;
+    var attempts = [
+        // Mic preamp boost — cheapest gain in the chain.
+        ['Mic Boost',     '3'],
+        ['Mic Boost',     '20dB'],
+        // PGA / capture volume.
+        ['Mic',           '100%'],
+        ['Mic',           '63'],
+        ['Capture',       '100%'],
+        ['Capture',       '63'],
+        ['Input PGA',     '100%'],
+        ['Left Input PGA','100%'],
+        ['Right Input PGA','100%'],
+        // Some builds split the boost into a switch.
+        ['Mic Boost',     'on'],
+        ['Capture',       'on']
+    ];
+    for (var i = 0; i < attempts.length; i++) {
+        var ctrl = attempts[i][0];
+        var val  = attempts[i][1];
+        try {
+            execSync('amixer -c ' + card + ' set ' + JSON.stringify(ctrl)
+                   + ' ' + JSON.stringify(val) + ' 2>/dev/null',
+                   { encoding: 'utf8', timeout: 1500 });
+        } catch (e) { /* control absent — try the next */ }
+    }
+}
+
+function startRecording() {
+    if (recordChild) {
+        return { success: false, error: 'Already recording' };
+    }
+    var card = getNau8822Card();
+    if (!card) {
+        return { success: false, error: 'NAU8822 not found' };
+    }
+    // Codec contention guard — if something is playing back
+    // through the same codec, kill it before opening capture.
+    // No inverse on the playback side; full-duplex hasn't been
+    // exercised on this build so the safer bet is one-at-a-time.
+    stopSound();
+
+    var filename = buildRecordingFilename();
+    var filePath = path.join(RECORDINGS_DIR, filename);
+    // Bump the hardware mic / capture gain BEFORE we open the
+    // capture stream. NAU8822 expose a couple of common
+    // controls; we try each defensively (errors swallowed)
+    // because the exact set varies by ALSA version. This is
+    // the cleanest dB the chain has — boosting in hardware
+    // gives a much better SNR than amplifying a quiet sample
+    // in software.
+    bumpRecordingMicGain(card);
+
+    var device   = 'hw:' + card + ',0';
+    // sox writes RAW S16LE samples to stdout; we read them
+    // here, write them to the WAV file (with our own header),
+    // and update the level meter in the same pass. This keeps
+    // the meter responsive — sox's file-write buffering used
+    // to leave the file's tail stale for hundreds of ms at a
+    // time, freezing the meter even though playback was fine.
+    //
+    // Capture rate matches the NAU8822's native 48 kHz: the
+    // codec only opens at 48 k on hw:, and asking the plug
+    // layer to resample down to 16 k introduced audible
+    // artifacts + cut everything above 8 kHz. 48 k mono S16LE
+    // ≈ 96 KB/s on disk — heavier than the old 32 KB/s but
+    // still a couple of GB per day max, well within the eMMC
+    // budget for voice memos.
+    //
+    // Effects chain (in order):
+    //   highpass 80   — rolls off sub-bass rumble + DC drift
+    //                   that just amplify into noise on boost.
+    //   gain N        — software make-up gain on top of the
+    //                   amixer hardware bumps above. Smaller
+    //                   than before since the hardware does
+    //                   the heavy lifting now.
+    var RECORD_GAIN_DB = 6;
+    var args = ['-q', '-t', 'alsa', device,
+                '-r', '48000', '-c', '1', '-b', '16',
+                '-t', 'raw', '-e', 'signed-integer', '-L', '-',
+                'highpass', '80',
+                'gain', String(RECORD_GAIN_DB)];
+    var spawn = require('child_process').spawn;
+    var fileStream = null;
+    try {
+        // Open the WAV file with placeholder header. We patch
+        // the RIFF + data sizes on stop. 48 kHz / mono / 16-bit
+        // matches the sox arg block above — keep these in
+        // sync if either side changes.
+        fileStream = fs.createWriteStream(filePath);
+        fileStream.write(buildWavHeader(0, 48000, 1, 16));
+    } catch (e) {
+        return { success: false, error: String(e.message || e) };
+    }
+    try {
+        recordChild = spawn('sox', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (e) {
+        try { fileStream.end(); } catch (e2) {}
+        recordChild = null;
+        return { success: false, error: String(e.message || e) };
+    }
+    recordWavWriter = fileStream;
+    recordWavBytes  = 0;
+    recordState     = { file: filename, startedAt: Date.now() };
+
+    recordChild.stdout.on('data', function(chunk) {
+        try {
+            if (recordWavWriter) recordWavWriter.write(chunk);
+        } catch (e) { /* writer closed mid-flight */ }
+        recordWavBytes += chunk.length;
+        // Compute the peak right here — no polling, no file
+        // I/O, the chunk is fresh from sox's pipe buffer.
+        updateLevelFromChunk(chunk);
+    });
+
+    var finalized = false;
+    function finalize() {
+        if (finalized) return;
+        finalized = true;
+        var path0 = filePath;
+        var bytes0 = recordWavBytes;
+        if (recordWavWriter) {
+            // End the stream, then patch the header sizes once
+            // the OS has flushed.
+            try {
+                recordWavWriter.end(function() {
+                    patchWavHeader(path0, bytes0);
+                });
+            } catch (e) {
+                patchWavHeader(path0, bytes0);
+            }
+        }
+        recordChild     = null;
+        recordState     = null;
+        recordWavWriter = null;
+        recordWavBytes  = 0;
+        stopLevelPoll();
+    }
+    recordChild.on('exit',  finalize);
+    recordChild.on('error', finalize);
+    return { success: true, file: filename };
+}
+
+function stopRecording() {
+    if (!recordChild) {
+        // Idempotent — caller can `stop` blindly without
+        // checking state first (the unload path uses sendBeacon
+        // which has no response, so the "is it actually
+        // running?" check happens here).
+        return { success: true, recording: false };
+    }
+    var file = recordState ? recordState.file : null;
+    try {
+        // SIGINT lets sox flush its WAV header cleanly. SIGTERM
+        // also works but SIGINT is the documented "stop and
+        // finalize" signal for the tool.
+        recordChild.kill('SIGINT');
+    } catch (e) { /* already gone */ }
+    return { success: true, recording: false, file: file };
+}
+
+function deleteRecording(filename) {
+    if (typeof filename !== 'string') {
+        return { success: false, error: 'Missing filename' };
+    }
+    if (/[\/\\]/.test(filename) || !/\.wav$/i.test(filename)) {
+        return { success: false, error: 'Invalid filename' };
+    }
+    var filePath = path.join(RECORDINGS_DIR, filename);
+    try {
+        fs.unlinkSync(filePath);
+        return { success: true };
+    } catch (e) {
+        return { success: false, error: String(e.message || e) };
+    }
+}
+
+function playRecording(filename) {
+    // Mirror playSoundFile but sourced from RECORDINGS_DIR. We
+    // share the global audioChild so /api/sound/play and
+    // /api/record/play can't end up dueling over the codec —
+    // whichever fires last wins, and stopSound() cleanly kills
+    // the predecessor.
+    if (typeof filename !== 'string' || /[\/\\]/.test(filename)) {
+        return { success: false, error: 'Invalid filename' };
+    }
+    var filePath = path.join(RECORDINGS_DIR, filename);
+    if (!fs.existsSync(filePath)) {
+        return { success: false, error: 'File not found' };
+    }
+    stopSound();
+    var cmd = 'play ' + JSON.stringify(filePath);
+    if (selectedAlsaDevice) cmd = 'AUDIODEV=' + selectedAlsaDevice + ' ' + cmd;
+    audioChild = exec(cmd, { timeout: 60000 }, function() {
+        audioChild = null;
+    });
+    return { success: true, file: filename };
+}
+
 var selectedAlsaDevice = null; // e.g. "hw:3,0" — persists for this server session
 
 function getAudioDevices() {
@@ -1752,6 +2090,84 @@ var server = http.createServer(function(req, res) {
         stopSound();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true }));
+        return;
+    }
+    if (req.url === '/api/record/list' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ files: getRecordings() }));
+        return;
+    }
+    if (req.url === '/api/record/status' && req.method === 'GET') {
+        var st = { recording: !!recordChild };
+        if (recordState) {
+            st.file      = recordState.file;
+            st.elapsedMs = Date.now() - recordState.startedAt;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(st));
+        return;
+    }
+    if (req.url === '/api/record/start' && req.method === 'POST') {
+        var startResult = startRecording();
+        res.writeHead(startResult.success ? 200 : 500,
+                      { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(startResult));
+        return;
+    }
+    if (req.url === '/api/record/stop' && req.method === 'POST') {
+        var stopResult = stopRecording();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(stopResult));
+        return;
+    }
+    if (req.url === '/api/record/delete' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            if (err || !data || !data.file) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: 'Invalid request' }));
+                return;
+            }
+            var delResult = deleteRecording(data.file);
+            res.writeHead(delResult.success ? 200 : 400,
+                          { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(delResult));
+        });
+        return;
+    }
+    if (req.url === '/api/record/play' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            if (err || !data || !data.file) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: 'Invalid request' }));
+                return;
+            }
+            var playResult = playRecording(data.file);
+            res.writeHead(playResult.success ? 200 : 400,
+                          { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(playResult));
+        });
+        return;
+    }
+    if (req.url === '/api/record/level' && req.method === 'GET') {
+        // Server-Sent Events stream of the current peak level
+        // (0..1). Clients (the RecordingScene VU meter) subscribe
+        // while a recording is active; we push every 100 ms in
+        // lockstep with the level poller's update cadence.
+        // When no recording is active `recordLevel` is 0, so the
+        // stream still works (just shows silence) without
+        // additional gating.
+        res.writeHead(200, {
+            'Content-Type':  'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection':    'keep-alive'
+        });
+        var sendLevel = function() {
+            try { res.write('data: ' + recordLevel.toFixed(4) + '\n\n'); }
+            catch (e) { /* socket gone — interval gets cleared on close */ }
+        };
+        var levelInt = setInterval(sendLevel, 100);
+        sendLevel();   // emit one immediately so the meter doesn't sit at 0
+        req.on('close', function() { clearInterval(levelInt); });
         return;
     }
     if (req.url === '/api/sound/devices') {

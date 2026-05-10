@@ -2351,3 +2351,286 @@ auto-join change are still pending.
 - **Grayscale sprite example**: Dolphins (`js/sprites.js`) — 150×114 at 6-bit grayscale
 - **Related components**: Canvas drawing primitives, [MenuLine](#menuline) rendering
 - **Converter tools**: `png-to-bitmap.py` (grayscale), `png-to-bitmap-converter-v3.py` (binary, legacy)
+
+# Voice recorder
+
+Voice memo recorder for the Flipper One. Captures from the on-board NAU8822 codec
+to WAV files on disk; lets the user list, play back, and delete them.
+
+This file documents the voice-recording feature only. For the broader UI / scene
+patterns it builds on, see `fake_flipctl2_CLAUDE.md` in the same directory.
+
+## At a glance
+
+- **Capture tool:** `sox` (not `arecord` — see "Why sox" below)
+- **Recording format:** 16 kHz / mono / S16_LE WAV
+- **Capture device:** `plughw:N,0` where N is the NAU8822 card (auto-detected)
+- **Storage:** `/flipperone-testing/sound/recordings/` (created on server start)
+- **Filename:** `rec-YYYYMMDD-HHMMSS.wav` (sortable, unique per second)
+- **Recording lifetime:** server-side child process tied to the `RecordingScene`
+  on the client — `enter()` starts, `exit()` always stops, `pagehide` /
+  `beforeunload` also stops via `navigator.sendBeacon` so a browser close
+  or server-driven reload (`/api/version` poll) can't leak a recording
+
+## Files touched
+
+- `server.js` — recording state + `/api/record/*` endpoints
+- `js/apps/record.js` — `VoiceRecorderScene` (list) + `RecordingScene` (active)
+- `index.html` — loads `record.js` after `sound.js`
+- `js/apps/menu.js` — adds **Testing → Voice recorder** entry, factory wires
+  `VoiceRecorderScene`
+
+## Server (`server.js`)
+
+### State
+
+```js
+var RECORDINGS_DIR = '/flipperone-testing/sound/recordings';
+var recordChild = null;             // ChildProcess (sox) when recording
+var recordState = null;             // { file, startedAt: ms } when recording
+try { fs.mkdirSync(RECORDINGS_DIR, { recursive: true }); } catch (e) {}
+```
+
+`recordChild` and `recordState` are nulled together in the child's `exit`
+listener so a crash mid-recording can't desync them.
+
+### Helpers
+
+| Function | Purpose |
+|----------|---------|
+| `buildRecordingFilename()` | Returns `rec-YYYYMMDD-HHMMSS.wav` from local time |
+| `getRecordings()` | Reads `RECORDINGS_DIR`, filters to `.wav`, returns `[{name, size, mtime}]` sorted newest-first |
+| `startRecording()` | Spawns sox; stops any active playback first via `stopSound()` |
+| `stopRecording()` | `SIGINT` to the sox child (clean WAV header). Idempotent — returns `{success: true, recording: false}` even if nothing was running |
+| `deleteRecording(file)` | Validates filename (no path separators, must end `.wav`), then `unlinkSync` |
+| `playRecording(file)` | Same shape as `playSoundFile` but reads from `RECORDINGS_DIR`. Reuses the global `audioChild` so playback can't collide with `/api/sound/play` |
+
+### Endpoints
+
+| Endpoint | Method | Returns / accepts |
+|----------|--------|-------------------|
+| `/api/record/list`   | GET  | `{ files: [{name, size, mtime}] }` (newest first) |
+| `/api/record/status` | GET  | `{ recording: bool }`, plus `{ file, elapsedMs }` when recording |
+| `/api/record/start`  | POST | `{ success, file }` or `{ success: false, error }` |
+| `/api/record/stop`   | POST | `{ success: true, recording: false, file? }` |
+| `/api/record/delete` | POST `{ file }` | `{ success }` |
+| `/api/record/play`   | POST `{ file }` | `{ success, file }` |
+
+### sox invocation
+
+```js
+var device = 'plughw:' + card + ',0';
+var args = ['-q', '-t', 'alsa', device, '-r', '16000', '-c', '1', '-b', '16', filePath];
+recordChild = spawn('sox', args, { stdio: ['ignore', 'ignore', 'pipe'] });
+```
+
+`-q` keeps the progress meter off stderr (otherwise it eats CPU rendering ASCII
+art for nobody to read). The child closes its own stdin/stdout but keeps stderr
+piped so error output is observable from `journalctl -u fake-flipctl-node-server`
+if anything goes wrong.
+
+### Why sox, not arecord
+
+`arecord` was tried first and failed in two ways on this build:
+
+1. **WAV header sizes don't get patched on signal-stop.** arecord writes a 2 GiB
+   placeholder for the RIFF and `data` chunk sizes upfront and is supposed to
+   seek back and patch them when it stops. On SIGINT *or* SIGTERM, this build
+   leaves the placeholders in place — `soxi` then reports the file as ~18 hours
+   long even though only a few KB of data was written. Manually patching the
+   header in Node (`fs.openSync` + write 4 bytes at offsets 4 and 40) works
+   but is fragile.
+2. **Captures ~2× wallclock duration when interrupted mid-buffer.** A 5-second
+   wallclock recording produced 10 seconds of audio in the file. Reproducible
+   on both `hw:1,0` and `plughw:1,0`, with both SIGINT and SIGTERM. Likely an
+   internal arecord buffering quirk on this version. Did not happen with
+   `arecord -d N` (arecord-controlled stop).
+
+sox handles SIGINT cleanly: writes a valid WAV header, captures real wallclock
+duration, no Node-side header patching needed. The plug layer's resampling
+(48 kHz → 16 kHz) happens transparently inside sox / ALSA.
+
+### Why `plughw:` and 16 kHz
+
+- The NAU8822 codec only opens at **48 kHz** on the raw `hw:N,0` interface
+  (confirmed via `arecord --dump-hw-params`: `RATE: 48000`, `CHANNELS: [1 2]`).
+- `plughw:N,0` inserts ALSA's plug layer, which transparently resamples to
+  whatever rate sox asks for.
+- 16 kHz mono is plenty for voice memos and gives ~32 KB/s files (vs ~96 KB/s
+  at 48 kHz). The Flipper One has limited eMMC; smaller is better here.
+
+### Card auto-detection
+
+`getNau8822Card()` already exists in `server.js` (used by the volume controls).
+It greps `/proc/asound/cards` for `[NAU8822` and returns the card number.
+The voice recorder reuses it as-is — if the codec card number changes (driver
+reload, hot-replug), the next `startRecording()` call picks up the new number.
+
+## Client (`js/apps/record.js`)
+
+Two scenes, IIFE-wrapped following the same shape as `sound.js`. Both use
+`UI.drawStatusBar` + `UI.drawMenuList` / direct `canvas.drawText` (the
+plain-text style this app variant uses for utility scenes — *not* the
+`MenuLine` + `MenuSelectorFrame` style used by the main menu).
+
+### `VoiceRecorderScene` — list view
+
+State (instance fields):
+
+```js
+this.files = [];        // [{name, size, mtime}, ...] from /api/record/list
+this.loading = true;
+this.error = false;
+this.selectedIndex = 0; // 0 = "* New recording" pseudo-row
+this.scrollOffset = 0;
+this.playing = null;    // filename of currently-playing recording, or null
+```
+
+Layout: row 0 is always the literal string `* New recording`. Rows 1..N are
+the saved files (newest first), with a ` >>>` suffix on whichever one is
+currently playing.
+
+`enter()` re-fetches the list every time the scene becomes active. This includes
+returning from the recording flow — `SceneManager.pop()` calls `enter()` on the
+revealed scene, so a fresh recording lands at the top of the list immediately
+without any explicit "I just made one" signal between scenes.
+
+`handleInput`:
+- **`ok` on row 0** → `sceneManager.push(new RecordingScene())`
+- **`ok` on a saved row** → toggle play (POST `/api/record/play` if not currently
+  playing this file; POST `/api/sound/stop` if it is)
+- **`back`** → return `'pop'`
+
+`exit()` posts `/api/sound/stop` if a playback was in flight, so leaving the
+scene doesn't keep audio playing in the background.
+
+### `RecordingScene` — active recording
+
+State:
+
+```js
+this.startedAt = 0;
+this.elapsedMs = 0;
+this.state = 'starting';   // 'starting' → 'recording' → 'done' (on error)
+this.error = '';
+this.tickHandle = null;    // setInterval id for the 500ms redraw tick
+this.filename = '';
+this._unloadHandler = null;
+```
+
+`enter()`:
+1. POST `/api/record/start`. On success, transition to `'recording'` and stamp
+   `startedAt = Date.now()`. On failure, transition to `'done'` with `error`.
+2. Start a `setInterval(500ms)` that updates `elapsedMs` and calls
+   `window.requestRender()` so the blinking REC dot and elapsed counter
+   advance even when the user isn't pressing keys.
+3. Register `pagehide` + `beforeunload` listeners that fire
+   `navigator.sendBeacon('/api/record/stop')`. `sendBeacon` is the durable
+   cross-engine option for "send this last request as the page is going away" —
+   `fetch({keepalive: true})` isn't universally supported in the Cog WebKit
+   build this device runs.
+
+`exit()`:
+1. Clear the tick interval
+2. Remove the unload listeners
+3. POST `/api/record/stop` (always — even if state is `'done'`; the server is
+   idempotent)
+
+The triple-stop coverage (`exit()`, `pagehide`, `beforeunload`) is by design.
+The contract with the user is "recording happens **only** while the scene is
+open." Each path is the only one that fires for some scenarios:
+
+| Scenario | Path that stops the recording |
+|----------|-------------------------------|
+| User presses OK / back / esc | `handleInput` returns `'pop'` → `exit()` |
+| App switcher kills the scene | `SceneManager.pop()` → `exit()` |
+| `/api/version` reload after server restart | `pagehide` → `sendBeacon` |
+| Cog browser closed / TTY switch | `pagehide` → `sendBeacon` |
+| Page navigated away (dev browser) | `beforeunload` → `sendBeacon` |
+
+`handleInput`: any of `ok`, `back`, `esc` returns `'pop'` — explicit so the
+intent ("any commit-ish key stops the recording") is obvious in the diff.
+
+`render`:
+- `'starting'` state: `Starting...`
+- `'done'` with error: `Failed:` + truncated message
+- `'recording'`: blinking `* REC` (toggles every 500 ms via
+  `Math.floor(Date.now() / 500) % 2`), then `MM:SS` elapsed time, then a hint
+  line and `[Stop]` label at the bottom
+
+The blinking dot uses wall-clock time as the phase source rather than a
+counter, so it stays stable across redraw skips and matches the 500 ms tick.
+
+## Wiring
+
+### `index.html`
+
+```html
+<script src="js/apps/sound.js"></script>
+<script src="js/apps/record.js"></script>
+```
+
+Order matters only insofar as `record.js` doesn't depend on `sound.js` — they're
+peers. Loading after `sound.js` keeps the audio-related apps grouped.
+
+### `js/apps/menu.js`
+
+Added under the **Testing** submenu, next to **Sound**:
+
+```js
+'Network LEDs',
+'Sound',
+'Voice recorder',     // ← new
+'Figma live preview',
+// ...
+'Sound': function() { return new SoundMenuScene(sm); },
+'Voice recorder': function() { return new VoiceRecorderScene(sm); },  // ← new
+```
+
+## Known constraints / future work
+
+- **No live VU meter / waveform.** v1 ships with elapsed-time only. Adding a
+  meter would mean either (a) sox writing levels to stderr and parsing them, or
+  (b) a sidecar process that taps the same ALSA capture stream (which would
+  contend with the recording itself). The cleanest path is probably an SSE
+  endpoint backed by sox's `stats` effect on a tee — deferred.
+- **No rename / metadata.** Filenames are timestamps. If the user wants
+  human-readable labels, that needs the virtual keyboard flow plus a sidecar
+  metadata file (or rename the WAV). Not built.
+- **No length cap.** A recording will run until stopped. The eMMC has a few
+  GB free; a runaway recording at 32 KB/s would take ~9 hours to fill 1 GB.
+  A `--max-length` flag could be added if this becomes a real risk.
+- **Codec contention with playback.** Server-side, `startRecording()` calls
+  `stopSound()` first. There's no inverse — starting playback while recording
+  doesn't stop the recording. The hardware probably handles full-duplex but it
+  hasn't been exercised; the safer assumption is that one of the two will fail.
+- **Recording is not visible in the App Switcher.** `RecordingScene` doesn't
+  register with `RunningApps`, so Tab opens the switcher with whatever was on
+  top before the user navigated into Voice recorder. Recording continues
+  while the switcher is open (the scene is still on the stack); only popping
+  past it stops the capture.
+
+## End-to-end test recipe
+
+```bash
+# Start a recording from the command line
+curl -X POST http://localhost:8899/api/record/start
+# ... speak into the mic ...
+curl -X POST http://localhost:8899/api/record/stop
+
+# Inspect the file
+LATEST=$(ls -t /flipperone-testing/sound/recordings/ | head -1)
+soxi /flipperone-testing/sound/recordings/$LATEST
+# Expect: 16000 Hz, mono, S16_LE, duration ≈ wallclock between start and stop
+
+# Play it back
+curl -X POST -H 'Content-Type: application/json' \
+    -d "{\"file\":\"$LATEST\"}" http://localhost:8899/api/record/play
+
+# Delete it
+curl -X POST -H 'Content-Type: application/json' \
+    -d "{\"file\":\"$LATEST\"}" http://localhost:8899/api/record/delete
+```
+
+For UI testing, navigate **Menu → Testing → Voice recorder** in cog after a
+service restart (the page auto-reloads on `/api/version` change).
