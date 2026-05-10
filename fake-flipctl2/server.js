@@ -808,9 +808,82 @@ function playSoundFile(filename) {
 
 function stopSound() {
     if (audioChild) {
-        try { audioChild.kill(); } catch (e) {}
+        // SIGKILL, not SIGTERM — we want the ALSA device free
+        // before the next caller (typically playRadioStream)
+        // tries to open it. SIGTERM lets mpg123 do graceful
+        // shutdown, which leaves the device busy for tens of
+        // ms; the next mpg123 hits "Device or resource busy"
+        // and exits, so the old stream keeps playing.
+        try { audioChild.kill('SIGKILL'); } catch (e) {}
         audioChild = null;
     }
+}
+
+// ── Internet radio streaming ─────────────────────────────────────
+// mpg123 streams MP3/Shoutcast/Icecast directly over HTTP, so the
+// radio scene can hand us a URL and we hand it straight to a
+// child process. Reuses the same `audioChild` slot as the
+// file-playback path — only one thing plays at a time, and the
+// existing `stopSound()` machinery cleans up either case
+// uniformly.
+//
+// `spawn` (not exec/shell) so the URL goes in as its own argv —
+// no shell metacharacters in the user-supplied string ever reach
+// /bin/sh. URL scheme is also gated to http(s) on the way in.
+function playRadioStream(url) {
+    if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+        return { success: false, error: 'Invalid URL' };
+    }
+    var spawn = require('child_process').spawn;
+
+    function doSpawn() {
+        var args = ['-q'];
+        // Route to the same ALSA device the rest of the audio
+        // stack is using when the user has explicitly picked
+        // one — but wrap a raw `hw:` form in `plughw:` so ALSA's
+        // plug layer handles any sample-rate / format mismatch.
+        // mpg123 outputs the MP3's native rate (44.1 kHz for
+        // pop stations), which the HDMI card on this SoC
+        // rejects through `hw:` even though the rate is inside
+        // its [32000–48000] range — plughw resamples on the
+        // fly and "Speaker", "Headphone", and "HDMI" all work
+        // off the same code path.
+        if (selectedAlsaDevice) {
+            var dev = selectedAlsaDevice;
+            if (/^hw:/.test(dev)) dev = 'plug' + dev;
+            args.push('-a', dev);
+        }
+        args.push(url);
+        var child = spawn('mpg123', args, { stdio: 'ignore' });
+        // Identity-guard the global reference: only null it
+        // out if we still ARE the active child. Without this,
+        // a stale predecessor's exit event (which races with
+        // the next playRadioStream call) overwrites the new
+        // process's reference and the radio orphans.
+        child.on('exit',  function() { if (audioChild === child) audioChild = null; });
+        child.on('error', function() { if (audioChild === child) audioChild = null; });
+        audioChild = child;
+    }
+
+    var oldChild = audioChild;
+    audioChild = null;
+    if (oldChild) {
+        // Drop the old process's exit/error listeners so they
+        // can't fire later and stomp on `audioChild` after
+        // the new mpg123 has been assigned to it. Then SIGKILL
+        // and wait for the kernel to actually reap the
+        // process before spawning — that's the only way to
+        // guarantee the ALSA device is free.
+        oldChild.removeAllListeners('exit');
+        oldChild.removeAllListeners('error');
+        oldChild.once('exit',  doSpawn);
+        oldChild.once('error', doSpawn);
+        try { oldChild.kill('SIGKILL'); }
+        catch (e) { doSpawn(); }
+    } else {
+        doSpawn();
+    }
+    return { success: true, url: url };
 }
 
 // ── Voice recorder ───────────────────────────────────────────────
@@ -1211,6 +1284,115 @@ function getVolume() {
         result.headphoneMuted = /\[off\]/.test(hp);
     } catch (e) {}
     return result;
+}
+
+// ── High-level audio outputs ─────────────────────────────────────
+// The radio app's "Audio device" picker thinks in terms of where
+// the user wants the sound to come out (Speaker / Headphone / HDMI
+// / DisplayPort), not which hw:N,0 device is involved. Speaker
+// and Headphone share the same NAU8822 card — the split happens
+// in the codec mixer (Speaker Switch / Headphones Switch +
+// per-channel Playback Switches), which has no jack detection
+// on this board, so the user picks explicitly and we mute the
+// non-active path.
+//
+// Loopback (snd_aloop) is intentionally absent: it has no
+// physical output and listening through it gives silence.
+//
+// `selectedOutputId` is best-effort state — it's only read when
+// the radio app refreshes its picker and reset whenever the
+// user explicitly picks an output. The Sound app's lower-level
+// AudioDevicesScene still uses /api/sound/device directly and
+// is unaffected.
+var selectedOutputId = 'speaker';
+
+function getSoundOutputs() {
+    var result = { outputs: [], current: selectedOutputId };
+    // Fixed mapping by card description. aplay -l's free-form
+    // strings ("HDMI", "DP0", "On-board Analog NAU8822", …) are
+    // stable on this device tree, so a description match is
+    // enough to route each card to its high-level identity.
+    var cards = {};
+    try {
+        var out = execSync('aplay -l 2>/dev/null', { encoding: 'utf8', timeout: 3000 });
+        var lines = out.split('\n');
+        for (var i = 0; i < lines.length; i++) {
+            var m = lines[i].match(/^card (\d+): (\S+) \[([^\]]+)\], device (\d+):/);
+            if (m) cards[m[3]] = 'hw:' + m[1] + ',' + m[4];
+        }
+    } catch (e) {}
+    if (cards['On-board Analog NAU8822']) {
+        result.outputs.push({ id: 'speaker',   label: 'Speaker',   device: cards['On-board Analog NAU8822'] });
+        result.outputs.push({ id: 'headphone', label: 'Headphone', device: cards['On-board Analog NAU8822'] });
+    }
+    if (cards['HDMI']) result.outputs.push({ id: 'hdmi', label: 'HDMI', device: cards['HDMI'] });
+    if (cards['DP0'])  result.outputs.push({ id: 'dp',   label: 'DisplayPort', device: cards['DP0'] });
+
+    // Lazy default. Until the user picks something explicitly,
+    // selectedAlsaDevice is null — which makes mpg123 fall
+    // through to ALSA's `default` device. On this build that's
+    // Loopback (card 0), which has no physical output, so the
+    // first /api/radio/play silently writes into a virtual sink.
+    // Apply the current selectedOutputId here so the picker's
+    // displayed value and the actual codec routing line up
+    // before the user touches anything.
+    if (!selectedAlsaDevice && result.outputs.length) {
+        var def = null;
+        for (var i = 0; i < result.outputs.length; i++) {
+            if (result.outputs[i].id === selectedOutputId) {
+                def = result.outputs[i]; break;
+            }
+        }
+        if (!def) def = result.outputs[0];
+        // Direct apply — must NOT call setSoundOutput here
+        // because that re-enters getSoundOutputs() and the
+        // HTTP request never completes (infinite recursion).
+        _applyOutputState(def);
+        result.current = def.id;
+    }
+    return result;
+}
+
+// Apply an output's device + codec mixer state without re-
+// querying the output list. Split out from setSoundOutput so
+// getSoundOutputs() can use it during lazy default-init
+// without recursing back through setSoundOutput → getSoundOutputs.
+//
+// Codec mixer is only meaningful when the chosen card is the
+// NAU8822: for HDMI / DP playback the mute state can't reach
+// those cards. For Speaker / Headphone we toggle the simple-
+// mixer playback switches that gate the DAC routes (`Speaker`
+// and `Headphone` simple-control names — joined stereo
+// p-switches over the per-channel Playback Switch numids the
+// codec exposes). The mono `Headphones` amp-enable switch is
+// set to on in both cases so headphone audio is never blocked
+// by a stale amp-disable from a prior path.
+function _applyOutputState(match) {
+    selectedAlsaDevice = match.device;
+    selectedOutputId   = match.id;
+    var card = getNau8822Card();
+    if (card && (match.id === 'speaker' || match.id === 'headphone')) {
+        var spkOn = (match.id === 'speaker')   ? 'on' : 'off';
+        var hpOn  = (match.id === 'headphone') ? 'on' : 'off';
+        var cmds = [
+            "amixer -c " + card + " set Speaker "    + spkOn,
+            "amixer -c " + card + " set Headphone "  + hpOn,
+            "amixer -c " + card + " set Headphones on"
+        ];
+        for (var ci = 0; ci < cmds.length; ci++) {
+            try { execSync(cmds[ci] + ' 2>/dev/null', { timeout: 2000 }); }
+            catch (e) { /* tolerate per-control failures */ }
+        }
+    }
+}
+
+function setSoundOutput(id) {
+    var outs = getSoundOutputs().outputs;
+    var match = null;
+    for (var i = 0; i < outs.length; i++) if (outs[i].id === id) match = outs[i];
+    if (!match) return { success: false, error: 'Unknown output' };
+    _applyOutputState(match);
+    return { success: true, id: id, device: match.device };
 }
 
 function setVolume(control, pct) {
@@ -2208,10 +2390,106 @@ var server = http.createServer(function(req, res) {
         res.end(JSON.stringify(vol));
         return;
     }
+    // ── /api/sound/outputs ──────────────────────────────────────
+    // High-level outputs for the radio app's picker — see
+    // getSoundOutputs() for the rationale (Speaker / Headphone
+    // are split out of the NAU8822 card; HDMI / DP appear when
+    // present; Loopback is hidden).
+    if (req.url === '/api/sound/outputs' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(getSoundOutputs()));
+        return;
+    }
+    if (req.url === '/api/sound/output' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            if (err || !data || !data.id) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: 'Invalid request' }));
+                return;
+            }
+            var outResult = setSoundOutput(data.id);
+            res.writeHead(outResult.success ? 200 : 400,
+                          { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(outResult));
+        });
+        return;
+    }
     if (req.url === '/api/sound/restart-driver' && req.method === 'POST') {
         var driverResult = restartAudioDriver();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(driverResult));
+        return;
+    }
+    // ── /api/radio/status ───────────────────────────────────────
+    // Reports whether the mpg123 binary needed for internet-radio
+    // streaming is installed. The Internet radio scene polls this
+    // on `enter()` and gates the rest of the app behind an
+    // install modal when the binary is missing.
+    if (req.url === '/api/radio/status' && req.method === 'GET') {
+        var mpg123Installed = false;
+        try {
+            execSync('which mpg123', { timeout: 2000 });
+            mpg123Installed = true;
+        } catch (e) { /* not installed */ }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ mpg123Installed: mpg123Installed }));
+        return;
+    }
+    // ── /api/radio/play ─────────────────────────────────────────
+    // Starts streaming the given URL via mpg123. Shares the same
+    // audioChild slot as /api/sound/play, so kicking off a radio
+    // stream stops any file playback that's already in flight
+    // (and vice-versa) — exactly the existing one-thing-at-a-
+    // time invariant the rest of the audio stack assumes.
+    if (req.url === '/api/radio/play' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            if (err || !data || !data.url) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: 'Invalid request' }));
+                return;
+            }
+            var radioResult = playRadioStream(data.url);
+            res.writeHead(radioResult.success ? 200 : 400,
+                          { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(radioResult));
+        });
+        return;
+    }
+    // ── /api/radio/stop ─────────────────────────────────────────
+    // Same code path as /api/sound/stop — the radio stream is
+    // just another `audioChild`, and `stopSound()` doesn't care
+    // which producer started it.
+    if (req.url === '/api/radio/stop' && req.method === 'POST') {
+        stopSound();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+        return;
+    }
+    // ── /api/radio/install ──────────────────────────────────────
+    // Installs mpg123 via apt-get. The node server runs as root
+    // (it already invokes audio-driver-restart.sh which requires
+    // root), so plain apt-get works — no sudo wrapper needed.
+    // DEBIAN_FRONTEND=noninteractive avoids any debconf prompt
+    // that would otherwise hang the request; --no-install-recommends
+    // keeps the install lean. Synchronous: the package is small
+    // and the transaction fits inside the 60 s timeout.
+    if (req.url === '/api/radio/install' && req.method === 'POST') {
+        var instOk = false;
+        var instOut = '';
+        try {
+            instOut = execSync(
+                'DEBIAN_FRONTEND=noninteractive apt-get install -y ' +
+                '--no-install-recommends mpg123 2>&1',
+                { encoding: 'utf8', timeout: 60000 });
+            instOk = true;
+        } catch (e) {
+            instOut = (e.stdout || '') + (e.stderr || '') + (e.message || '');
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            success: instOk,
+            output:  instOut.slice(-1000)
+        }));
         return;
     }
     if (req.url === '/api/hostname' && req.method === 'GET') {

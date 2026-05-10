@@ -90,6 +90,10 @@ var MenuDropdownLine = (function() {
     };
 
     // Plain (default) chip — gray fill, centred value text.
+    // When `this.selected` is true the chip also paints `<` / `>`
+    // affordances inset from each edge, advertising that left /
+    // right will cycle the picker — matching the slider chip's
+    // own selected-state ornaments.
     MenuDropdownLine.prototype._renderPlainChip = function(canvas, chipX, chipY) {
         var ctx = canvas.ctx;
         var chip = new ResponsiveFrame({
@@ -104,9 +108,21 @@ var MenuDropdownLine = (function() {
         });
         chip.render(canvas);
 
+        var ARROW_PAD = 4;
+        var ltW = 0, gtW = 0;
+        if (this.selected) {
+            ltW = HaxrcorpFont16.textWidth('<');
+            gtW = HaxrcorpFont16.textWidth('>');
+        }
+
         if (this.value) {
             var valStr = String(this.value);
-            var maxW   = CHIP_W - 4;
+            // Reserve room on each side for the arrows when
+            // selected so a long label can't overrun them; the
+            // ellipsis path then trims to fit the narrowed
+            // budget instead of the full chip width.
+            var maxW = CHIP_W - 4
+                     - (this.selected ? (ltW + gtW + ARROW_PAD * 2) : 0);
             while (valStr.length > 0
                    && HaxrcorpFont16.textWidth(valStr) > maxW) {
                 valStr = valStr.substring(0, valStr.length - 1);
@@ -117,6 +133,13 @@ var MenuDropdownLine = (function() {
             var valW = HaxrcorpFont16.textWidth(valStr);
             HaxrcorpFont16.draw(ctx, valStr,
                 chipX + Math.floor((CHIP_W - valW) / 2), chipY, '#000');
+        }
+
+        if (this.selected) {
+            HaxrcorpFont16.draw(ctx, '<',
+                chipX + ARROW_PAD, chipY, '#000');
+            HaxrcorpFont16.draw(ctx, '>',
+                chipX + CHIP_W - gtW - ARROW_PAD, chipY, '#000');
         }
     };
 
