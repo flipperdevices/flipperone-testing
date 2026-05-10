@@ -228,23 +228,36 @@ var MenuScene = (function() {
     }
 
     function appsMenu(sm) {
-        // Placeholder apps. Single source of truth for each app's
-        // PNG mockup and the icon that travels with it (shown next
-        // to the entry in this submenu *and* in the App Switcher's
-        // title bar). Adding a new app: drop a PNG into assets/apps/,
-        // add an entry here, and (optionally) add its icon sprite.
+        // App registry. Single source of truth for each app's
+        // icon (shown next to the entry in this submenu *and* in
+        // the App Switcher's title bar). Two flavours:
+        //
+        //   • Placeholder apps — provide `image` (PNG mockup);
+        //     the factory wraps PlaceholderAppScene so the row
+        //     opens the static asset.
+        //   • Real apps — provide `factory: function(sm) { ... }`
+        //     returning a custom scene. The icon still drives
+        //     the menu row; image is ignored.
+        //
+        // Adding a placeholder: drop a PNG into assets/apps/ and
+        // add an `image` + `icon` entry.
+        // Adding a real app: register the script in index.html,
+        // add an `icon` + `factory` entry below.
         var APPS = {
+            'Internet radio':  { factory: function(sm) { return new InternetRadioScene(sm); },
+                                 icon: Icons.tv_media_box },
             'Media':           { image: '/assets/apps/hdmi_screen.png',           icon: Icons.tv_media_box },
             'NMap':            { image: '/assets/apps/nmap_set_up_00.png',        icon: Icons.nmap_eye },
             'Yet another app': { image: '/assets/apps/nmap_set_up_03.png',        icon: Icons.minimal },
             'Router':          { image: '/assets/apps/router_app_placeholder.png',icon: Icons.router }
         };
-        var order = ['Media', 'NMap', 'Yet another app', 'Router'];
+        var order = ['Internet radio', 'Media', 'NMap', 'Yet another app', 'Router'];
 
         var factories = {};
         order.forEach(function(name) {
             var def = APPS[name];
             factories[name] = function() {
+                if (typeof def.factory === 'function') return def.factory(sm);
                 return new PlaceholderAppScene(def.image, name, def.icon);
             };
         });
