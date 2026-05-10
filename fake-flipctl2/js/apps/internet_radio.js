@@ -29,9 +29,16 @@ var InternetRadioScene = (function() {
     // `selectedAlsaDevice` + `selectedOutputId` and the next
     // `_initSettings` call rehydrates the picker from there,
     // so it's not duplicated here.
+    // `stationByCity` is the per-city station memory: switching
+    // back to a city restores whichever station was last picked
+    // there instead of snapping to the city's first entry. Keyed
+    // by city name; populated lazily in `_refreshStationList` —
+    // entries are seeded the first time each city is visited so
+    // the constructor doesn't need to know the full list up
+    // front.
     var saved = {
         city:           'London',
-        station:        '',           // first city's first station, set on first construct
+        stationByCity:  {},
         volume:         50,
         playingStation: null
     };
@@ -119,21 +126,19 @@ var InternetRadioScene = (function() {
             },
             station: {
                 options: [],
-                current: saved.station
+                current: ''      // set by _refreshStationList below
             },
             audioDevice: {
-                options: ['(loading…)'],
-                current: '(loading…)'
+                options: ['Updating...'],
+                current: 'Updating...'
             }
         };
+        // _refreshStationList pulls `saved.stationByCity[city]`
+        // for the active city's last pick, falls back to the
+        // city's first entry, and writes the resolved value
+        // back to `saved.stationByCity` so subsequent
+        // constructs land on the same station immediately.
         this._refreshStationList();
-        // _refreshStationList may have replaced
-        // station.current (e.g. saved.station was empty on
-        // first launch, or pointed at a city the user
-        // doesn't have any more). Push the resolved value
-        // back to `saved` so subsequent constructs read a
-        // valid station even before any user interaction.
-        saved.station = this._pickers.station.current;
 
         // Full {name, description} records for whatever aplay -l
         // returned. The audioDevice picker shows descriptions
@@ -204,18 +209,23 @@ var InternetRadioScene = (function() {
     }
 
     // Sync the Station picker's options + current value to the
-    // currently-selected city. Called once in the constructor
-    // (to seed) and after any city change. If the current
-    // station isn't valid for the new city, snap to the new
-    // city's first station so the row never points at a
-    // station that doesn't exist there.
+    // currently-selected city. Restores whichever station was
+    // last picked in this city (per-city memory in
+    // `saved.stationByCity`); falls back to the city's first
+    // entry the first time we visit a city, or if the
+    // remembered choice isn't in the city's current list. The
+    // resolved value is written back so re-entering the city
+    // later honours whatever the user left it on.
     InternetRadioScene.prototype._refreshStationList = function() {
         var cityName = this._pickers.city.current;
         var list = this._stationsByCity[cityName] || [];
         this._pickers.station.options = list;
-        if (list.indexOf(this._pickers.station.current) < 0) {
-            this._pickers.station.current = list[0] || '';
-        }
+        var remembered = saved.stationByCity[cityName];
+        var pick = (remembered && list.indexOf(remembered) >= 0)
+            ? remembered
+            : (list[0] || '');
+        this._pickers.station.current = pick;
+        saved.stationByCity[cityName] = pick;
     };
 
     // Single source of truth for the dropdown rows. Returned
@@ -421,13 +431,21 @@ var InternetRadioScene = (function() {
     InternetRadioScene.prototype._commitPickerChange = function(key) {
         if (key === 'city') {
             saved.city = this._pickers.city.current;
+            // Refresh the station picker — `_refreshStationList`
+            // restores the city's last-picked station (or the
+            // first entry on first visit). Then hot-swap the
+            // live stream to that station so a city change
+            // moves the audio to whatever's playing in the new
+            // city, not just the picker UI.
             this._refreshStationList();
-            saved.station = this._pickers.station.current;
             if (this._playingStation) {
                 this._playRadio(this._pickers.station.current);
             }
         } else if (key === 'station') {
-            saved.station = this._pickers.station.current;
+            // Per-city memory: writing to `stationByCity[city]`
+            // means revisiting this city later restores the
+            // exact station the user left it on.
+            saved.stationByCity[saved.city] = this._pickers.station.current;
             if (this._playingStation) {
                 this._playRadio(this._pickers.station.current);
             }
