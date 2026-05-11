@@ -1,21 +1,40 @@
 /**
- * KeyboardTestScene
+ * TextInputScreen
  *
- * Sandbox for the on-screen keyboard. Renders the standard chrome
- * (TabHeader, TextInputBox, InputField with a blinking cursor) plus
- * the UI.Keyboard component so the user can type and watch the
- * input field update in real time.
+ * Reusable text-input screen: centred title, auto-sizing input
+ * field, the standard on-screen UI.Keyboard, the 123 / backspace
+ * tabs below it, the bottom-bar Cancel / Done buttons, and a
+ * discard-changes modal on Back when there's unsaved text.
  *
- * Layout follows the keyboard's natural geometry — TextInputBox /
- * InputField are positioned 16/26 px from the top, the keyboard
- * sits at y = 70. The status bar still paints over the top.
+ * Originally split out of the keyboard-test sandbox so other
+ * scenes (Wi-Fi password, future forms) can drop in the same
+ * input experience without copying the chrome.
+ *
+ * Constructor options:
+ *   - displayName  : string shown in the App Switcher (default
+ *                    'Screen Keyboard').
+ *   - title        : caption above the input field (default
+ *                    'Text field title').
+ *   - initialText  : starting value for the field (default '').
+ *   - onSave(text) : called when the user commits — Save in the
+ *                    discard modal or Done in the bottom bar.
+ *                    Return value is passed through to the
+ *                    scene-stack as the handleInput result, so
+ *                    returning 'pop' (or omitting) closes the
+ *                    scene.
+ *   - onDiscard()  : called when the user picks Discard in the
+ *                    confirmation modal. Same return-value
+ *                    semantics as onSave.
+ *
+ * `KeyboardTestScene` is exposed as an alias at the bottom of
+ * this file so existing entry points (main.js, menu.js) keep
+ * working without changes.
  *
  * Input mapping:
- *   - up / down / left / right  → move keyboard cursor
+ *   - up / down / left / right  → move keyboard / input cursor
  *   - ok                        → insert highlighted char
- *   - back                      → backspace one char (matches
- *                                 UI.Keyboard's built-in convention)
- *   - esc                       → pop the scene
+ *   - back / esc                → close modal or open discard
+ *                                 prompt (or pop when field empty)
  *
  * Touchpad: subscribes to the kernel-evdev SSE stream (same
  * endpoint TouchpadAbsScene / AppSwitcherScene use). Y axis maps
@@ -25,7 +44,7 @@
  * stops or lifts, the highlight stays exactly where the finger
  * left it.
  */
-var KeyboardTestScene = (function() {
+var TextInputScreen = (function() {
     // Pad units → keyboard step. The pad's raw Y axis spans
     // ~400 units; with 3 rows, 130/row puts a full-pad Y sweep
     // squarely on a row-to-row traversal. X is sized so a full
@@ -54,35 +73,47 @@ var KeyboardTestScene = (function() {
     var BTN_W   = 48;
     var BTN_GAP = 2;
 
-    function KeyboardTestScene() {
-        this.displayName = 'Screen Keyboard';
+    function TextInputScreen(options) {
+        options = options || {};
+        this._opts       = options;
+        this.displayName = options.displayName || 'Screen Keyboard';
     }
 
-    KeyboardTestScene.prototype.enter = function() {
+    TextInputScreen.prototype.enter = function() {
         var self = this;
 
-        this.inputText  = '';
-        // Modal-style chrome — same approach used by the Wi-Fi
-        // connect modal: tab header attached to a ResponsiveFrame
-        // body, input shown as a small CCCCCC-filled, no-stroke
-        // ResponsiveFrame inside. The TextInputBox / InputField
-        // pair is gone; render() lays everything out from these
-        // numbers below.
-        this.tabHeader  = new UI.TabHeader('Type to test');
-        this.cursor     = new BlinkingKeyboardCursor(500);
-        // Geometry constants kept alongside the wifi connect
-        // modal's so the two screens look like siblings.
-        //   • MODAL_OFFSET_Y nudges the tab + frame down so the
-        //     top isn't hard against the status bar.
-        //   • FRAME_BOT_OVERLAP lets the frame's bottom edge tuck
-        //     behind the keyboard chrome (4 px of overlap), giving
-        //     the body more visible vertical room.
-        this._modalOffsetY    = 12;
-        this._frameBotOverlap = 4;
-        // Tab x = 4 (matches FRAME_X), y = 3 + offset.
-        this.tabHeader.x = 4;
-        this.tabHeader.y = 3 + this._modalOffsetY;
-        this.tabHeader.h = 16;
+        // Seed text and cursor from constructor options so a
+        // consumer can pre-fill the field (e.g. Wi-Fi password
+        // editing an existing entry). Cursor lands at the end
+        // of the seed so typing appends naturally.
+        var opts = this._opts || {};
+        this.inputText  = (typeof opts.initialText === 'string') ? opts.initialText : '';
+        this._inputCursor = this.inputText.length;
+        // Title rendered centered above the input field. Driven
+        // by the `title` option so consumers can swap the
+        // caption per-form. Falls back to a generic placeholder
+        // when none is supplied.
+        this.fieldTitle = (typeof opts.title === 'string') ? opts.title : 'Text field title';
+        // Commit / discard callbacks. Caller-supplied so the
+        // same screen can plug into different downstream wiring
+        // (Wi-Fi password store, future form submission, …).
+        // Both are invoked with this scene's current inputText
+        // value where relevant; their return value bubbles up to
+        // handleInput so the scene stack can pop / push.
+        this._onSave    = (typeof opts.onSave    === 'function') ? opts.onSave    : null;
+        this._onDiscard = (typeof opts.onDiscard === 'function') ? opts.onDiscard : null;
+        // Discard-confirmation modal. Opens on Back when the
+        // input field has unsaved text. `buttonIndex` 0 = Keep
+        // (default, dismiss the modal and stay in the keyboard
+        // with the text preserved) and 1 = Discard (closes the
+        // scene via onDiscard, text is lost). Back inside the
+        // modal also dismisses it the same way Keep does.
+        this._discardModal = { open: false, buttonIndex: 0 };
+        // Flat layout: a centred title and a centred input field
+        // sit directly on the white background. No tab header,
+        // no body frame — the keyboard is the only persistent
+        // chrome below.
+        this.cursor = new BlinkingKeyboardCursor(500);
 
         // Three layouts.
         //
@@ -100,23 +131,53 @@ var KeyboardTestScene = (function() {
         // 123 / ABC bottom button toggles ABC ↔ SYM. Cell
         // onPress callbacks (handled by UI.Keyboard) carry the
         // toggle behaviour without any character emission.
+        // Wide-cell descriptors used at the trailing edges of
+        // rows 0 and 1. They previously carried backspace and
+        // return; with backspace moved to the dedicated tab
+        // below the keyboard, the wide slots are now form-
+        // navigation buttons (Up / Down arrows) — no behaviour
+        // wired yet, just the visual placeholders.
+        var keyboardUpCell   = { wide: true, isKeyboardUp:   true };
+        var keyboardDownCell = { wide: true, isKeyboardDown: true };
         var switchSym = function() { self._switchSymLayout(); };
+
+        // Peek row: numbers sit above the QWERTY row. When the
+        // peek row isn't the focused one, drawKeyboard renders
+        // only the top few pixels of each cell — tabs poking up
+        // above the keyboard chrome. Selecting a peek cell pops
+        // it open fully so the user can see the digit. Column
+        // alignment with row 1 (qwertyuiop[): 1 above q, 2 above
+        // w, … 0 above p, '-' above '['. No peek cell above the
+        // wide backspace at the row's right edge — the array
+        // ends one short so col 11 reads as empty.
+        // The first cell carries `peek: true` so drawKeyboard's
+        // peek-row detection picks the row up; the rest stay as
+        // plain strings since the detection key is the row's
+        // first cell only.
         this._layoutABC = [
-            ['q','w','e','r','t','y','u','i','o','p','['],
-            ['⌘','a','s','d','f','g','h','j','k','l',':',']'],
+            [{ text: '1', peek: true },
+             '2', '3', '4', '5', '6', '7', '8', '9', '0', '-'],
+            ['q','w','e','r','t','y','u','i','o','p','[',
+             keyboardUpCell],
+            ['⌘','a','s','d','f','g','h','j','k','l',':',']',
+             keyboardDownCell],
             ['⇧','z','x','c','v','b','n','m',',','.','/','?',' ']
         ];
         this._layoutSYM = [
-            ['1','2','3','4','5','6','7','8','9','0','-'],
+            ['1','2','3','4','5','6','7','8','9','0','-',
+             keyboardUpCell],
             [{text:'<>|', wide:true, onPress: switchSym},
-             '+', '(', ')', '=', '{', '}', '@', '#', '$', '?', ';'],
+             '+', '(', ')', '=', '{', '}', '@', '#', '$', '?', ';',
+             keyboardDownCell],
             [{text:'_',   wide:true}, '%', '^', '&', '*', '`', '~', '\\', ',', '.', ':', '/',
              {text:'.',   wide:true}]
         ];
         this._layoutSYM2 = [
-            ['1','2','3','4','5','6','7','8','9','0','-'],
+            ['1','2','3','4','5','6','7','8','9','0','-',
+             keyboardUpCell],
             [{text:'[]◇', wide:true, onPress: switchSym},
-             '[', ']', '<', '>', '|', '"', "'", '±', '!', '?', ';'],
+             '[', ']', '<', '>', '|', '"', "'", '±', '!', '?', ';',
+             keyboardDownCell],
             [{text:'_',   wide:true}, '%', '^', '&', '*', '`', '~', '\\', ',', '.', ':', '/',
              {text:'.',   wide:true}]
         ];
@@ -126,9 +187,21 @@ var KeyboardTestScene = (function() {
             this._layoutABC,
             function(char) {
                 if (char === '\b') {
-                    self.inputText = self.inputText.slice(0, -1);
+                    // Delete the character to the LEFT of the
+                    // cursor (no-op when the cursor is at the
+                    // start). Cursor shifts one position left.
+                    if (self._inputCursor > 0) {
+                        self.inputText = self.inputText.slice(0, self._inputCursor - 1)
+                            + self.inputText.slice(self._inputCursor);
+                        self._inputCursor--;
+                    }
                 } else {
-                    self.inputText += char;
+                    // Insert at the cursor position, then
+                    // advance the cursor past the inserted char.
+                    self.inputText = self.inputText.slice(0, self._inputCursor)
+                        + char
+                        + self.inputText.slice(self._inputCursor);
+                    self._inputCursor++;
                 }
                 if (self.cursor) self.cursor.reset();
                 if (window.requestRender) window.requestRender();
@@ -155,10 +228,34 @@ var KeyboardTestScene = (function() {
         //                                between '123' and 'ABC'
         //                                so the user can see what
         //                                pressing it will do next.
-        this._closeBtn = new UI.LeftButton(  'Close', BTN_W, 'esc', function() { /* esc → pop handled in handleInput */ });
-        this._123Btn   = new UI.MiddleButton('123',   1, BTN_W, BTN_GAP, 'edit', function() { self._toggleLayout(); });
-        this._doneBtn  = new UI.RightButton( 'Done',  BTN_W, 'run', function() { /* run → pop handled in handleInput */ });
-        this._bottomBtns = [this._closeBtn, this._123Btn, this._doneBtn];
+        this._closeBtn = new UI.LeftButton(  'Cancel', BTN_W, 'esc', function() { /* esc → pop handled in handleInput */ });
+        // Numeric-layout tab on the left and backspace tab on the
+        // right. Both sit 2 px above the screen bottom and 52 px
+        // in from their respective screen edges (so the right
+        // edge of the backspace tab matches the gap geometry of
+        // the 123 tab on the left). Same square-top / rounded-
+        // bottom shape; the 123 carries the 'edit' (X) action
+        // and toggles the layout, the backspace carries the
+        // 'back' action and deletes the trailing character via
+        // the keyboard's onChar callback.
+        var TAB_BTN_W = 48;
+        var TAB_BTN_H = 14;
+        var TAB_BTN_X = 52;
+        var SCREEN_W  = 256;
+        var SCREEN_H  = 144;
+        var tabBtnY   = SCREEN_H - 2 - TAB_BTN_H;
+        var BACKSPACE_BTN_X = SCREEN_W - 52 - TAB_BTN_W;
+        this._123Btn       = new UI.NumericTabButton('123', TAB_BTN_X, tabBtnY, TAB_BTN_W, 'edit', function() { self._toggleLayout(); });
+        this._backspaceBtn = new UI.IconTabButton(Icons.backspace, BACKSPACE_BTN_X, tabBtnY, TAB_BTN_W, 'back', function() {
+            if (self.keyboard && self.keyboard.onChar) self.keyboard.onChar('\b');
+        });
+        this._doneBtn      = new UI.RightButton( 'Done',  BTN_W, 'run', function() { /* run → pop handled in handleInput */ });
+        this._bottomBtns = [this._closeBtn, this._123Btn, this._backspaceBtn, this._doneBtn];
+        // Focus state. 'keyboard' = the on-screen Keyboard owns
+        // the cursor; 'tab123' = the 123 tab button is highlighted
+        // instead. Initial focus is the keyboard so existing
+        // behaviour is unchanged on first launch.
+        this._focus = 'keyboard';
         // action → button lookup so handleInput can flash the
         // matching button.
         this._btnActionMap = {};
@@ -225,7 +322,7 @@ var KeyboardTestScene = (function() {
         document.addEventListener('keyup',   this._onSceneKeyUp);
     };
 
-    KeyboardTestScene.prototype.exit = function() {
+    TextInputScreen.prototype.exit = function() {
         if (this._blinkTimer) {
             clearInterval(this._blinkTimer);
             this._blinkTimer = null;
@@ -249,7 +346,7 @@ var KeyboardTestScene = (function() {
     // auto-repeat suppression in handleInput. Only the alphabet
     // layout has a shift cell — the symbol layout's bottom-left is
     // a wide '_' that doesn't carry shift behaviour.
-    KeyboardTestScene.prototype._isHighlightOnShift = function() {
+    TextInputScreen.prototype._isHighlightOnShift = function() {
         if (!this.keyboard) return false;
         if (this._layout !== 'abc') return false;
         var rows = this.keyboard.rows;
@@ -265,24 +362,49 @@ var KeyboardTestScene = (function() {
     // gray top-row indicator flips 'EN' ↔ '123' and the middle
     // button label flips '123' ↔ 'ABC' so the affordance always
     // shows where pressing will go next.
-    KeyboardTestScene.prototype._toggleLayout = function() {
+    TextInputScreen.prototype._toggleLayout = function() {
         if (!this.keyboard) return;
         var inSymbols = (this._layout === 'sym' || this._layout === 'sym2');
+        // Capture outgoing selection BEFORE swapping `rows`.
+        var prevRow = this.keyboard.selectedRow;
+        var prevCol = this.keyboard.selectedCol;
+        var newRow;
         if (!inSymbols) {
+            // ABC → SYM. The numbers row in SYM occupies the
+            // VISUAL slot of ABC's QWERTY top row (think "number
+            // above each letter on a real keyboard"), so the row
+            // index shifts UP by 1. `'t'` at ABC (1, 4) lands on
+            // `'5'` at SYM (0, 4); `'d'` at (2, 3) lands on `)`
+            // at (1, 3); and so on. Peek (ABC row 0) clamps to
+            // SYM row 0 — same column, same digit, just no longer
+            // floating above the QWERTY.
             this._layout = 'sym';
             this.keyboard.rows      = this._layoutSYM;
             this.keyboard.langLabel = '123';
             this._123Btn.text       = 'ABC';
+            newRow = Math.max(0, prevRow - 1);
         } else {
+            // SYM → ABC. Inverse of the above: row index shifts
+            // DOWN by 1, so SYM `'5'` at (0, 4) round-trips back
+            // to ABC `'t'` at (1, 4). The peek row is never the
+            // target of a layout-toggle — it stays accessible via
+            // Up arrow from the QWERTY top instead.
             this._layout = 'abc';
             this.keyboard.rows      = this._layoutABC;
             this.keyboard.langLabel = 'EN';
             this._123Btn.text       = '123';
+            newRow = Math.min(prevRow + 1, this._layoutABC.length - 1);
         }
-        // Clamp the highlight to the new layout. Rows have the
-        // same row count (3), so selectedRow stays valid; columns
-        // can differ, so re-clamp via _setSelection.
-        this._setSelection(this.keyboard.selectedRow, this.keyboard.selectedCol);
+        this._setSelection(newRow, prevCol);
+        // Snap the peek-row wave to match the new layout's
+        // geometry. The previous layout may have left wave state
+        // referencing peek-row cells that don't exist (or that
+        // exist at different positions) in the new layout — without
+        // this, the wave would either play back stale animation or
+        // light up the wrong column on the way back.
+        if (this.keyboard.syncWaveToSelection) {
+            this.keyboard.syncWaveToSelection();
+        }
         // Drop any one-shot shift state — the SYM layouts have no
         // letters to apply it to anyway, and re-entering ABC
         // should start fresh.
@@ -295,7 +417,7 @@ var KeyboardTestScene = (function() {
     // cells act as switch-layout indicators (not chars to insert).
     // No-op while in ABC so an accidental call from any other path
     // can't drop the user into a symbols layout.
-    KeyboardTestScene.prototype._switchSymLayout = function() {
+    TextInputScreen.prototype._switchSymLayout = function() {
         if (!this.keyboard) return;
         if (this._layout === 'sym') {
             this._layout = 'sym2';
@@ -313,18 +435,261 @@ var KeyboardTestScene = (function() {
     // Move the keyboard's (selectedRow, selectedCol) to the given
     // integer target, clamping so the column never overflows the
     // row's length (rows differ in width).
-    KeyboardTestScene.prototype._setSelection = function(row, col) {
+    TextInputScreen.prototype._setSelection = function(row, col) {
         var rows = this.keyboard.rows;
         if (row < 0)             row = 0;
         if (row > rows.length-1) row = rows.length - 1;
         var rowLen = rows[row].length;
         if (col < 0)            col = 0;
         if (col > rowLen - 1)   col = rowLen - 1;
-        this.keyboard.selectedRow = row;
-        this.keyboard.selectedCol = col;
+        // Route through Keyboard.setSelection so the peek-row
+        // deselect slide-back animation fires when the touchpad
+        // (or any other external selector) moves the cursor off
+        // a peek cell. Mutating the fields directly here would
+        // bypass the trigger that's set up inside the Keyboard
+        // component for its own keypad-driven handleInput path.
+        this.keyboard.setSelection(row, col);
     };
 
-    KeyboardTestScene.prototype._handleTouchpadMessage = function(e) {
+    // Columns of the bottom row that visually sit above each tab.
+    // Both tabs sit 2 px above the screen bottom; the 123 tab is
+    // 52 px in from the LEFT edge and covers x=52..99, the
+    // backspace tab is 52 px in from the RIGHT edge and covers
+    // x=156..203. ABC and SYM both have a 35-px wide leading
+    // cell in the bottom row so column indices line up across
+    // layouts.
+    TextInputScreen.prototype._isColOverTab123 = function(col) {
+        return col >= 1 && col <= 4;
+    };
+    TextInputScreen.prototype._isColOverBackspaceTab = function(col) {
+        return col >= 8 && col <= 11;
+    };
+    // Resolve a bottom-row column to its tab name ('tab123',
+    // 'tabBackspace', or null when the column doesn't sit over
+    // either tab). Used by the Down-arrow gate and the touchpad
+    // row-overflow handler.
+    TextInputScreen.prototype._tabForCol = function(col) {
+        if (this._isColOverTab123(col))       return 'tab123';
+        if (this._isColOverBackspaceTab(col)) return 'tabBackspace';
+        return null;
+    };
+    // Map a tab name to its button instance.
+    TextInputScreen.prototype._btnForTab = function(tabName) {
+        if (tabName === 'tab123')       return this._123Btn;
+        if (tabName === 'tabBackspace') return this._backspaceBtn;
+        return null;
+    };
+
+    // Given a full text string, the current cursor index, and the
+    // pixel width of the visible inner area, decide which slice of
+    // the string to show and whether either side needs a `<.` /
+    // `.>` truncation marker. Returns { left, right, leftMarker,
+    // rightMarker } — the caller renders text.slice(left, right)
+    // with the marker prefixes/suffixes the result asks for and
+    // measures cursor x from `left` so it stays accurate inside
+    // the visible substring.
+    //
+    // Strategy:
+    //   1. If the whole text fits, show all of it.
+    //   2. Try left-aligned ("text.>" — only right side truncated).
+    //      Use it when the cursor sits inside the visible prefix.
+    //   3. Try right-aligned ("<.text" — only left side truncated).
+    //      Use it when the cursor sits inside the visible suffix.
+    //   4. Otherwise truncate on BOTH sides ("<.text.>"), expanding
+    //      the visible window outward from the cursor.
+    TextInputScreen.prototype._fitInputText = function(text, cursor, innerW) {
+        var fullW = HaxrcorpFont16.textWidth(text);
+        if (fullW <= innerW) {
+            return { left: 0, right: text.length, leftMarker: false, rightMarker: false };
+        }
+        // HaxrcorpFont16.textWidth subtracts one inter-char unit
+        // from the tail, so per-char widths can't be summed —
+        // they'd under-count the actual concat. Always measure
+        // the rendered substring (with any markers attached) to
+        // decide whether it fits. Markers are `<...` (left side
+        // truncated) and `...>` (right side truncated) — an
+        // arrow + three concatenated periods, since
+        // HaxrcorpFont16 ships no triple-dot glyph.
+        var LEFT_MARKER  = '<...';
+        var RIGHT_MARKER = '...>';
+        function fitsAt(left, right, leftMarker, rightMarker) {
+            var s = (leftMarker ? LEFT_MARKER : '')
+                + text.slice(left, right)
+                + (rightMarker ? RIGHT_MARKER : '');
+            return HaxrcorpFont16.textWidth(s) <= innerW;
+        }
+        // 2. Largest left-aligned prefix that fits with `.>` suffix.
+        var leftEnd = 0;
+        for (var i = 1; i <= text.length; i++) {
+            if (!fitsAt(0, i, false, true)) break;
+            leftEnd = i;
+        }
+        if (cursor <= leftEnd) {
+            return { left: 0, right: leftEnd, leftMarker: false, rightMarker: true };
+        }
+        // 3. Smallest right-aligned start that fits with `<.` prefix.
+        var rightStart = text.length;
+        for (var j = text.length - 1; j >= 0; j--) {
+            if (!fitsAt(j, text.length, true, false)) break;
+            rightStart = j;
+        }
+        if (cursor >= rightStart) {
+            return { left: rightStart, right: text.length, leftMarker: true, rightMarker: false };
+        }
+        // 4. Both sides — expand outward from the cursor.
+        var s2 = cursor, e2 = cursor;
+        while (s2 > 0 || e2 < text.length) {
+            var grew = false;
+            if (s2 > 0 && fitsAt(s2 - 1, e2, true, true)) { s2--; grew = true; }
+            if (e2 < text.length && fitsAt(s2, e2 + 1, true, true)) { e2++; grew = true; }
+            if (!grew) break;
+        }
+        return { left: s2, right: e2, leftMarker: true, rightMarker: true };
+    };
+
+    // Discard-confirmation modal renderer. Mirrors the install
+    // modal from Internet Radio: a 150×70 centred frame on top
+    // of a translucent white wash, title in Born2bSportyV2Medium,
+    // a single-line body in HaxrcorpFont16, and two stacked
+    // buttons (Cancel / Discard) with the highlighted one
+    // wrapped by MenuSelectorFrame.
+    TextInputScreen.prototype._renderDiscardModal = function(canvas) {
+        var ctx = canvas.ctx;
+        var m   = this._discardModal;
+
+        var W = 150, H = 70;
+        var X = Math.floor((canvas.w - W) / 2);
+        var Y = Math.floor((canvas.h - H) / 2);
+
+        // Wash everything else out — same alpha pattern other
+        // modals in the project use.
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
+        ctx.fillRect(0, 0, canvas.w, canvas.h);
+
+        new ResponsiveFrame({
+            x: X, y: Y, width: W, height: H,
+            anchorH: 'left', anchorV: 'top',
+            strokeColor: '#000', showStroke: true,
+            fillColor:   '#fff', showFill:   true,
+            cornerRadius: 4,
+            corners: { tl: true, tr: true, bl: true, br: true }
+        }).render(canvas);
+
+        var titleY = Y + 6;
+        var bodyY  = Y + 23;
+        var BTN_H  = 14;
+        var BTN_W  = W - 16;
+        var BTN_X  = X + Math.floor((W - BTN_W) / 2);
+        var btn1Y  = Y + 36;
+        var btn2Y  = Y + 52;
+
+        var title = 'Discard changes?';
+        var titleW = Born2bSportyV2Medium.textWidth(title);
+        Born2bSportyV2Medium.draw(ctx, title,
+            X + Math.floor((W - titleW) / 2), titleY, '#000');
+
+        var body = "Your text won't be saved.";
+        var bodyW = HaxrcorpFont16.textWidth(body);
+        HaxrcorpFont16.draw(ctx, body,
+            X + Math.floor((W - bodyW) / 2), bodyY, '#666');
+
+        this._drawDiscardModalButton(canvas, BTN_X, btn1Y, BTN_W, BTN_H,
+            'Keep',    m.buttonIndex === 0);
+        this._drawDiscardModalButton(canvas, BTN_X, btn2Y, BTN_W, BTN_H,
+            'Discard', m.buttonIndex === 1);
+    };
+
+    // One row in the discard modal's stacked button list. Label
+    // centred horizontally; when `selected` the row is wrapped by
+    // a single-shared MenuSelectorFrame (same visual idiom the
+    // install modal uses).
+    TextInputScreen.prototype._drawDiscardModalButton = function(canvas, x, y, w, h, label, selected) {
+        var ctx = canvas.ctx;
+        var lw = HaxrcorpFont16.textWidth(label);
+        var labelY = y + Math.floor((h - 11) / 2);
+        HaxrcorpFont16.draw(ctx, label,
+            x + Math.floor((w - lw) / 2), labelY, '#000');
+        if (selected) {
+            if (!this._discardBtnSelector) {
+                this._discardBtnSelector = new MenuSelectorFrame({
+                    x: 0, y: 0, width: 1, height: 1,
+                    anchorH: 'left', anchorV: 'top',
+                    strokeColor: '#000', showStroke: true, showFill: false
+                });
+            }
+            this._discardBtnSelector.setPosition(x, y);
+            this._discardBtnSelector.setSize(w, h);
+            this._discardBtnSelector.render(canvas);
+        }
+    };
+
+    // Funnel for the "leave the scene with the current input"
+    // path — Done in the bottom bar and Save in the discard
+    // modal both end up here. Invokes the consumer's onSave
+    // callback (if any) and returns whatever it returns so the
+    // scene-stack can pop / push as the consumer asked. When no
+    // callback is supplied, defaults to 'pop' so a stand-alone
+    // sandbox still exits the scene.
+    TextInputScreen.prototype._commitSave = function() {
+        if (typeof this._onSave === 'function') {
+            var r = this._onSave(this.inputText);
+            return (r === undefined) ? 'pop' : r;
+        }
+        return 'pop';
+    };
+
+    // Mirror for the "leave the scene without committing" path
+    // — Cancel in the bottom bar and Discard in the modal.
+    TextInputScreen.prototype._commitDiscard = function() {
+        if (typeof this._onDiscard === 'function') {
+            var r = this._onDiscard();
+            return (r === undefined) ? 'pop' : r;
+        }
+        return 'pop';
+    };
+
+    // Hand focus to the named tab. The keyboard keeps its last
+    // (row, col) so we can drop back into the same cell when
+    // the user steps Up out of the tab — `setFocused` collapses
+    // the wave + suppresses the selector pass.
+    TextInputScreen.prototype._focusTab = function(tabName) {
+        if (this._focus === tabName) return;
+        this._focus = tabName;
+        this._123Btn.selected       = (tabName === 'tab123');
+        this._backspaceBtn.selected = (tabName === 'tabBackspace');
+        if (this.keyboard) this.keyboard.setFocused(false);
+        if (window.requestRender) window.requestRender();
+    };
+
+    // Reverse direction — return focus to the keyboard. The
+    // selection coordinates the keyboard kept while it was
+    // defocused light up again as soon as `setFocused(true)`
+    // re-enables its selector pass.
+    TextInputScreen.prototype._focusKeyboard = function() {
+        if (this._focus === 'keyboard') return;
+        this._focus = 'keyboard';
+        this._123Btn.selected       = false;
+        this._backspaceBtn.selected = false;
+        if (this.keyboard) this.keyboard.setFocused(true);
+        if (window.requestRender) window.requestRender();
+    };
+
+    // Move focus up onto the input field. Keyboard goes inactive
+    // (selector hidden, wave collapsed) while the user steers
+    // the text cursor inside the field with Left/Right arrows.
+    // Down returns focus to the keyboard via `_focusKeyboard`
+    // (see handleInput).
+    TextInputScreen.prototype._focusInputField = function() {
+        if (this._focus === 'inputField') return;
+        this._focus = 'inputField';
+        this._123Btn.selected       = false;
+        this._backspaceBtn.selected = false;
+        if (this.keyboard) this.keyboard.setFocused(false);
+        if (this.cursor) this.cursor.reset();
+        if (window.requestRender) window.requestRender();
+    };
+
+    TextInputScreen.prototype._handleTouchpadMessage = function(e) {
         if (!this.keyboard) return;
         var p = e.data.split(',');
         if (p.length < 3) return;
@@ -336,12 +701,30 @@ var KeyboardTestScene = (function() {
 
         if (nowTouching && !prevTouching) {
             // Touch-down: anchor the drag to where the finger
-            // landed and which key was already selected. Subsequent
-            // movement is measured against this baseline.
-            this._tpBaselineX   = nx;
-            this._tpBaselineY   = ny;
-            this._tpBaselineRow = this.keyboard.selectedRow;
-            this._tpBaselineCol = this.keyboard.selectedCol;
+            // landed. The baseline row tracks the focused
+            // control so a single step of dy naturally crosses
+            // any focus boundary:
+            //   • Input field is row -1 (virtual, above keyboard
+            //     row 0). Baseline col = current text-cursor
+            //     index so dx maps to cursor movement.
+            //   • Keyboard rows are 0..N-1. Baseline = the
+            //     keyboard's current (selectedRow, selectedCol).
+            //   • Tab strip is row N (virtual, below the keyboard
+            //     last row). Baseline col is parked at the centre
+            //     of the currently-focused tab so re-entry into
+            //     the keyboard re-aligns on the cells below.
+            this._tpBaselineX = nx;
+            this._tpBaselineY = ny;
+            if (this._focus === 'inputField') {
+                this._tpBaselineRow = -1;
+                this._tpBaselineCol = this._inputCursor;
+            } else if (this._focus === 'tab123' || this._focus === 'tabBackspace') {
+                this._tpBaselineRow = this.keyboard.rows.length;
+                this._tpBaselineCol = (this._focus === 'tab123') ? 2 : 9;
+            } else {
+                this._tpBaselineRow = this.keyboard.selectedRow;
+                this._tpBaselineCol = this.keyboard.selectedCol;
+            }
         }
 
         if (nowTouching) {
@@ -355,14 +738,114 @@ var KeyboardTestScene = (function() {
             var dy = (ny - this._tpBaselineY) / TP_SLOW_DIVIDER;
             var targetRow = this._tpBaselineRow + Math.round(dy / TP_Y_UNITS_PER_STEP);
             var targetCol = this._tpBaselineCol + Math.round(dx / TP_X_UNITS_PER_STEP);
-            this._setSelection(targetRow, targetCol);
+            // Vertical position-to-target resolution. Rows go:
+            //   row < 0            → above row 0, input field.
+            //   row 0..N-1         → keyboard rows.
+            //   row >= rows.length → tab strip is the dead-end.
+            //                        Tab focus when the column is
+            //                        over its x footprint;
+            //                        otherwise clamp to the last
+            //                        keyboard row. Continuing to
+            //                        drag down does NOT wrap onto
+            //                        the numeric row — that path
+            //                        is intentionally D-pad-only.
+            var lastKbRow      = this.keyboard.rows.length - 1;
+            var onTab          = (this._focus === 'tab123' || this._focus === 'tabBackspace');
+            var onInputField   = (this._focus === 'inputField');
+            if (targetRow < 0) {
+                if (!onInputField) {
+                    // First frame in the input field. Switch
+                    // focus and re-anchor the touchpad baseline
+                    // to the current finger position, with the
+                    // row baseline at -1 (virtual input-field
+                    // row) and the column baseline at the
+                    // existing _inputCursor. This way, entry
+                    // into the field doesn't shift the | — only
+                    // subsequent finger movement does, and dx
+                    // maps to cursor movement relative to where
+                    // it sat before the user reached up.
+                    this._focusInputField();
+                    this._tpBaselineX   = nx;
+                    this._tpBaselineY   = ny;
+                    this._tpBaselineRow = -1;
+                    this._tpBaselineCol = this._inputCursor;
+                } else {
+                    // Continuing in the input field — translate
+                    // the column delta into a cursor delta.
+                    var maxCursor = this.inputText.length;
+                    var newCursor = targetCol;
+                    if (newCursor < 0)         newCursor = 0;
+                    if (newCursor > maxCursor) newCursor = maxCursor;
+                    if (newCursor !== this._inputCursor) {
+                        this._inputCursor = newCursor;
+                        if (this.cursor) this.cursor.reset();
+                    }
+                }
+            } else if (targetRow >= this.keyboard.rows.length) {
+                var tabName = this._tabForCol(targetCol);
+                if (tabName) {
+                    this._focusTab(tabName);
+                } else {
+                    if (onTab || onInputField) this._focusKeyboard();
+                    this._setSelection(lastKbRow, targetCol);
+                }
+            } else {
+                if (onTab || onInputField) this._focusKeyboard();
+                this._setSelection(targetRow, targetCol);
+            }
         }
 
         this._tpTouching = nowTouching;
         if (window.requestRender) window.requestRender();
     };
 
-    KeyboardTestScene.prototype.handleInput = function(action) {
+    TextInputScreen.prototype.handleInput = function(action) {
+        // Discard-confirmation modal owns input while it's open
+        // — eats every action so the underlying scene can't
+        // process keystrokes behind the dim. Back / Esc dismiss
+        // the modal back to the keyboard; arrows toggle between
+        // Cancel and Discard; OK runs whichever is highlighted.
+        if (this._discardModal && this._discardModal.open) {
+            if (action === 'esc' || action === 'back') {
+                this._discardModal.open = false;
+                if (window.requestRender) window.requestRender();
+                return;
+            }
+            if (action === 'up' || action === 'down'
+                    || action === 'left' || action === 'right') {
+                this._discardModal.buttonIndex = 1 - this._discardModal.buttonIndex;
+                if (window.requestRender) window.requestRender();
+                return;
+            }
+            if (action === 'ok') {
+                // Keep (index 0) just dismisses the modal — the
+                // user is staying in the keyboard with their
+                // typed text intact. Discard (index 1) routes
+                // through `_commitDiscard` to leave the scene.
+                this._discardModal.open = false;
+                if (this._discardModal.buttonIndex === 0) {
+                    if (window.requestRender) window.requestRender();
+                    return;
+                }
+                return this._commitDiscard();
+            }
+            return;
+        }
+
+        // Back ('esc' action) on a non-empty field opens the
+        // discard-confirmation modal instead of immediately
+        // popping the scene. Empty fields fall through to the
+        // standard Cancel-button path below — nothing to lose,
+        // so no prompt.
+        if (action === 'esc'
+                && typeof this.inputText === 'string'
+                && this.inputText.length > 0) {
+            this._discardModal.open = true;
+            this._discardModal.buttonIndex = 0;
+            if (window.requestRender) window.requestRender();
+            return;
+        }
+
         // Bottom-bar buttons take priority — flash + run their
         // onPress, then handle the consequence (pop) ourselves so
         // the press feedback reads cleanly.
@@ -376,10 +859,101 @@ var KeyboardTestScene = (function() {
                 btn.release();
                 if (window.requestRender) window.requestRender();
             }, 30);
-            // 'esc' (Close) and 'run' (Done) both pop the scene;
-            // the visual flash above runs first, the pop happens
-            // after the press feedback gets a frame to render.
-            if (action === 'esc' || action === 'run') return 'pop';
+            // 'esc' (Cancel) and 'run' (Done) both leave the
+            // scene, but through different consumer callbacks:
+            // Done = save (commit), Cancel = discard (no commit).
+            // The button-flash above gets a frame to render
+            // before the scene-pop ripples up.
+            if (action === 'run') return this._commitSave();
+            if (action === 'esc') return this._commitDiscard();
+            return;
+        }
+        // Focus-on-tab branch. Arrows + OK are handled at the
+        // scene level here so they never reach the keyboard
+        // (which would scroll its own hidden selection). Up
+        // returns to the keyboard; OK fires the tab's onPress
+        // (same effect as the X hardware key flashes above when
+        // routed through `_btnActionMap`).
+        //
+        // Input-field branch handles its own cursor navigation:
+        // Left / Right move the | inside the typed text, Down
+        // hands focus back onto the keyboard at row 0. Up / OK
+        // are no-ops (nothing above the field, no commit yet).
+        if (this._focus === 'inputField') {
+            if (action === 'left') {
+                if (this._inputCursor > 0) this._inputCursor--;
+                if (this.cursor) this.cursor.reset();
+                if (window.requestRender) window.requestRender();
+                return;
+            }
+            if (action === 'right') {
+                if (this._inputCursor < this.inputText.length) this._inputCursor++;
+                if (this.cursor) this.cursor.reset();
+                if (window.requestRender) window.requestRender();
+                return;
+            }
+            if (action === 'down') {
+                this._focusKeyboard();
+                if (this.keyboard && this.keyboard.snapToRow) {
+                    this.keyboard.snapToRow(0);
+                }
+                return;
+            }
+            return;
+        }
+        if (this._focus === 'tab123' || this._focus === 'tabBackspace') {
+            var focusedBtn = this._btnForTab(this._focus);
+            if (action === 'up') {
+                this._focusKeyboard();
+                return;
+            }
+            if (action === 'down') {
+                // Step past the tab onto the keyboard's numeric
+                // row (row 0 — peek in ABC, numbers in SYM). The
+                // column snaps to the x-aligned cell so vertical
+                // navigation tracks finger / cursor position.
+                this._focusKeyboard();
+                if (this.keyboard && this.keyboard.snapToRow) {
+                    this.keyboard.snapToRow(0);
+                }
+                return;
+            }
+            if (action === 'ok' && focusedBtn) {
+                focusedBtn.press();
+                if (focusedBtn.onPress) focusedBtn.onPress();
+                if (window.requestRender) window.requestRender();
+                setTimeout(function() {
+                    focusedBtn.release();
+                    if (window.requestRender) window.requestRender();
+                }, 30);
+                return;
+            }
+            // left / right / back: no-op for now — lateral nav
+            // between the tabs (and into Cancel / Done) isn't
+            // part of the current spec.
+            return;
+        }
+        // Keyboard-focused branch. Intercept Down at the bottom
+        // row so the cursor hops onto the tab whose x footprint
+        // the outgoing column sits over (123 on the left, the
+        // backspace tab on the right). Other cols fall through
+        // to the keyboard's normal wrap-to-row-0 behaviour.
+        if (action === 'down' && this.keyboard
+                && this.keyboard.selectedRow === this.keyboard.rows.length - 1) {
+            var targetTab = this._tabForCol(this.keyboard.selectedCol);
+            if (targetTab) {
+                this._focusTab(targetTab);
+                return;
+            }
+        }
+        // Intercept Up on the top keyboard row (row 0 — peek in
+        // ABC, numbers in SYM) so the cursor steps onto the
+        // input field above instead of wrapping to the bottom.
+        // The keyboard keeps its (row, col); a follow-up Down
+        // from the input field brings the user back to row 0.
+        if (action === 'up' && this.keyboard
+                && this.keyboard.selectedRow === 0) {
+            this._focusInputField();
             return;
         }
         // Auto-repeat suppression for the shift tap-toggle. Browser
@@ -394,82 +968,164 @@ var KeyboardTestScene = (function() {
             if (this._shiftToggledThisPress) return;
             this._shiftToggledThisPress = true;
         }
-        if (this.keyboard) this.keyboard.handleInput(action);
+        if (this.keyboard) {
+            // Keyboard returns the sentinel string 'done' when
+            // the user OKs the on-screen return key. Map that to
+            // the same pop the bottom-bar Done button triggers
+            // so the test scene closes consistently from either
+            // affordance. Future consumers (multi-line text
+            // input) can ignore the return value or wire it up
+            // differently.
+            var kbResult = this.keyboard.handleInput(action);
+            if (kbResult === 'done') return 'pop';
+        }
     };
 
-    KeyboardTestScene.prototype.render = function(canvas) {
+    TextInputScreen.prototype.render = function(canvas) {
         var ctx = canvas.ctx;
         canvas.clear('#fff');
 
         // Status bar (kept on top — modal frame sits below it).
         UI.drawStatusBar(canvas, '');
 
-        // Modal-style chrome — mirrors the Wi-Fi connect modal.
-        // Tab header up top; ResponsiveFrame body below, with its
-        // bottom edge tucked 4 px behind the keyboard chrome.
-        var FRAME_X    = 4;
-        var FRAME_W    = 256 - 8;
-        var FRAME_TOP  = 19 + this._modalOffsetY;          // tab.y + tab.h
-        var FRAME_BOT  = 70 + this._modalOffsetY + this._frameBotOverlap;
-        var FRAME_H    = FRAME_BOT - FRAME_TOP;
+        // Title text centred above the input field. Driven by
+        // `this.fieldTitle` so consumers can swap the caption
+        // per-form without touching the scene; left blank skips
+        // the render entirely. Math.round so even/odd widths
+        // round to the same nearest pixel as the input field
+        // does — keeps title and field visually anchored on the
+        // same axis.
+        var titleY = 24;
+        if (this.fieldTitle) {
+            var titleW = HaxrcorpFont16.textWidth(this.fieldTitle);
+            var titleX = Math.round((canvas.w - titleW) / 2);
+            HaxrcorpFont16.draw(ctx, this.fieldTitle, titleX, titleY, '#000');
+        }
 
-        this.tabHeader.render(canvas);
-        var frame = new ResponsiveFrame({
-            x: FRAME_X, y: FRAME_TOP,
-            width: FRAME_W, height: FRAME_H,
-            anchorH: 'left', anchorV: 'top',
-            strokeColor: '#000', showStroke: true,
-            fillColor: '#ffffff', showFill: true,
-            cornerRadius: 4,
-            corners: { tl: false, tr: true, bl: true, br: true }
-        });
-        frame.render(canvas);
-
-        // Input field — light-grey filled rectangle, no stroke.
-        // Inset 6 px more on each side than the body frame so it
-        // sits comfortably inside (3 px more than the wifi
-        // connect modal — the keyboard test wants its field a
-        // touch narrower), and lifted 5 px above the vertical
-        // centre so it doesn't drift toward the
-        // keyboard-overlapped lower edge.
-        var inputX = FRAME_X + 4 + 3 + 3;
-        var inputW = FRAME_W - 8 - 6 - 6;
-        var inputH = 14;
-        var inputY = FRAME_TOP + Math.floor((FRAME_H - inputH) / 2) - 5;
+        // Input field auto-sizing. Starts 150 px wide; grows
+        // with the typed text up to a 238 px cap. Padding is
+        // 6 px on each side, so the inner text area runs from
+        // 138 px (at the 150-wide minimum) up to 226 px (at the
+        // 238-wide cap). Beyond that, text gets truncated with
+        // `<.` / `.>` markers — HaxrcorpFont16 has no triple-dot
+        // glyph, so we use a single period each side.
+        var INPUT_PAD       = 6;
+        var INPUT_MIN_W     = 150;
+        var INPUT_MAX_W     = 238;
+        var inputH          = 14;
+        var fullTextWidth   = HaxrcorpFont16.textWidth(this.inputText);
+        var inputW          = fullTextWidth + INPUT_PAD * 2;
+        if (inputW < INPUT_MIN_W) inputW = INPUT_MIN_W;
+        if (inputW > INPUT_MAX_W) inputW = INPUT_MAX_W;
+        // Centre the field horizontally as it grows so the title
+        // and field stay visually anchored to the same axis.
+        // Math.round matches the title's centering — both pick
+        // the same side when (canvas.w - w) is odd.
+        var inputX = Math.round((canvas.w - inputW) / 2);
+        var inputY = titleY + 14;
         var inputFrame = new ResponsiveFrame({
             x: inputX, y: inputY,
             width: inputW, height: inputH,
             anchorH: 'left', anchorV: 'top',
             showStroke: false,
             fillColor: '#CCCCCC', showFill: true,
-            cornerRadius: 2,
+            cornerRadius: 3,
             corners: { tl: true, tr: true, bl: true, br: true }
         });
         inputFrame.render(canvas);
 
+        // 2-px black selector frame around the input field when
+        // it owns focus — matches the keyboard-cell selection
+        // style. ResponsiveFrame handles arbitrary corner radii
+        // (drawRoundFrame only ships with r=2/3 tables), so we
+        // use it here for both the inner ring (at the field's
+        // r=3 contour) and the outer ring (1 px outside, r=4).
+        if (this._focus === 'inputField') {
+            new ResponsiveFrame({
+                x: inputX - 1, y: inputY - 1,
+                width: inputW + 2, height: inputH + 2,
+                anchorH: 'left', anchorV: 'top',
+                showStroke: true, strokeColor: '#000', showFill: false,
+                cornerRadius: 4,
+                corners: { tl: true, tr: true, bl: true, br: true }
+            }).render(canvas);
+            new ResponsiveFrame({
+                x: inputX, y: inputY,
+                width: inputW, height: inputH,
+                anchorH: 'left', anchorV: 'top',
+                showStroke: true, strokeColor: '#000', showFill: false,
+                cornerRadius: 3,
+                corners: { tl: true, tr: true, bl: true, br: true }
+            }).render(canvas);
+        }
+
         // Typed text + blinking cursor inside the input field.
+        // The cursor sits at `_inputCursor` so it can travel
+        // through the text with Left / Right rather than always
+        // hugging the right edge. When the text overruns the
+        // visible inner width we truncate with single-period
+        // markers (HaxrcorpFont16 doesn't ship a triple-dot
+        // glyph), keeping the cursor in view.
         this.cursor.update();
-        var textX = inputX + 4;
-        var textY = inputY + Math.floor((inputH - 11) / 2);
-        HaxrcorpFont16.draw(ctx, this.inputText, textX, textY, '#000');
+        var textX  = inputX + INPUT_PAD;
+        var textY  = inputY + Math.floor((inputH - 11) / 2);
+        var innerW = inputW - INPUT_PAD * 2;
+        var seg = this._fitInputText(this.inputText, this._inputCursor, innerW);
+        var LEFT_MARKER  = '<...';
+        var RIGHT_MARKER = '...>';
+        var visibleText = (seg.leftMarker ? LEFT_MARKER : '')
+            + this.inputText.slice(seg.left, seg.right)
+            + (seg.rightMarker ? RIGHT_MARKER : '');
+        HaxrcorpFont16.draw(ctx, visibleText, textX, textY, '#000');
         if (this.cursor.isVisible()) {
-            var cursorX = textX + HaxrcorpFont16.textWidth(this.inputText) + 1;
+            var leftMW = seg.leftMarker ? HaxrcorpFont16.textWidth(LEFT_MARKER) : 0;
+            var cursorX = textX + leftMW
+                + HaxrcorpFont16.textWidth(this.inputText.slice(seg.left, this._inputCursor))
+                + 1;
             canvas.drawCursor(cursorX, textY, 1, 11, '#000');
         }
 
-        // Keyboard renders LAST (before the bottom buttons) so it
-        // covers the frame's overlapping 4-px bottom edge and
-        // stays visually on top.
-        this.keyboard.render(canvas);
+        // Keyboard renders the chrome + cells, then via the
+        // interlayer callback hands off to the bottom-button row,
+        // then finishes with its selector frame ON TOP. That
+        // ordering lets the keyboard's selection ring sit visually
+        // in front of the 123 tab when they overlap (and the 123
+        // tab sits on top of the keyboard's empty bottom margin).
+        var self = this;
+        this.keyboard.render(canvas, function() {
+            for (var bi = 0; bi < self._bottomBtns.length; bi++) {
+                var bb = self._bottomBtns[bi];
+                if (bb) bb.render(canvas);
+            }
+        });
 
-        // App-defined bottom-bar buttons sit on top of everything
-        // (including the keyboard's empty bottom margin) so the
-        // user can always reach Close / Done.
-        for (var bi = 0; bi < this._bottomBtns.length; bi++) {
-            var bb = this._bottomBtns[bi];
-            if (bb) bb.render(canvas);
+        // Tab-button selectors render LAST so their wraparound
+        // strokes layer on top of any keyboard pixels that might
+        // overlap (e.g., the selector-frame outer ring of the
+        // keyboard cell directly above them during transitions).
+        if (this._123Btn && this._123Btn.renderSelector) {
+            this._123Btn.renderSelector(canvas);
+        }
+        if (this._backspaceBtn && this._backspaceBtn.renderSelector) {
+            this._backspaceBtn.renderSelector(canvas);
+        }
+
+        // Discard-confirmation modal renders LAST so it sits on
+        // top of everything else (keyboard, tabs, bottom-bar
+        // selectors). The wash inside `_renderDiscardModal` dims
+        // the page underneath.
+        if (this._discardModal && this._discardModal.open) {
+            this._renderDiscardModal(canvas);
         }
     };
 
-    return KeyboardTestScene;
+    return TextInputScreen;
 })();
+
+// Backward-compatible alias. Boot menu / debug-config / app
+// switcher entries still reference `KeyboardTestScene`; pointing
+// it at the canonical `TextInputScreen` constructor keeps those
+// call sites working without changes. New consumers (e.g. the
+// Wi-Fi password modal) should instantiate `TextInputScreen`
+// directly with an options object.
+var KeyboardTestScene = TextInputScreen;

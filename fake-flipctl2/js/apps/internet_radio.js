@@ -812,10 +812,32 @@ var InternetRadioScene = (function() {
         // row 2, so a draw-y of (status bar bottom + 1) lands
         // the cap visually 1 px tighter against the status bar
         // boundary than the previous +2 baseline.
+        //
+        // While a stream is live (`_playingStation` set) the
+        // currently-playing name is appended as
+        // " Playing: <name>" — gives the user a glanceable
+        // confirmation of what's coming out the speaker without
+        // having to drill into the Station row. Disappears the
+        // moment Stop fires (`_playingStation = null`).
         var TITLE_X = 18;
         var TITLE_TEXT_Y = UI.STATUS_BAR_H + 1;
-        Born2bSportyV2Medium.draw(ctx, 'Internet radio',
+        var appName = 'Internet radio';
+        Born2bSportyV2Medium.draw(ctx, appName,
             TITLE_X, TITLE_TEXT_Y, '#000');
+        // "Playing: <name>" suffix rides in HaxrcorpFont16
+        // (smaller / lighter than the Sporty app-name) so it
+        // reads as a secondary annotation rather than part of
+        // the app's title proper. Drawn 4 px after the Sporty
+        // glyph run ends, with a 2 px baseline drop so the
+        // Haxrcorp cap line aligns with Sporty's optical
+        // x-height.
+        if (this._playingStation) {
+            var suffix = 'Playing: ' + this._playingStation;
+            var appNameW = Born2bSportyV2Medium.textWidth(appName);
+            HaxrcorpFont16.draw(ctx, suffix,
+                TITLE_X + appNameW + 4,
+                TITLE_TEXT_Y + 2, '#000');
+        }
 
         // ── Body: stacked MenuDropdownLine rows ───────────────
         // The first DIVIDER_AFTER rows sit ABOVE the divider,
@@ -824,7 +846,7 @@ var InternetRadioScene = (function() {
         // divider line, with its own anchor at
         // dividerY + 1 + DIVIDER_PAD_AFTER (3 px breathing
         // gap), and stacks at the same pitch from there.
-        var ROW_GAP             = 3;
+        var ROW_GAP             = 1;
         var bodyTop             = TITLE_Y + TITLE_H;
         var rowPitch            = MenuDropdownLine.HEIGHT + ROW_GAP;
         var DIVIDER_PAD_X       = 5;
@@ -832,7 +854,7 @@ var InternetRadioScene = (function() {
                                           // clears the Volume chip's
                                           // bottom edge cleanly.
         var DIVIDER_AFTER       = 3;             // rows 0..2 above, 3+ below
-        var DIVIDER_PAD_AFTER   = 3;             // gap below divider before next row
+        var DIVIDER_PAD_AFTER   = 1;             // gap below divider before next row
         var dividerY            = bodyTop + DIVIDER_OFFSET_Y;
         var belowDividerAnchor  = dividerY + 1 + DIVIDER_PAD_AFTER;
         function rowYAt(i) {

@@ -476,6 +476,67 @@ var UI = (function() {
     }
     RightButton.prototype = _makeButton('drawRightButton');
 
+    // Numeric-layout tab button — visual cousin of MiddleButton
+    // with the corner radii flipped (square top, rounded bottom).
+    // Positioned absolutely via (x, y) rather than slot-indexed,
+    // so callers anchor it wherever they want above the standard
+    // bottom-button row. Shares the same press/release flash and
+    // action-key wiring as the other bottom buttons.
+    function NumericTabButton(text, x, y, w, action, onPress) {
+        this.text     = text;
+        this.x        = x;
+        this.y        = y;
+        this.w        = w;
+        this.pressed  = false;
+        this.disabled = false;
+        this.selected = false;
+        this.action   = action  || null;
+        this.onPress  = onPress || null;
+    }
+    NumericTabButton.prototype.render = function(canvas) {
+        canvas.drawNumericTabButton(this.text, this.x, this.y, this.w,
+            this.pressed, this.disabled);
+    };
+    // The selector frame paints in a separate pass so the owning
+    // scene can render it AFTER other UI it might overlap (e.g.,
+    // the keyboard chrome that visually sits just above the
+    // button). Always layers on top, never gets overdrawn.
+    NumericTabButton.prototype.renderSelector = function(canvas) {
+        if (this.selected) {
+            canvas.drawNumericTabButtonSelector(this.x, this.y, this.w);
+        }
+    };
+    NumericTabButton.prototype.press   = function() { if (!this.disabled) this.pressed = true; };
+    NumericTabButton.prototype.release = function() { this.pressed = false; };
+
+    // Icon-content cousin of NumericTabButton — same square-top,
+    // rounded-bottom shape and same selector wraparound, but
+    // renders a centred icon instead of a text label. Used for
+    // the backspace tab that mirrors the 123 tab on the
+    // opposite side of the screen.
+    function IconTabButton(icon, x, y, w, action, onPress) {
+        this.icon     = icon;
+        this.x        = x;
+        this.y        = y;
+        this.w        = w;
+        this.pressed  = false;
+        this.disabled = false;
+        this.selected = false;
+        this.action   = action  || null;
+        this.onPress  = onPress || null;
+    }
+    IconTabButton.prototype.render = function(canvas) {
+        canvas.drawIconTabButton(this.icon, this.x, this.y, this.w,
+            this.pressed, this.disabled);
+    };
+    IconTabButton.prototype.renderSelector = function(canvas) {
+        if (this.selected) {
+            canvas.drawNumericTabButtonSelector(this.x, this.y, this.w);
+        }
+    };
+    IconTabButton.prototype.press   = function() { if (!this.disabled) this.pressed = true; };
+    IconTabButton.prototype.release = function() { this.pressed = false; };
+
     // ── PopupMenuLeft ────────────────────────────────────────────────────────
     // Popup menu that appears above a button, replacing it with a tab.
     // items    — array of label strings
@@ -575,12 +636,29 @@ var UI = (function() {
 
     function Keyboard(rows, onChar, onClose) {
         this.rows = rows;
-        this.selectedRow = 0;
+        // Initial cursor position. Skip row 0 if it's a peek row
+        // (carries a number-tab strip above the QWERTY row) — the
+        // user wants to land on QWERTY, not on the peek strip,
+        // because the peek is an opt-in extra reachable via Up.
+        var initialRow = 0;
+        var firstCellInRow0 = rows[0] && rows[0][0];
+        if (firstCellInRow0
+                && typeof firstCellInRow0 === 'object'
+                && firstCellInRow0.peek) {
+            initialRow = 1;
+        }
+        this.selectedRow = initialRow;
         this.selectedCol = 0;
         this.onChar = onChar || null;   // Called with character when ok pressed
         this.onClose = onClose || null; // Called when esc pressed
         this.pressedRow = -1;
         this.pressedCol = -1;  // Track which button is pressed
+        // Focus state. When false, the renderer skips the selector
+        // pass and the peek-row wave collapses to amp=0 — used by
+        // the owning scene to "park" focus on a sibling control
+        // (e.g., the 123 tab button) without losing the keyboard's
+        // last selection coordinates.
+        this.focused = true;
         // Tri-state shift:
         //   'off'   — letters lowercase (default).
         //   'shift' — next letter uppercased, then auto-releases
@@ -609,16 +687,112 @@ var UI = (function() {
         var keyboardH = rows.length * BTN_H;
 
         this.x = Math.floor((256 - CONTAINER_W) / 2);
-        this.y = 72;  // 72px from top of screen — nudged 2 px down so the keyboard chrome and the inner-background rectangle both sit slightly lower under the input field.
+        this.y = 75;  // 75px from top of screen — bumped 72 → 74 → 75 across two iteration passes so the keyboard chrome (and the inner-background rectangle drawn against it) sits 3 px lower under the input field. Pixel-perfect with the other rounded-corner chrome in the system.
         this.w = CONTAINER_W;
         this.h = CONTAINER_H;
     }
 
-    Keyboard.prototype.render = function(canvas) {
+    // Duration of the peek-row wave transition, ms. One value
+    // drives every kind of selection change inside or around the
+    // peek strip — entering the strip from below, hopping from
+    // one digit to another, or collapsing back to QWERTY. Each
+    // transition lerps the wave's CENTRE (fractional column) and
+    // AMPLITUDE (0 collapsed → 1 fully extended) from their
+    // current eased values to the new target, so back-to-back
+    // moves chain smoothly instead of snapping at the boundary.
+    var KB_PEEK_WAVE_MS = 160;
+
+    // Returns the current { center, amp } of the peek-row wave at
+    // wall-clock time `now` (ms). Folds any in-progress animation
+    // into a single instantaneous value — callers don't need to
+    // know whether they're mid-transition.
+    function kbEvaluatePeekWave(kb, now) {
+        var anim = kb._peekWaveAnim;
+        if (!anim) {
+            return {
+                center: kb._peekWaveRestCenter != null ? kb._peekWaveRestCenter : 0,
+                amp:    kb._peekWaveRestAmp    != null ? kb._peekWaveRestAmp    : 0
+            };
+        }
+        var t = (now - anim.startMs) / anim.duration;
+        if (t >= 1) t = 1;
+        if (t < 0)  t = 0;
+        var eased = 1 - Math.pow(1 - t, 3);
+        return {
+            center: anim.fromCenter + (anim.toCenter - anim.fromCenter) * eased,
+            amp:    anim.fromAmp    + (anim.toAmp    - anim.fromAmp)    * eased
+        };
+    }
+
+    function kbNowMs() {
+        return (typeof performance !== 'undefined' && performance.now)
+            ? performance.now()
+            : Date.now();
+    }
+
+    Keyboard.prototype.render = function(canvas, betweenCellsAndSelector) {
+        // Resolve the peek-row wave's live state. If an animation
+        // is in flight, evaluate its eased position; once it
+        // completes, latch the target as the new resting state
+        // and clear the animation handle so we stop asking for
+        // more frames.
+        var now = kbNowMs();
+        var wave = kbEvaluatePeekWave(this, now);
+        if (this._peekWaveAnim) {
+            var ageMs = now - this._peekWaveAnim.startMs;
+            if (ageMs >= this._peekWaveAnim.duration) {
+                this._peekWaveRestCenter = this._peekWaveAnim.toCenter;
+                this._peekWaveRestAmp    = this._peekWaveAnim.toAmp;
+                this._peekWaveAnim = null;
+            } else if (typeof window !== 'undefined' && window.requestRender) {
+                window.requestRender();
+            }
+        }
+        // Optional interlayer callback is invoked by the
+        // renderer AFTER the cells paint and BEFORE the selector
+        // frame, so the scene can sandwich overlays (e.g. the
+        // 123 tab) between the keyboard's body and its
+        // selection ring. Pass-through.
         canvas.drawKeyboard(this.x, this.y, this.rows,
             this.selectedRow, this.selectedCol,
             this.pressedRow, this.pressedCol,
-            '#fff', '#000', this.shiftState, this.langLabel);
+            '#fff', '#000', this.shiftState, this.langLabel,
+            wave, this.focused !== false,
+            betweenCellsAndSelector);
+    };
+
+    // External focus toggle. Triggers a wave re-evaluation so
+    // toggling focus while the wave is mid-animation re-targets
+    // smoothly (e.g., handing focus away mid-rise collapses the
+    // wave from its current eased position rather than snapping).
+    Keyboard.prototype.setFocused = function(flag) {
+        var next = !!flag;
+        if (this.focused === next) return;
+        this.focused = next;
+        this._driveWaveToCurrentSelection();
+        if (typeof window !== 'undefined' && window.requestRender) {
+            window.requestRender();
+        }
+    };
+
+    // Snap the peek-row wave to whatever shape matches the current
+    // (rows, selection, focus) state — no animation. Used by
+    // owning scenes when they swap `this.rows` for a different
+    // layout. Without this, a wave state computed against the
+    // outgoing layout (e.g., amp=1 centred on a peek cell) would
+    // bleed into the incoming layout and play back as a "leftover"
+    // collapse animation when the user is no longer near the peek
+    // row.
+    Keyboard.prototype.syncWaveToSelection = function() {
+        var onPeekRow = kbHasPeekRow(this.rows)
+            && this.focused !== false
+            && this.selectedRow === 0;
+        this._peekWaveRestCenter = onPeekRow ? this.selectedCol : 0;
+        this._peekWaveRestAmp    = onPeekRow ? 1 : 0;
+        this._peekWaveAnim       = null;
+        if (typeof window !== 'undefined' && window.requestRender) {
+            window.requestRender();
+        }
     };
 
     // Geometry constants kept in lock-step with `canvas.drawKeyboard`
@@ -683,7 +857,105 @@ var UI = (function() {
         return best;
     }
 
+    // Returns true when row 0 of `rows` is the peek-tab row
+    // (its first cell carries `peek: true`). The renderer treats
+    // such a row specially — only the top 2 px shows when not
+    // selected — and the Keyboard component uses the same flag to
+    // decide whether to fire a deselect slide-back animation.
+    function kbHasPeekRow(rows) {
+        var firstCell = rows[0] && rows[0][0];
+        return !!(firstCell && typeof firstCell === 'object' && firstCell.peek);
+    }
+
+    // Drive the peek-row wave toward whatever shape matches the
+    // current (selectedRow, selectedCol). Called from any path
+    // that changes selection. Behaviour:
+    //   • On peek row → target amplitude = 1, centre = selectedCol.
+    //   • Off peek row → target amplitude = 0, centre frozen at
+    //     its current value so the wave collapses straight down
+    //     in place rather than sliding sideways as it shrinks.
+    //   • When the wave is currently flat (amp ≈ 0) and we're
+    //     entering the row, snap the from-centre to the new
+    //     column so the wave rises in place instead of sweeping
+    //     in from column 0.
+    Keyboard.prototype._driveWaveToCurrentSelection = function() {
+        if (!kbHasPeekRow(this.rows)) return;
+        var now = kbNowMs();
+        var cur = kbEvaluatePeekWave(this, now);
+        // The wave only animates "up" when (a) selection is on the
+        // peek row, and (b) the keyboard actually has focus.
+        // Defocusing the keyboard (e.g., handing focus to the 123
+        // tab) collapses the wave even if selectedRow stays at 0.
+        var onPeekRow = this.focused !== false && (this.selectedRow === 0);
+        var fromCenter = cur.center;
+        var fromAmp    = cur.amp;
+        var toCenter   = onPeekRow ? this.selectedCol : cur.center;
+        var toAmp      = onPeekRow ? 1 : 0;
+        // Wave was fully collapsed and we just arrived on the row
+        // — anchor from-centre at the landing column so the rise
+        // happens in place. Without this the centre would lerp
+        // from a stale value (e.g. 0) toward the landing column
+        // and the wave would visibly sweep into position.
+        if (onPeekRow && fromAmp < 0.01) {
+            fromCenter = this.selectedCol;
+        }
+        // No-op if the target matches the current state to within
+        // a pixel — avoids restarting an animation every frame
+        // when nothing changed.
+        if (Math.abs(fromCenter - toCenter) < 0.001
+                && Math.abs(fromAmp - toAmp) < 0.001) {
+            return;
+        }
+        this._peekWaveAnim = {
+            startMs:    now,
+            duration:   KB_PEEK_WAVE_MS,
+            fromCenter: fromCenter,
+            fromAmp:    fromAmp,
+            toCenter:   toCenter,
+            toAmp:      toAmp
+        };
+        if (typeof window !== 'undefined' && window.requestRender) {
+            window.requestRender();
+        }
+    };
+
+    // Move the cursor to `targetRow`, snapping the column to
+    // whichever cell in that row is visually closest in x to the
+    // current selection — same kbClosestCol logic used by the
+    // built-in Up/Down arrow handlers. Used by the owning scene
+    // when an external control (e.g. the 123 tab) hands focus
+    // back to the keyboard at a particular row.
+    Keyboard.prototype.snapToRow = function(targetRow) {
+        if (targetRow < 0) targetRow = 0;
+        if (targetRow > this.rows.length - 1) {
+            targetRow = this.rows.length - 1;
+        }
+        var srcX = kbCellCenterX(this.rows, this.selectedRow, this.selectedCol);
+        var newCol = kbClosestCol(this.rows, targetRow, srcX);
+        this.setSelection(targetRow, newCol);
+    };
+
+    // External setters that need the same animation hook as
+    // handleInput. Owning scenes (e.g. KeyboardTestScene's
+    // touchpad-driven selection) should call this instead of
+    // mutating `selectedRow` / `selectedCol` directly.
+    Keyboard.prototype.setSelection = function(row, col) {
+        var prevRow = this.selectedRow;
+        var prevCol = this.selectedCol;
+        this.selectedRow = row;
+        this.selectedCol = col;
+        if (row !== prevRow || col !== prevCol) {
+            this._driveWaveToCurrentSelection();
+        }
+    };
+
     Keyboard.prototype.handleInput = function(action) {
+        // Snapshot the (row, col) the cursor sits on BEFORE the
+        // action runs. If the action moves selection off a peek-
+        // row cell, we use this snapshot to kick off the slide-
+        // back-down animation in render().
+        var prevRow = this.selectedRow;
+        var prevCol = this.selectedCol;
         if (action === 'left') {
             this.selectedCol = (this.selectedCol - 1 + this.rows[this.selectedRow].length) % this.rows[this.selectedRow].length;
         } else if (action === 'right') {
@@ -706,17 +978,23 @@ var UI = (function() {
             // cells in alternate layouts). Extract a uniform text
             // + flags + optional onPress callback.
             var raw = this.rows[this.selectedRow][this.selectedCol];
-            var char, isShiftCell, isLangCell, cellOnPress;
+            var char, isShiftCell, isLangCell, isBackspaceCell, isReturnCell, isNavCell, cellOnPress;
             if (raw && typeof raw === 'object') {
-                char        = raw.text != null ? raw.text : '';
-                isShiftCell = !!raw.isShift;
-                isLangCell  = !!raw.isLang;
-                cellOnPress = (typeof raw.onPress === 'function') ? raw.onPress : null;
+                char            = raw.text != null ? raw.text : '';
+                isShiftCell     = !!raw.isShift;
+                isLangCell      = !!raw.isLang;
+                isBackspaceCell = !!raw.isBackspace;
+                isReturnCell    = !!raw.isReturn;
+                isNavCell       = !!raw.isKeyboardUp || !!raw.isKeyboardDown;
+                cellOnPress     = (typeof raw.onPress === 'function') ? raw.onPress : null;
             } else {
-                char        = raw;
-                isShiftCell = (char === KEYBOARD_SHIFT_CHAR);
-                isLangCell  = (char === KEYBOARD_LANG_CHAR);
-                cellOnPress = null;
+                char            = raw;
+                isShiftCell     = (char === KEYBOARD_SHIFT_CHAR);
+                isLangCell      = (char === KEYBOARD_LANG_CHAR);
+                isBackspaceCell = false;
+                isReturnCell    = false;
+                isNavCell       = false;
+                cellOnPress     = null;
             }
             // Brief press flash on the highlighted key — applies
             // to the shift toggle too, so the user gets visual
@@ -752,6 +1030,31 @@ var UI = (function() {
             if (isLangCell) {
                 return;
             }
+            // Wide backspace key — same semantics as the 'back'
+            // action below: emits '\b' through onChar so the
+            // owning scene deletes the trailing character.
+            if (isBackspaceCell) {
+                if (this.onChar) this.onChar('\b');
+                return;
+            }
+            // Wide return key — emit the sentinel return value
+            // 'done' so the owning scene can treat it like the
+            // bottom-bar Done button (e.g. KeyboardTestScene
+            // pops the scene). For multi-line consumers a
+            // future patch can route this through onChar('\n')
+            // instead; for now the single-line "commit + close"
+            // affordance is what every caller wants.
+            if (isReturnCell) {
+                return 'done';
+            }
+            // Form-navigation arrow cells (Up / Down). The
+            // visual is in place; the actual "move caret to the
+            // previous/next field" behaviour is a follow-up
+            // task. For now they swallow OK so no character
+            // emission leaks out.
+            if (isNavCell) {
+                return;
+            }
             // Uppercase alphabetic chars while shift is active.
             // Non-letters (numbers, punctuation, space) pass through
             // unchanged. After firing one upper-cased letter while
@@ -772,6 +1075,14 @@ var UI = (function() {
             if (this.onChar) this.onChar('\b');
         } else if (action === 'esc') {
             if (this.onClose) this.onClose();
+        }
+
+        // Peek-row wave driver. Whenever selection moves, retune
+        // the wave toward the new (row, col) — covers entering
+        // the strip from QWERTY, sliding between digits, and
+        // collapsing back down on Down arrow.
+        if (this.selectedRow !== prevRow || this.selectedCol !== prevCol) {
+            this._driveWaveToCurrentSelection();
         }
     };
 
@@ -915,6 +1226,8 @@ var UI = (function() {
         MiddleButton:   MiddleButton,
         LeftButton:     LeftButton,
         RightButton:    RightButton,
+        NumericTabButton: NumericTabButton,
+        IconTabButton:    IconTabButton,
         PopupMenuLeft:  PopupMenuLeft,
         Keyboard:       Keyboard,
         TabHeader:      TabHeader,

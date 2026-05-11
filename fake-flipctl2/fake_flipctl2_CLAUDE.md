@@ -3089,3 +3089,385 @@ on a fresh device hits the install modal; once mpg123 is installed
 subsequent launches go straight to the settings stack. Persistent
 state lives in JS memory — full page reload (auto-fires on
 `/api/version` change) resets `saved` to its IIFE defaults.
+
+# Text input screen + on-screen keyboard
+
+A reusable text-input screen — title above an auto-sizing input
+field, the standard on-screen `UI.Keyboard` with a peek-row number
+wave, two square-top/rounded-bottom tabs (`123` and a backspace
+icon) just below the keyboard, the bottom-bar `Cancel` / `Done`
+buttons, and a `Discard changes?` modal that intercepts Back when
+there's unsaved text.
+
+Originally split out of the keyboard-test sandbox so other scenes
+(Wi-Fi password modal today, future forms tomorrow) can drop the
+same input experience in without copying the chrome. The single
+canonical class is `TextInputScreen`; `KeyboardTestScene` is kept
+as a backward-compatible alias for the boot-menu / debug-config /
+app-switcher entries.
+
+## At a glance
+
+* **Canonical class** — [`js/apps/keyboard_test.js`](js/apps/keyboard_test.js) exports
+  `TextInputScreen(options)` with an in-file alias
+  `var KeyboardTestScene = TextInputScreen;`.
+* **Options** —
+  ```js
+  new TextInputScreen({
+      displayName: 'Screen Keyboard',  // app-switcher label
+      title:       'Wi-Fi password',   // caption above the field
+      initialText: '',                 // pre-fill (cursor lands at end)
+      onSave:      function(text) { /* commit + return 'pop' or 'stay' */ },
+      onDiscard:   function()     { /* tear down + return 'pop' */ },
+  });
+  ```
+* **Lifecycle hooks** — `enter()`, `exit()`, `render(canvas)`,
+  `handleInput(action)`. Same shape as any other scene, so both
+  the boot menu (scene push) and the Wi-Fi connect modal
+  (embedded inside `self._modal`) can drive it.
+* **Two consumers today** — `KeyboardTestScene` (sandbox, pushed
+  by the boot menu) and `WifiScene._openConnectModal` (Wi-Fi
+  password entry, wrapping the screen in its own `self._modal`
+  with a spinner / error overlay on top).
+
+## Files touched
+
+| Path | Why |
+|---|---|
+| [`js/apps/keyboard_test.js`](js/apps/keyboard_test.js) | Houses `TextInputScreen` (and the `KeyboardTestScene` alias). All input/render logic + the discard modal live here. |
+| [`js/apps/wifi.js`](js/apps/wifi.js) | `WifiScene._openConnectModal` now constructs a `TextInputScreen` and overlays its own spinner / error states. Old inline keyboard/layouts/touchpad/buttons removed. |
+| [`js/canvas.js`](js/canvas.js) | New cell flags + render paths in `drawKeyboard` (`isKeyboardUp` / `isKeyboardDown`), peek-row wave math, and the tab-button drawing (`drawNumericTabButton`, `drawIconTabButton`, `drawNumericTabButtonSelector`). |
+| [`js/ui.js`](js/ui.js) | `UI.Keyboard` gained focus state + peek-row wave eval (`setFocused`, `syncWaveToSelection`, `snapToRow`, interlayer callback) and two new bottom-button classes (`UI.NumericTabButton`, `UI.IconTabButton`). |
+| [`js/input.js`](js/input.js) | Hardware-key remapping: `Backspace` / `Escape` → `'esc'`; `v` → `'back'`. |
+
+## Constructor options + commit funnel
+
+`enter()` reads `this._opts`:
+
+* `displayName` → `this.displayName` (sandbox / app-switcher label).
+* `title` → `this.fieldTitle` (centred caption above the field).
+* `initialText` → `this.inputText`. `_inputCursor` lands at
+  `inputText.length` so typing appends.
+* `onSave`, `onDiscard` → stored as `_onSave` / `_onDiscard`.
+
+`_commitSave()` and `_commitDiscard()` are the funnels: every Save
+path (modal Save button, bottom-bar Done) routes through
+`_commitSave`; every Discard path (modal Discard, bottom-bar
+Cancel when text empty) routes through `_commitDiscard`. Each
+helper invokes the consumer callback and returns whatever the
+callback returned. Returning `undefined` defaults to `'pop'`;
+returning any non-`'pop'` value (e.g. `false`) keeps the screen
+alive — Wi-Fi uses this to hold the screen open while the
+`/api/wifi/connect` XHR is in flight.
+
+## Title + input field layout
+
+Flat layout: status bar at `y=0..12`, a centred title at `y=24`,
+the input field directly below at `y=titleY + 14 = 38`, the
+keyboard at the canonical `y=75`. No modal-style tab header or
+body frame.
+
+Both the title and field use `Math.round((canvas.w - w) / 2)`
+for x-centring so even/odd widths land on the same pixel axis.
+Field auto-grows with the typed text:
+
+* `INPUT_PAD = 6` (padding each side).
+* `INPUT_MIN_W = 150` (start), `INPUT_MAX_W = 238` (cap).
+* `inputW = clamp(textWidth + 12, 150, 238)`.
+* `inputX = round((canvas.w - inputW) / 2)`.
+* `cornerRadius = 3` on the field's `ResponsiveFrame` (light-grey
+  fill, no stroke).
+* Focus selector = 2-px black wraparound rendered via two
+  `ResponsiveFrame` strokes (r=3 inner at the field bounds, r=4
+  outer 1 px out). `drawRoundFrame` only ships r=2/3 tables —
+  `ResponsiveFrame` handles arbitrary radii.
+
+## Cursor + text truncation
+
+`_inputCursor` (integer 0..`inputText.length`) is the caret
+position. The keyboard's `onChar` callback inserts at the cursor
+and Backspace deletes the char to its left, advancing the cursor
+accordingly. `_fitInputText(text, cursor, innerW)` decides which
+slice of the text to render and whether either side needs a
+truncation marker:
+
+```
+text fits           → text
+right-truncated     → text...>
+left-truncated      → <...text
+both sides          → <...text...>
+```
+
+`HaxrcorpFont16` has no triple-dot glyph; the markers are three
+period characters (`<` + `...` and `...` + `>`). `_fitInputText`
+always measures the full rendered substring (with markers
+attached) via `HaxrcorpFont16.textWidth` rather than summing
+per-char widths — per-char widths each subtract one inter-char
+unit at the tail, so accumulation under-counts the concat by
+~N px and lets text overflow the field.
+
+The cursor x is `textX + leftMarkerWidth + textWidth(slice(left,
+cursor)) + 1` — measured inside the visible substring so it
+stays accurate when the window slides.
+
+## Peek row + dock-style number wave
+
+`_layoutABC[0]` is the **peek row**: 11 cells (`1, 2, …, 0, -`)
+sitting one row above the QWERTY top, aligned column-for-column
+with `qwertyuiop[`. The first cell carries `peek: true` —
+`drawKeyboard`'s `kbHasPeekRow` test keys off the row-0 first
+cell.
+
+Visually, each peek cell renders a full Q-shaped rounded card
+that mostly tucks behind the QWERTY row below it. When the user
+lands on a peek cell the wave lifts it (and the surrounding
+cells, mac-dock-style); when they leave the wave lerps back to
+flat.
+
+* `POPPED_BTN_Y = keyboardY - BTN_H` (fully extended, 1 px above
+  Q's top edge).
+* `FOLDED_BTN_Y = keyboardY - PEEK_VISIBLE_H - PEEK_LIFT_FOLDED`
+  (resting tab, `PEEK_VISIBLE_H = 2`, lifted 1 px above Q for
+  breathing space).
+* `LIFT_RANGE = FOLDED - POPPED = 13`.
+* **Falloff** `PEEK_FALLOFF_PX = 2` — each column of distance
+  from the wave centre drops the lift by 2 px, so neighbours
+  step `2, 4, 6, …` px below the centre.
+
+Every peek cell renders the same rounded card; Q's white-filled
+default-state cell (now bg-filled before its stroke, so the body
+is opaque) overdraws the lower portion of each peek so only the
+3-px tab + the visible digit show through.
+
+The digit text inside the peek cell is clipped per-frame so it
+fades down as the cell descends — `paintContent` is wrapped in
+`ctx.save / clip / restore` with `clip rect = (btnX, btnY, btnW,
+keyboardY - 1 - btnY)` so only the rows above Q's top render.
+
+## Wave animation system
+
+State on `UI.Keyboard`:
+
+* `_peekWaveRestCenter` / `_peekWaveRestAmp` — the steady-state
+  values when no animation is running.
+* `_peekWaveAnim` — `{ startMs, duration, fromCenter, fromAmp,
+  toCenter, toAmp }` while interpolating.
+
+`kbEvaluatePeekWave(kb, now)` folds the live animation into an
+instantaneous `{ center, amp }` pair. `Keyboard.render` evaluates
+it once per frame, passes it to `drawKeyboard` as `peekWave`,
+and re-arms `requestRender` until the animation completes.
+
+`_driveWaveToCurrentSelection()` is invoked from every path that
+changes selection (`setSelection`, `handleInput`'s row/col
+mutators, `setFocused`). It captures the current eased state as
+the new `from`, computes a target (`onPeekRow ? amp=1, center=
+selectedCol : amp=0, center=cur`), and starts a fresh animation.
+Mid-flight retargeting re-anchors smoothly — no snap when the
+user mashes left/right across the wave.
+
+`syncWaveToSelection()` snaps the wave instantly (no animation)
+to whatever shape matches the current selection. Used by
+`_toggleLayout` after swapping `rows` — otherwise the wave state
+from the outgoing layout would leak into the new layout and
+play back as a "leftover" collapse animation.
+
+`KB_PEEK_WAVE_MS = 160 ms`, cubic ease-out.
+
+## Layout toggle ABC ↔ SYM
+
+`KeyboardTestScene.prototype._toggleLayout` runs when the 123
+tab fires (`'edit'` action / X hardware key). Row index shifts
+between layouts:
+
+* **ABC → SYM**: `newRow = max(0, prevRow - 1)`. SYM's numbers
+  row visually sits where ABC's QWERTY-top row is, so `'t'` at
+  `(1, 4)` lands on `'5'` at `(0, 4)`; peek row 0 clamps to SYM
+  row 0 (same digit, no longer floating).
+* **SYM → ABC**: `newRow = min(prevRow + 1, layoutABC.length - 1)`.
+  The mirror — SYM `'5'` at `(0, 4)` round-trips back to ABC
+  `'t'` at `(1, 4)`. Peek is reachable via Up arrow from QWERTY
+  top, never as a toggle target.
+
+After the swap, `_setSelection(newRow, prevCol)` re-clamps the
+column to the new layout's row length and
+`syncWaveToSelection()` snaps the wave to the resulting state.
+
+## 123 + backspace tabs
+
+Two tab buttons hang below the keyboard, both 48 × 14 with
+**square top corners** and **rounded bottom corners (r=4)** — the
+shape reads as a tab attached to the chrome above:
+
+* **123 tab** — `(x=52, y=128)`, label `'123' / 'ABC'`, fires the
+  `'edit'` action (X key) and toggles the layout.
+* **Backspace tab** — `(x=156, y=128)`, icon = `Icons.backspace`,
+  fires the `'back'` action (V key) and calls
+  `keyboard.onChar('\b')`.
+
+Rendering uses two canvas helpers — `drawNumericTabButton(text,
+…)` and `drawIconTabButton(icon, …)`. Both share the same shape
++ light-grey side / curve strokes; only the content differs. UI
+classes `NumericTabButton` and `IconTabButton` wrap them with
+the standard `press` / `release` / `selected` protocol.
+
+`drawNumericTabButtonSelector` paints the focus selector — a 1-
+px black stroke on the sides + rounded-bottom curve + a 42 × 1
+underline strip 1 px below the button + 1 × 11 flank strips one
+column outside each side. Top stays open so the selector reads
+as a tab.
+
+## Form-navigation cells (Up / Down arrows)
+
+The previously wide backspace / return cells at row 1 col 11 and
+row 2 col 12 of every layout now carry `isKeyboardUp:true` /
+`isKeyboardDown:true` flags. `drawKeyboard`'s `cellOf` +
+`paintContent` render `Icons.keyboard_up` / `Icons.keyboard_down`
+centred inside the cell, and `UI.Keyboard.handleInput`'s OK
+branch swallows them with a no-op (no character emission, no
+scene close). Real behaviour ("move caret to previous / next
+form field") is a follow-up — visuals are in place.
+
+## Focus model
+
+`_focus` ∈ `{ 'keyboard', 'tab123', 'tabBackspace', 'inputField' }`.
+
+* `_focusKeyboard()` — re-arms `keyboard.setFocused(true)`,
+  clears `selected` on both tab buttons.
+* `_focusTab(tabName)` — sets the named button's `selected =
+  true`, defocuses the keyboard.
+* `_focusInputField()` — clears tab selections, defocuses the
+  keyboard, resets the blink cursor.
+
+When defocused, `UI.Keyboard.drawKeyboard` skips its selector
+pass and `_driveWaveToCurrentSelection` targets `amp = 0` —
+the wave collapses cleanly while another control owns focus.
+
+D-pad navigation:
+
+* `Up` on row 0 → focus the input field. Keyboard's `(row, col)`
+  is preserved so a follow-up `Down` restores the selection.
+* `Down` on the bottom row → focus the tab whose x footprint the
+  current column sits over (123: cols 1–4, backspace: cols
+  8–11) — both the keyboard's wide leading cell is 35 px in
+  every layout, so the same column indices line up across ABC /
+  SYM.
+* `Down` on either tab → `keyboard.snapToRow(0)` (x-aligned).
+* `Up` on either tab → restore the keyboard's saved `(row, col)`.
+* `Left` / `Right` on the input field → step `_inputCursor`.
+
+## Touchpad zones
+
+`_handleTouchpadMessage` resolves a touch position to a virtual
+row via the same baseline + `dy / TP_Y_UNITS_PER_STEP` math the
+keyboard uses. The vertical zones are:
+
+| target row | result |
+|---|---|
+| `< 0` | input field; `targetCol` maps to `_inputCursor` so dx steers the `\|` through the text |
+| `0..N-1` | keyboard rows |
+| `>= rows.length` | tab strip — 123 / backspace by column, or clamp to last keyboard row when the column doesn't sit over either tab |
+
+Touch-down rebaselines depending on focus: `inputField` → row =
+`-1`, col = `_inputCursor`; `tab123` / `tabBackspace` → row =
+`rows.length`, col = `2 / 9` (tab centre). Transition INTO the
+input field re-anchors the baseline to the current finger
+position with `baselineCol = _inputCursor`, so entry doesn't
+shift the `|` — only further dx does.
+
+Crucially the tab strip is a **dead-end via touchpad**: a drag
+past `rows.length` is treated the same as `== rows.length` (tab
+or last-row clamp). Crossing from the tab to the numeric row is
+intentionally D-pad-only (Down from the tab → `snapToRow(0)`).
+
+## Discard-changes modal
+
+Opens on `'esc'` only when `inputText.length > 0` (empty field
+falls through to the standard Cancel-button discard path).
+State: `_discardModal = { open: false, buttonIndex: 0 }`.
+
+Style mirrors the Internet Radio install modal — 150 × 70
+centred frame on a translucent wash, `Born2bSportyV2Medium`
+title (`'Discard changes?'`), `HaxrcorpFont16` grey body
+(`"Your text won't be saved."`), two stacked buttons rendered
+through `_drawDiscardModalButton` with a shared
+`MenuSelectorFrame` highlight.
+
+Buttons:
+
+* `Save` (index 0, default focus) → `_commitSave` → consumer's
+  `onSave(inputText)`. Same effect as the bottom-bar Done
+  button.
+* `Discard` (index 1) → `_commitDiscard` → consumer's
+  `onDiscard()`. The text is lost.
+
+Modal input handling owns the dispatch while open:
+
+* `Up` / `Down` / `Left` / `Right` toggle `buttonIndex`.
+* `OK` triggers the highlighted button.
+* `Back` / `Esc` dismiss the modal (return to the keyboard,
+  text preserved).
+
+Render is the very last step in `TextInputScreen.render`, so the
+modal layers above the keyboard, tabs, and bottom-bar selectors.
+
+## Hardware key remapping
+
+`js/input.js` `KEY_MAP`:
+
+* `Backspace` → `'esc'` — used to map to `'back'`; now exits the
+  scene (or opens the discard modal).
+* `Escape` → `'esc'` — same.
+* `v` → `'back'` — used to be `'view'`; now fires the backspace
+  tab (delete one character).
+* `x` → `'edit'` (unchanged) — fires the 123 tab (toggle layout).
+
+The old `'view'` action wasn't referenced anywhere else, so
+re-purposing `v` is a zero-cost swap.
+
+## Wi-Fi password modal integration
+
+`WifiScene._openConnectModal(ssid, security)` now constructs a
+`TextInputScreen({ title: 'Password for ' + ssid, initialText:
+'', onSave, onDiscard })` and parks it behind a thin
+`self._modal` wrapper that:
+
+* Forwards `handleInput` to the screen, closing the modal on a
+  `'pop'` return **only when** `!connecting && self._modal` —
+  otherwise the screen is needed alive while the
+  `/api/wifi/connect` XHR runs and the spinner overlay paints.
+* Renders the screen, then layers a translucent wash + 22 × 20
+  spinner sprite when `connecting`, or a single ellipsised
+  error line above the keyboard when `errorMsg` is set.
+* Keeps the existing 80 ms anim ticker for spinner frames; the
+  screen's own 250 ms blink ticker drives the text cursor.
+
+Old inline keyboard / layouts / touchpad / Close-123-Done
+bottom-buttons in `wifi.js` are gone — ~220 fewer lines.
+
+## End-to-end test recipe
+
+Boot menu → **Testing → Tests → On screen keyboard** drops into
+the sandbox (`KeyboardTestScene`, default options). Sanity:
+
+* Type a few letters → Field auto-grows up to 238 px, then
+  text truncates with `<...` / `...>` markers.
+* `Up` on `q` → input field selector lights up; `Left` / `Right`
+  walk the `|` through the typed text.
+* `Down` from `t` → wave centres on `t`; `Up` again → wave
+  centres on `5` (the digit above `t`). `Down` past the bottom
+  row at column 2 → 123 tab highlights; `OK` toggles to SYM and
+  `'t'` maps to `'5'`.
+* `V` → backspace tab flashes + last character deletes.
+* `Backspace` with text in the field → discard modal opens with
+  `Save` highlighted; `OK` exits (same as Done), `Right`+`OK`
+  exits via `Discard`, `Back` dismisses the modal.
+* Touchpad drag down past the tab strip → cursor parks on the
+  tab (dead-end); only the D-pad Down from the tab advances
+  onto the numeric row.
+
+Wi-Fi consumer: **Menu → Connections → Wi-Fi → pick a visible
+network**. Same keyboard chrome appears; Done POSTs `{ ssid,
+password }` to `/api/wifi/connect`; spinner spins until the
+response arrives; errors stay overlaid until the user dismisses
+with any key.

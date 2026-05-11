@@ -1367,18 +1367,23 @@ var AppSwitcherScene = (function() {
             RunningApps.close(focused.name);
         }
 
-        // Also splice any PlaceholderAppScene for this app out of
-        // the scene stack — otherwise, dismissing the switcher
-        // would land on the killed app's now-orphaned scene. We
-        // skip ourselves (the switcher is at the top of the stack).
-        if (this.sceneManager && this.sceneManager._stack
-            && typeof PlaceholderAppScene !== 'undefined') {
+        // Also splice any scene representing this app out of the
+        // scene stack — otherwise, dismissing the switcher would
+        // land on the killed app's now-orphaned scene (visible
+        // as a leftover frame with no screenshot). Covers both
+        // PlaceholderAppScene instances (generic apps) and any
+        // custom scene class that opts in by setting
+        // `_isApp = true` (e.g. InternetRadioScene). We skip
+        // ourselves (the switcher is at the top of the stack).
+        if (this.sceneManager && this.sceneManager._stack) {
             var stk = this.sceneManager._stack;
             for (var s = stk.length - 1; s >= 0; s--) {
                 var sc = stk[s];
                 if (sc === this) continue;
-                if (sc instanceof PlaceholderAppScene
-                    && sc.displayName === focused.name) {
+                if (sc.displayName !== focused.name) continue;
+                var isPlaceholder = typeof PlaceholderAppScene !== 'undefined'
+                    && sc instanceof PlaceholderAppScene;
+                if (isPlaceholder || sc._isApp === true) {
                     stk.splice(s, 1);
                 }
             }
@@ -1434,19 +1439,38 @@ var AppSwitcherScene = (function() {
     };
 
     AppSwitcherScene.prototype.handleInput = function(action) {
-        if (action === 'back') {
-            // If the user has just killed every running app, the
-            // stack underneath is unlikely to be a useful place to
-            // return to (it's typically the menu chain that led to
-            // the now-dead apps). Bail straight to Desktop instead
-            // of bubbling back up through it.
+        // Shared exit helper for the back / no-app-to-kill paths.
+        // Returns 'pop' (or popToRoot when RunningApps is empty)
+        // so the caller can directly `return` it.
+        var self = this;
+        function backExit() {
             var noApps = (typeof RunningApps !== 'undefined')
                 && RunningApps.list().length === 0;
-            if (noApps && this.sceneManager) {
-                this.sceneManager.popToRoot();
+            if (noApps && self.sceneManager) {
+                self.sceneManager.popToRoot();
                 return;
             }
             return 'pop';
+        }
+        if (action === 'back') {
+            // Original Back exit. With the recent input.js remap
+            // Backspace / Escape now fire 'esc' instead of 'back',
+            // so 'back' here is essentially the V-key-only path —
+            // 'esc' below covers the Backspace path.
+            return backExit();
+        }
+
+        // Esc with no real app under the focus is also a back-exit
+        // — handled BEFORE the phase guard so the user can leave
+        // the switcher even during the kill animation that
+        // follows the last app shutting down. Killing (the
+        // action that triggers a phase change) still lives in
+        // the phase-rest branch below.
+        if (action === 'esc') {
+            var preKillTarget = this._findFocused();
+            if (!preKillTarget || preKillTarget.transient) {
+                return backExit();
+            }
         }
 
         // Navigation only valid when nothing is animating; otherwise
@@ -1481,14 +1505,19 @@ var AppSwitcherScene = (function() {
         }
 
         // Esc kills the focused app — only when there's a real
-        // running app in the focus slot. Transient (Desktop / Menu)
-        // can't be "killed", and an empty focus is a no-op.
+        // running app in the focus slot. Transient (Desktop /
+        // Menu) and empty focus fall through to the back-exit
+        // path so Backspace can leave the switcher when there's
+        // nothing left to kill (Backspace remaps to 'esc' in
+        // input.js since the text-input scene needed Backspace
+        // to fire the discard prompt).
         if (action === 'esc') {
             var killTarget = this._findFocused();
             if (killTarget && !killTarget.transient) {
                 this._killFocused();
+                return;
             }
-            return;
+            return backExit();
         }
 
         // Carousel orientation: older apps live at NEGATIVE

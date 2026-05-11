@@ -1,0 +1,6 @@
+# Local developer overrides — never committed.
+# `debug_config.js` enables the "boot straight into a scene"
+# shortcut wired in `main.js`. Each developer keeps their own
+# copy with whatever scene they're iterating on; the rest of
+# the team is unaware of it.
+js/debug_config.js

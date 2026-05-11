@@ -112,6 +112,128 @@ var FlipCanvas = (function() {
         _btnText(this.ctx, text, x, w, y, c.fg);
     };
 
+    // Numeric-layout tab button. Looks like a middle app-defined
+    // button rotated 180° — top corners are square (radius 0)
+    // and the bottom corners are rounded with r=4. No top stroke;
+    // the side + bottom strokes are the same light gray
+    // (#CCCCCC) that the keyboard-key frames use, so the tab
+    // reads as part of the same chrome family. Caller passes an
+    // absolute (x, y) because this button isn't slot-positioned
+    // like MiddleButton.
+    FlipCanvas.prototype.drawNumericTabButton = function(text, x, y, w, pressed, disabled) {
+        var h = BTN_H;
+        var c = disabled ? { bg: '#CCC', fg: '#999' } : _btnColors(pressed);
+        var stroke = '#CCCCCC';
+        this.ctx.fillStyle = c.bg;
+        // Fill: full-width interior from the top edge down to
+        // where the bottom curve starts, then step in for each
+        // row of the rounded corner. No top-stroke means row 0
+        // is bg — the interior runs all the way up.
+        this.ctx.fillRect(x,     y,         w,     h - 3);
+        this.ctx.fillRect(x + 1, y + h - 3, w - 2, 1);
+        this.ctx.fillRect(x + 2, y + h - 2, w - 4, 1);
+        this.ctx.fillRect(x + 3, y + h - 1, w - 6, 1);
+
+        // Stroke on top of the fill, in the light-gray frame
+        // colour used by the keyboard keys.
+        this.ctx.fillStyle = stroke;
+        // Vertical side strokes — span the full height from the
+        // top edge down to the last full-width row.
+        this.ctx.fillRect(x,         y, 1, h - 3);
+        this.ctx.fillRect(x + w - 1, y, 1, h - 3);
+        // Bottom-corner step pixels (radius-4 curve, mirroring
+        // the top of MiddleButton).
+        this.ctx.fillRect(x + 1,     y + h - 3, 1, 1);
+        this.ctx.fillRect(x + 2,     y + h - 2, 1, 1);
+        this.ctx.fillRect(x + w - 2, y + h - 3, 1, 1);
+        this.ctx.fillRect(x + w - 3, y + h - 2, 1, 1);
+        // Bottom stroke, narrowed to clear the rounded corners.
+        this.ctx.fillRect(x + 3,     y + h - 1, w - 6, 1);
+
+        // Label sits 1 px higher than the standard `_btnText`
+        // position (y+1 instead of y+2) — the missing top stroke
+        // gives the text an extra pixel to breathe upward.
+        var tw = HaxrcorpFont16.textWidth(text);
+        var tx = x + Math.floor((w - tw) / 2);
+        HaxrcorpFont16.draw(this.ctx, text, tx, y + 1, c.fg);
+    };
+
+    // Icon-content tab button. Same shape as drawNumericTabButton
+    // (square top, rounded bottom, light-gray side + curve
+    // strokes) but renders a centred icon instead of a text
+    // label. Used by the backspace tab that mirrors the 123 tab
+    // on the right side of the screen.
+    FlipCanvas.prototype.drawIconTabButton = function(icon, x, y, w, pressed, disabled) {
+        var h = BTN_H;
+        var c = disabled ? { bg: '#CCC', fg: '#999' } : _btnColors(pressed);
+        var stroke = '#CCCCCC';
+        this.ctx.fillStyle = c.bg;
+        this.ctx.fillRect(x,     y,         w,     h - 3);
+        this.ctx.fillRect(x + 1, y + h - 3, w - 2, 1);
+        this.ctx.fillRect(x + 2, y + h - 2, w - 4, 1);
+        this.ctx.fillRect(x + 3, y + h - 1, w - 6, 1);
+
+        this.ctx.fillStyle = stroke;
+        this.ctx.fillRect(x,         y, 1, h - 3);
+        this.ctx.fillRect(x + w - 1, y, 1, h - 3);
+        this.ctx.fillRect(x + 1,     y + h - 3, 1, 1);
+        this.ctx.fillRect(x + 2,     y + h - 2, 1, 1);
+        this.ctx.fillRect(x + w - 2, y + h - 3, 1, 1);
+        this.ctx.fillRect(x + w - 3, y + h - 2, 1, 1);
+        this.ctx.fillRect(x + 3,     y + h - 1, w - 6, 1);
+
+        if (icon) {
+            var ix = x + Math.floor((w - icon.w) / 2);
+            var iy = y + Math.floor((h - icon.h) / 2);
+            if (icon.grayscale) this.drawSprite(icon, ix, iy, c.fg);
+            else                this.drawIcon(icon, ix, iy, c.fg);
+        }
+    };
+
+    // 1-px black selector for the numeric tab button. Overdraws
+    // the button's existing gray stroke on the sides and the
+    // rounded-bottom curve, in black, and adds an underline
+    // strip 1 px below the button. Top edge stays open so the
+    // selector reads as a tab attached to the chrome above it
+    // rather than a freestanding rectangle.
+    FlipCanvas.prototype.drawNumericTabButtonSelector = function(x, y, w) {
+        var h = BTN_H;
+        this.ctx.fillStyle = '#000';
+        this.ctx.fillRect(x,         y,         1,     h - 3);      // left
+        this.ctx.fillRect(x + w - 1, y,         1,     h - 3);      // right
+        this.ctx.fillRect(x + 1,     y + h - 3, 1,     1);          // BL step 1
+        this.ctx.fillRect(x + 2,     y + h - 2, 1,     1);          // BL step 2
+        this.ctx.fillRect(x + w - 2, y + h - 3, 1,     1);          // BR step 1
+        this.ctx.fillRect(x + w - 3, y + h - 2, 1,     1);          // BR step 2
+        this.ctx.fillRect(x + 3,     y + h - 1, w - 6, 1);          // bottom
+        // 1-px nubs directly below each side stroke — extends
+        // the left and right verticals down by one pixel so they
+        // meet the row of the upper corner step.
+        this.ctx.fillRect(x,         y + h - 3, 1, 1);
+        this.ctx.fillRect(x + w - 1, y + h - 3, 1, 1);
+        // 1-px corner accents filling the inside of each rounded
+        // bottom corner. Two pixels per side:
+        //   • Upper pair at (x+1, y+h-2) / (x+w-2, y+h-2) —
+        //     directly below step-1, adjacent to step-2.
+        //   • Lower pair at (x+2, y+h-1) / (x+w-3, y+h-1) —
+        //     one row down and one column inward; bridges the
+        //     corner to the bottom stroke on the same row.
+        this.ctx.fillRect(x + 1,     y + h - 2, 1, 1);
+        this.ctx.fillRect(x + w - 2, y + h - 2, 1, 1);
+        this.ctx.fillRect(x + 2,     y + h - 1, 1, 1);
+        this.ctx.fillRect(x + w - 3, y + h - 1, 1, 1);
+        // 1×11 flank strips, 1 column outside each side of the
+        // button, top-aligned with the button's top edge.
+        var FLANK_H = 11;
+        this.ctx.fillRect(x - 1,     y, 1, FLANK_H);
+        this.ctx.fillRect(x + w,     y, 1, FLANK_H);
+        // 42×1 underline strip 1 row below the button, centred
+        // inside the button's width.
+        var UNDERLINE_W = 42;
+        this.ctx.fillRect(x + Math.floor((w - UNDERLINE_W) / 2),
+            y + h, UNDERLINE_W, 1);
+    };
+
     // Left button — flush with left screen edge, only top-right corner rounded.
     // Optional `icon` renders to the left of the label; the icon+text
     // pair is centred together inside the button.
@@ -578,7 +700,17 @@ var FlipCanvas = (function() {
     // selectedRow, selectedCol: current selection position
     // pressedRow, pressedCol: button currently pressed (-1 if none)
     // bg: background color, fg: border/text color
-    FlipCanvas.prototype.drawKeyboard = function(x, y, rows, selectedRow, selectedCol, pressedRow, pressedCol, bg, fg, shiftState, langLabel) {
+    // peekWave: optional dock-style wave state for the peek row:
+    //   { center: <float col>, amp: <0..1> }
+    // When set, every peek cell at column c renders with a
+    // distance-based lift: cells near `center` rise toward the
+    // selected POPPED position, neighbours sit progressively
+    // lower, and faraway cells stay at the folded resting tab.
+    // `amp` scales the whole lift (0 = all cells folded, 1 =
+    // fully extended wave). The owning Keyboard component eases
+    // `center` and `amp` over time so transitions read as smooth
+    // ripples instead of snaps.
+    FlipCanvas.prototype.drawKeyboard = function(x, y, rows, selectedRow, selectedCol, pressedRow, pressedCol, bg, fg, shiftState, langLabel, peekWave, focused, betweenCellsAndSelector) {
         var BTN_W = 15;
         var BTN_H = 16;
         var BTN_GAP = 0;  // No gap between buttons
@@ -619,11 +751,16 @@ var FlipCanvas = (function() {
             var raw = rows[rowIdx][colIdx];
             if (raw && typeof raw === 'object') {
                 return {
-                    text:    raw.text != null ? raw.text : '',
-                    wide:    !!raw.wide,
-                    isShift: !!raw.isShift,
-                    isLang:  !!raw.isLang,
-                    isSpace: !!raw.isSpace
+                    text:           raw.text != null ? raw.text : '',
+                    wide:           !!raw.wide,
+                    isShift:        !!raw.isShift,
+                    isLang:         !!raw.isLang,
+                    isSpace:        !!raw.isSpace,
+                    isBackspace:    !!raw.isBackspace,
+                    isReturn:       !!raw.isReturn,
+                    isKeyboardUp:   !!raw.isKeyboardUp,
+                    isKeyboardDown: !!raw.isKeyboardDown,
+                    peek:           !!raw.peek
                 };
             }
             var lastRow      = (rowIdx === rows.length - 1);
@@ -633,13 +770,38 @@ var FlipCanvas = (function() {
             var isLang  = aboveLastRow && colIdx === 0 && raw === LANG_CHAR;
             var isSpace = lastRow      && lastCol      && raw === ' ';
             return {
-                text:    raw,
-                wide:    isShift || isLang || isSpace,
-                isShift: isShift,
-                isLang:  isLang,
-                isSpace: isSpace
+                text:           raw,
+                wide:           isShift || isLang || isSpace,
+                isShift:        isShift,
+                isLang:         isLang,
+                isSpace:        isSpace,
+                isBackspace:    false,
+                isReturn:       false,
+                isKeyboardUp:   false,
+                isKeyboardDown: false,
+                peek:           false
             };
         }
+
+        // Peek row detection. Row 0 becomes a "peek row" when its
+        // first cell is flagged `peek: true`. The whole row then
+        // renders ABOVE the keyboard chrome — only the top few
+        // pixels of each cell are visible (a tab poking up),
+        // and the row's contents don't take up vertical space
+        // in the chrome. Selecting a peek cell pops it open
+        // fully so the digit (or whatever the cell carries)
+        // becomes readable.
+        var hasPeekRow = rows.length > 0
+            && rows[0].length > 0
+            && cellOf(0, 0).peek;
+        var peekOffset    = hasPeekRow ? 1 : 0;
+        // Height of the tab that peeks above the QWERTY row
+        // when a peek-row cell is at rest. The cell itself
+        // stays 16 px tall — it just sits low so the bottom
+        // 14 px tuck behind the chrome's first row. 2 px gives
+        // a thin, deliberate hint without competing with the
+        // glyphs underneath.
+        var PEEK_VISIBLE_H = 2;
 
         function btnWidthAt(rowIdx, colIdx) {
             return cellOf(rowIdx, colIdx).wide ? SHIFT_W : BTN_W;
@@ -701,7 +863,76 @@ var FlipCanvas = (function() {
                 else                  self.drawIcon(lIcon, lIx, lIy, color);
                 return;
             }
-            if (cell.isSpace) return;            // empty wide bar
+            if (cell.isBackspace) {
+                // Wide key — same dimensions as space/shift —
+                // carrying the backspace glyph. Icons.backspace
+                // is 15 × 7 grayscale; centred inside the cell,
+                // then nudged 1 px left to balance against the
+                // cell's right-edge padding (the icon's own
+                // pixel mass leans right of geometric centre).
+                var bIcon = Icons.backspace;
+                if (bIcon) {
+                    var bIx = bx + Math.floor((bw - bIcon.w) / 2) - 1;
+                    var bIy = by + Math.floor((BTN_H - bIcon.h) / 2);
+                    if (bIcon.grayscale) self.drawSprite(bIcon, bIx, bIy, color);
+                    else                  self.drawIcon(bIcon, bIx, bIy, color);
+                }
+                return;
+            }
+            if (cell.isReturn) {
+                // Wide key carrying the literal label "return".
+                // No dedicated icon yet — text in the standard
+                // keyboard font reads cleanly enough at SHIFT_W
+                // (35 px). Centred inside the cell.
+                var rTxt = 'return';
+                var rW = HaxrcorpFont16.textWidth(rTxt);
+                var rX = bx + Math.floor((bw - rW) / 2);
+                var rY = by + 2;
+                HaxrcorpFont16.draw(ctx, rTxt, rX, rY, color);
+                return;
+            }
+            if (cell.isKeyboardUp || cell.isKeyboardDown) {
+                // Form-navigation arrow cells. Icon is centred
+                // inside the wide cell; behaviour (caret to
+                // previous/next field) will be wired later.
+                var navIcon = cell.isKeyboardUp ? Icons.keyboard_up : Icons.keyboard_down;
+                if (navIcon) {
+                    var nIx = bx + Math.floor((bw - navIcon.w) / 2);
+                    var nIy = by + Math.floor((BTN_H - navIcon.h) / 2);
+                    if (navIcon.grayscale) self.drawSprite(navIcon, nIx, nIy, color);
+                    else                    self.drawIcon(navIcon, nIx, nIy, color);
+                }
+                return;
+            }
+            if (cell.isSpace) {
+                // Wide bar gets a `]` glyph rotated 90° CW —
+                // the resulting horizontal bracket reads as a
+                // "this is a wide key" affordance without
+                // needing a dedicated icon. 90° is an exact
+                // axis swap, so the per-pixel fillRects from
+                // HaxrcorpFont16.draw will land cleanly on
+                // integer pixel boundaries — provided the
+                // rotation centre itself is an integer.
+                // `bw / 2` is 17.5 (SHIFT_W = 35), which
+                // produced sub-pixel antialiasing blur on every
+                // glyph pixel; Math.floor on both axes pins the
+                // translation to a whole-pixel origin and the
+                // rotated rects stay crisp.
+                var rcx = bx + Math.floor(bw / 2);
+                var rcy = by + Math.floor(BTN_H / 2);
+                var spSym = ']';
+                var spSymW = HaxrcorpFont16.textWidth(spSym);
+                var spSymH = 11;                      // font cap height
+                ctx.save();
+                ctx.translate(rcx, rcy);
+                ctx.rotate(Math.PI / 2);
+                HaxrcorpFont16.draw(ctx, spSym,
+                    -Math.floor(spSymW / 2),
+                    -Math.floor(spSymH / 2),
+                    color);
+                ctx.restore();
+                return;
+            }
             var t = cell.text;
             if (t === '' || t === ' ' || t == null) return;
             // Single-letter cells get the shift-aware uppercasing.
@@ -723,7 +954,11 @@ var FlipCanvas = (function() {
             if (rw > maxRowWidth) maxRowWidth = rw;
         }
         var keyboardW = maxRowWidth;
-        var keyboardH = rows.length * BTN_H;
+        // Chrome height excludes the peek row — peek cells live
+        // above the chrome, not inside it. Without this the
+        // background rectangle would be one row taller than the
+        // visible normal rows.
+        var keyboardH = (rows.length - peekOffset) * BTN_H;
 
         // Position keyboard: 5px from top, 4px from right edge of container
         // Centre the keyboard horizontally inside the container.
@@ -822,8 +1057,36 @@ var FlipCanvas = (function() {
             // their first key aligns column-wise with the bottom
             // row's first letter (i.e., Q sits over A sits over Z).
             var btnX = keyboardX + rowLeftOffset(row);
-            var btnY = keyboardY + row * BTN_H;
+            // Peek row (row 0 when hasPeekRow) sits ABOVE the
+            // chrome. Two positions, picked by selection state
+            // (per-cell, computed inside the inner col loop
+            // below):
+            //   • RESTING peek — `btnY = keyboardY - PEEK_VISIBLE_H`.
+            //     Cell extends down INTO the QWERTY row, which
+            //     draws over it later in the loop. Net visible
+            //     surface: a thin tab (top PEEK_VISIBLE_H px)
+            //     poking out above the chrome.
+            //   • SELECTED peek — `btnY = keyboardY - BTN_H`.
+            //     Cell sits fully above the chrome so it's
+            //     entirely visible.
+            // The non-peek rows still anchor at the same Y as
+            // before (peekOffset shifts them up by one slot so
+            // QWERTY stays where it would be without the peek).
+            var isPeekRow = hasPeekRow && row === 0;
+            var btnY;
+            if (!isPeekRow) {
+                btnY = keyboardY + (row - peekOffset) * BTN_H;
+            }
+            // (`btnY` for peek-row cells is set inside the col
+            // loop because it depends on per-cell `isSelected`.)
             for (var col = 0; col < rowKeys.length; col++) {
+                var rawCell = rowKeys[col];
+                // Empty slot in a peek row (null / undefined) —
+                // no cell to render, no pixel cost. Lets the
+                // layout carry sparse peek rows (e.g. '1' above
+                // 'q' only) without painting tabs over every
+                // column.
+                if (rawCell == null) continue;
                 var cell = cellOf(row, col);
                 var btnW = cell.wide ? SHIFT_W : BTN_W;
 
@@ -835,6 +1098,103 @@ var FlipCanvas = (function() {
                 // the standard light-gray frame at rest.
                 var isFilled   = isPressed;
 
+                // Peek-row cells render in one of two modes:
+                //
+                //   RESTING — only the top PEEK_VISIBLE_H px
+                //   of the cell is visible (a tab poking up
+                //   above the chrome). We clip to that sliver
+                //   and paint bg + rounded-corner border into
+                //   it. Nothing else from the cell (sides,
+                //   bottom, glyph) renders, so there's no
+                //   leakage through the unfilled QWERTY keys
+                //   below.
+                //
+                //   SELECTED — the cell rises so its entire
+                //   16 px height sits ABOVE the chrome. Fill
+                //   bg here too so the cell is opaque against
+                //   whatever's above the keyboard, then fall
+                //   through to the normal selected-cell path
+                //   below for the border + glyph + deferred
+                //   2-px black selector frame.
+                if (isPeekRow) {
+                    // Anchor positions the wave interpolates
+                    // between:
+                    //   POPPED  — fully-extended (selected) cell.
+                    //             Sits 1 px below Q's top so it
+                    //             overlaps the chrome by a pixel.
+                    //   FOLDED  — resting tab. Lifted 1 px above
+                    //             Q's top for visual breathing
+                    //             space; Q's white-filled cell in
+                    //             row 1 overdraws everything from
+                    //             its top edge down so only the
+                    //             top tab shows.
+                    var PEEK_LIFT_FOLDED = 1;
+                    // POPPED sits with its bottom edge flush at
+                    // Q's top (raised 1 px from its previous
+                    // "overlaps Q by 1 px" position so the
+                    // fully-extended number row reads as floating
+                    // just above the chrome). FOLDED still sits 1
+                    // px above Q for breathing space. LIFT_RANGE
+                    // grows to 13 px, but the per-neighbour
+                    // PEEK_FALLOFF_PX of 2 px is unchanged — the
+                    // dock-shape spacing stays the same, only the
+                    // peak of the wave moves up.
+                    var POPPED_BTN_Y = keyboardY - BTN_H;
+                    var FOLDED_BTN_Y = keyboardY - PEEK_VISIBLE_H - PEEK_LIFT_FOLDED;
+                    var LIFT_RANGE   = FOLDED_BTN_Y - POPPED_BTN_Y; // px; > 0
+                    // Dock-style wave: every cell's lift falls off
+                    // PEEK_FALLOFF_PX per column of distance from
+                    // the centre. At d=0 the cell is fully
+                    // extended; once d * falloff exceeds the lift
+                    // range the cell rests at FOLDED. Amplitude
+                    // scales the whole lift uniformly so the wave
+                    // can fade in / out without any cell ever
+                    // overshooting its anchor points.
+                    var PEEK_FALLOFF_PX = 2;
+                    var waveCenter = (peekWave && peekWave.center != null) ? peekWave.center : 0;
+                    var waveAmp    = (peekWave && peekWave.amp    != null) ? peekWave.amp    : 0;
+                    var dist = Math.abs(col - waveCenter);
+                    var rawLift = LIFT_RANGE - dist * PEEK_FALLOFF_PX;
+                    if (rawLift < 0) rawLift = 0;
+                    var lift = Math.round(waveAmp * rawLift);
+                    btnY = FOLDED_BTN_Y - lift;
+                    // Peek cells are self-contained: render bg
+                    // fill (or filled-black if pressed), gray
+                    // frame, then the digit clipped to the
+                    // visible region above Q. The clip strips off
+                    // any pixels at y >= keyboardY - 1 — those
+                    // would otherwise poke a sliver of the digit
+                    // above Q's top edge for cells sitting low in
+                    // the wave. Effect: each cell's number fades
+                    // out cleanly as its card sinks behind Q.
+                    var peekFilled    = isFilled;
+                    var peekBg        = peekFilled ? '#000' : bg;
+                    var peekTextColor = peekFilled ? '#fff' : '#000';
+                    this.drawRoundRect(btnX, btnY, btnW, BTN_H, 2, peekBg);
+                    if (!peekFilled) {
+                        this.drawRoundFrame(btnX, btnY, btnW, BTN_H, 2, '#CCCCCC');
+                    }
+                    var contentClipH = (keyboardY - 1) - btnY;
+                    if (contentClipH > 0) {
+                        ctx.save();
+                        ctx.beginPath();
+                        ctx.rect(btnX, btnY, btnW, contentClipH);
+                        ctx.clip();
+                        paintContent(cell, btnX, btnY, btnW, peekTextColor);
+                        ctx.restore();
+                    }
+                    if (isSelected) {
+                        // Mark for the deferred second-pass black
+                        // selector frame at the wave-computed y.
+                        selBtn = {
+                            x: btnX, y: btnY, w: btnW,
+                            cell: cell, isFilled: peekFilled
+                        };
+                    }
+                    btnX += btnW;
+                    continue;
+                }
+
                 if (isSelected) {
                     // Defer the 2-px black frame to a second pass,
                     // but paint the underlying button look now so
@@ -843,6 +1203,13 @@ var FlipCanvas = (function() {
                         this.drawRoundRect(btnX, btnY, btnW, BTN_H, 2, '#000');
                         paintContent(cell, btnX, btnY, btnW, '#fff');
                     } else {
+                        // Fill bg first so any earlier render (e.g.
+                        // a peek card extending down into this
+                        // row's footprint) is hidden — the cell
+                        // reads as a self-contained tile rather
+                        // than letting siblings bleed through its
+                        // empty interior.
+                        this.drawRoundRect(btnX, btnY, btnW, BTN_H, 2, bg);
                         this.drawRoundFrame(btnX, btnY, btnW, BTN_H, 2, '#CCCCCC');
                         paintContent(cell, btnX, btnY, btnW, '#000');
                     }
@@ -853,13 +1220,30 @@ var FlipCanvas = (function() {
                     this.drawRoundRect(btnX, btnY, btnW, BTN_H, 2, '#000');
                     paintContent(cell, btnX, btnY, btnW, '#fff');
                 } else {
-                    // Default light-gray frame.
+                    // Default light-gray frame. Fill bg first so
+                    // anything drawn earlier in the pass (notably
+                    // the peek-row card extending down behind this
+                    // cell) is hidden inside the rounded border —
+                    // the visible 3-px tab above stays, the body
+                    // disappears cleanly.
+                    this.drawRoundRect(btnX, btnY, btnW, BTN_H, 2, bg);
                     this.drawRoundFrame(btnX, btnY, btnW, BTN_H, 2, '#CCCCCC');
                     paintContent(cell, btnX, btnY, btnW, '#000');
                 }
 
                 btnX += btnW;
             }
+        }
+
+        // ── Interlayer hook ──────────────────────────────────────
+        // The owning scene may want to paint additional UI on top
+        // of the keyboard cells but UNDER the selector frame — for
+        // example, a tab button (123) that sits below the bottom
+        // QWERTY row. Running it here keeps the selector visually
+        // in front of those overlays without forcing the scene to
+        // re-render the keyboard twice.
+        if (typeof betweenCellsAndSelector === 'function') {
+            betweenCellsAndSelector();
         }
 
         // ── Selected-button second pass ──────────────────────────
@@ -872,7 +1256,11 @@ var FlipCanvas = (function() {
         // content — colour follows the underlying state so a
         // selected shift-on key keeps its white icon, a selected
         // letter shows its black glyph.
-        if (selBtn) {
+        // Skip the selector pass entirely when the keyboard is
+        // defocused — the owning scene has handed focus elsewhere
+        // (e.g., to the 123 tab button) and the selected cell
+        // should read as inactive until focus returns.
+        if (selBtn && focused !== false) {
             this.drawRoundFrame(selBtn.x - 1, selBtn.y - 1, selBtn.w + 2, BTN_H + 2, 3, '#000');
             this.drawRoundFrame(selBtn.x,     selBtn.y,     selBtn.w,     BTN_H,     2, '#000');
             paintContent(selBtn.cell,
@@ -897,27 +1285,11 @@ var FlipCanvas = (function() {
             HaxrcorpFont16.draw(ctx, langLabel, llX, llY, '#888888');
         }
 
-        // Draw back icon and "Delete" label on the right —
-        // positioned just past the TOP row's actual right edge so
-        // it sits in the empty area left of the bottom row's
-        // wider span (the bottom row may be wider thanks to shift +
-        // space). Includes the row's left offset so the math
-        // tracks correctly when other rows are pad-aligned.
-        var labelX = keyboardX + rowPixelWidth(0) + 5 + 2;
-        var labelY = keyboardY + 12;  // Position icon higher
-
-        // Set semi-transparent alpha (0.5 = 50%)
-        ctx.globalAlpha = 0.5;
-
-        // Draw "Delete" text above icon (raised 3px)
-        var deleteTextY = labelY - 8 - 2;
-        HaxrcorpFont16.draw(ctx, 'Delete', labelX - 2, deleteTextY, '#000');
-
-        // Draw back icon (16x16) - shifted 2px right
-        this.drawIcon(Icons.back, labelX + 2, labelY + 1, '#000');
-
-        // Restore full opacity
-        ctx.globalAlpha = 1.0;
+        // (Removed: "Delete" label + back-icon affordance that
+        // used to sit just past the top row's right edge. The
+        // backspace keystroke still works — `Keyboard.handleInput`
+        // routes the `back` action to `onChar('\b')` — we just
+        // don't paint the icon hint any more.)
     };
 
     // drawCursor(x, y, width, height, color)

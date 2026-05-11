@@ -901,182 +901,50 @@ var WifiScene = (function() {
         var self = this;
         if (!ssid) return;
 
-        // Modal-local state. inputText carries the typed PSK;
-        // connecting + errorMsg drive the submit / error overlay.
-        var inputText  = '';
+        // Modal-local state. The password lives inside the
+        // TextInputScreen component; `connecting` + `errorMsg`
+        // drive the spinner / error overlay we paint on top of
+        // it during the /api/wifi/connect XHR round-trip.
         var connecting = false;
         var errorMsg   = null;
 
-        // ── Keyboard layouts ──────────────────────────────────
-        // Same vocabulary the screen-keyboard test scene uses
-        // (see js/apps/keyboard_test.js for the full breakdown of
-        // sentinel chars + symbol-layout switching). The inline
-        // `switchSym` callback flips between SYM and SYM2 when
-        // the user activates the `<>|` / `[]◇` cell.
-        var currentLayout = 'abc';
-        var switchSym = function() {
-            if (currentLayout === 'sym') {
-                currentLayout = 'sym2';
-                keyboard.rows = layoutSYM2;
-            } else if (currentLayout === 'sym2') {
-                currentLayout = 'sym';
-                keyboard.rows = layoutSYM;
-            }
-            if (window.requestRender) window.requestRender();
-        };
-        var layoutABC = [
-            ['q','w','e','r','t','y','u','i','o','p','['],
-            ['⌘','a','s','d','f','g','h','j','k','l',':',']'],
-            ['⇧','z','x','c','v','b','n','m',',','.','/','?',' ']
-        ];
-        var layoutSYM = [
-            ['1','2','3','4','5','6','7','8','9','0','-'],
-            [{text:'<>|', wide:true, onPress: switchSym},
-             '+', '(', ')', '=', '{', '}', '@', '#', '$', '?', ';'],
-            [{text:'_',   wide:true}, '%', '^', '&', '*', '`', '~', '\\', ',', '.', ':', '/',
-             {text:'.',   wide:true}]
-        ];
-        var layoutSYM2 = [
-            ['1','2','3','4','5','6','7','8','9','0','-'],
-            [{text:'[]◇', wide:true, onPress: switchSym},
-             '[', ']', '<', '>', '|', '"', "'", '±', '!', '?', ';'],
-            [{text:'_',   wide:true}, '%', '^', '&', '*', '`', '~', '\\', ',', '.', ':', '/',
-             {text:'.',   wide:true}]
-        ];
-        var keyboard = new UI.Keyboard(
-            layoutABC,
-            function(char) {
-                if (char === '\b') {
-                    inputText = inputText.slice(0, -1);
-                } else {
-                    inputText += char;
-                }
-                if (cursor) cursor.reset();
-                if (window.requestRender) window.requestRender();
+        // Drop the connect prompt onto a shared input screen so
+        // the keyboard, peek-row, input field, tabs, and the
+        // discard-changes prompt all match the rest of the
+        // device. Save → connect; Discard → close.
+        var screen = new TextInputScreen({
+            title:       'Password for ' + ssid,
+            initialText: '',
+            onSave:      function(password) {
+                // Returning `undefined` keeps the screen alive —
+                // the spinner overlay (below) covers it while
+                // the XHR is running. On success the close path
+                // tears the whole modal down; on failure errorMsg
+                // surfaces above the keyboard.
+                doConnect(password);
             },
-            null
-        );
-        keyboard.langLabel = 'EN';
-
-        // Blinking cursor — `update()` advances its visibility
-        // each render based on a 500 ms wallclock interval. The
-        // 250 ms ticker (set up below) drives the redraws so the
-        // cursor pulses even when nothing else changes.
-        var cursor = new BlinkingKeyboardCursor(500);
-
-        // ── Touchpad ──────────────────────────────────────────
-        // Same linear absolute-mapping the keyboard-test scene
-        // uses. Y axis steps rows, X axis steps columns. No
-        // velocity / momentum — when the finger lifts, the
-        // highlight stays exactly where it landed. Constants
-        // copied from KeyboardTestScene so the feel matches.
-        var TP_X_UNITS_PER_STEP = 32;
-        var TP_Y_UNITS_PER_STEP = 130;
-        var TP_SLOW_DIVIDER     = 2;
-        var tpTouching    = false;
-        var tpBaselineX   = 0;
-        var tpBaselineY   = 0;
-        var tpBaselineRow = 0;
-        var tpBaselineCol = 0;
-        // Clamp helper so a long drag past the edge of the
-        // current layout just sticks to the last cell instead of
-        // wrapping. Rows are not all the same width (the SYM
-        // layouts have wider bottom rows), so we re-clamp the
-        // column against the new row's length after row changes.
-        function tpSetSelection(row, col) {
-            var rows = keyboard.rows;
-            if (row < 0)               row = 0;
-            if (row > rows.length - 1) row = rows.length - 1;
-            var rowLen = rows[row].length;
-            if (col < 0)            col = 0;
-            if (col > rowLen - 1)   col = rowLen - 1;
-            keyboard.selectedRow = row;
-            keyboard.selectedCol = col;
-        }
-        function handleTouchpadMessage(e) {
-            var p = e.data.split(',');
-            if (p.length < 3) return;
-            var nx = +p[0], ny = +p[1], nt = +p[2];
-            if (nx !== nx || ny !== ny || (nt !== 0 && nt !== 1)) return;
-            var nowTouching  = (nt === 1);
-            var prevTouching = tpTouching;
-            if (nowTouching && !prevTouching) {
-                tpBaselineX   = nx;
-                tpBaselineY   = ny;
-                tpBaselineRow = keyboard.selectedRow;
-                tpBaselineCol = keyboard.selectedCol;
+            onDiscard:   function() {
+                closeModal();
             }
-            if (nowTouching) {
-                var dx = (nx - tpBaselineX) / TP_SLOW_DIVIDER;
-                var dy = (ny - tpBaselineY) / TP_SLOW_DIVIDER;
-                var targetRow = tpBaselineRow + Math.round(dy / TP_Y_UNITS_PER_STEP);
-                var targetCol = tpBaselineCol + Math.round(dx / TP_X_UNITS_PER_STEP);
-                tpSetSelection(targetRow, targetCol);
-            }
-            tpTouching = nowTouching;
-            if (window.requestRender) window.requestRender();
-        }
-        var tpES = null;
-        try {
-            tpES = new EventSource('/api/touchpad/xy');
-            tpES.onmessage = handleTouchpadMessage;
-            tpES.onerror   = function() { /* keyboard input still works */ };
-        } catch (err) { tpES = null; }
-
-        // ── Bottom-bar buttons (app-defined slots) ────────────
-        var BTN_W   = 48;
-        var BTN_GAP = 2;
-        var closeBtn = new UI.LeftButton(  'Close', BTN_W, 'esc', function() {});
-        var btn123   = new UI.MiddleButton('123',   1, BTN_W, BTN_GAP, 'edit', function() { toggleLayout(); });
-        var doneBtn  = new UI.RightButton( 'Done',  BTN_W, 'run', function() {});
-        var bottomBtns = [closeBtn, btn123, doneBtn];
-        var btnActionMap = {};
-        for (var bi = 0; bi < bottomBtns.length; bi++) {
-            var bb = bottomBtns[bi];
-            if (bb && bb.action) btnActionMap[bb.action] = bb;
-        }
-
-        function toggleLayout() {
-            var inSymbols = (currentLayout === 'sym' || currentLayout === 'sym2');
-            if (!inSymbols) {
-                currentLayout      = 'sym';
-                keyboard.rows      = layoutSYM;
-                keyboard.langLabel = '123';
-                btn123.text        = 'ABC';
-            } else {
-                currentLayout      = 'abc';
-                keyboard.rows      = layoutABC;
-                keyboard.langLabel = 'EN';
-                btn123.text        = '123';
-            }
-            // Clamp the highlight column so the new (possibly
-            // shorter) row doesn't have a phantom selection.
-            var rows = keyboard.rows;
-            if (keyboard.selectedRow > rows.length - 1) keyboard.selectedRow = rows.length - 1;
-            var rl = rows[keyboard.selectedRow].length;
-            if (keyboard.selectedCol > rl - 1) keyboard.selectedCol = rl - 1;
-            keyboard.shiftState = 'off';
-            if (window.requestRender) window.requestRender();
-        }
+        });
+        screen.enter();
 
         function closeModal() {
+            if (screen.exit) screen.exit();
             self._modal = null;
             if (self._modalAnimTimer) {
                 clearInterval(self._modalAnimTimer);
                 self._modalAnimTimer = null;
             }
-            // Drop the touchpad SSE so the kernel-side reader
-            // gets released — without this, opening the modal
-            // multiple times leaks file descriptors.
-            if (tpES) { try { tpES.close(); } catch (e) {} tpES = null; }
             if (window.requestRender) window.requestRender();
         }
 
         // POST { ssid, password } to /api/wifi/connect. While the
-        // call is in flight we render a Connecting… overlay; on
-        // success the whole modal stack closes (the wifi page
-        // poller will pick up the new active connection).
-        function doConnect() {
+        // call is in flight the spinner covers the screen; on
+        // success the whole modal layer closes (the wifi page
+        // poller will pick up the new active connection); on
+        // failure errorMsg surfaces above the keyboard.
+        function doConnect(password) {
             if (connecting) return;
             connecting = true;
             errorMsg   = null;
@@ -1102,175 +970,75 @@ var WifiScene = (function() {
                 };
                 xhr.onerror   = function() { connecting = false; errorMsg = 'Network error';      if (window.requestRender) window.requestRender(); };
                 xhr.ontimeout = function() { connecting = false; errorMsg = 'Connection timed out'; if (window.requestRender) window.requestRender(); };
-                xhr.send(JSON.stringify({ ssid: ssid, password: inputText }));
+                xhr.send(JSON.stringify({ ssid: ssid, password: password }));
             } catch (e) { connecting = false; errorMsg = 'Network error'; }
         }
 
-        // Tab + frame geometry. Two independent shifts compose:
-        //   • MODAL_OFFSET_Y lowers the whole modal (tab + frame
-        //     top + frame bottom) by N px so the modal isn't
-        //     hard against the status bar.
-        //   • FRAME_BOT_OVERLAP additionally pushes the bottom
-        //     edge further down so it tucks behind the keyboard
-        //     chrome — the bottom rule line is hidden but the
-        //     body gets extra vertical room.
-        var MODAL_OFFSET_Y    = 12;
-        var FRAME_BOT_OVERLAP = 4;
-        var TAB_X      = 4;
-        var FRAME_X    = 4;
-        var FRAME_W    = 256 - 8;
-        var FRAME_TOP  = 19 + MODAL_OFFSET_Y;                       // tab.y + tab.h
-        var FRAME_BOT  = 70 + MODAL_OFFSET_Y + FRAME_BOT_OVERLAP;   // hidden behind keyboard
-        var FRAME_H    = FRAME_BOT - FRAME_TOP;
-        // Tab header conveys the prompt now ("Password for <ssid>")
-        // — the body's separate label is gone, since the tab
-        // already says everything the user needs to know about
-        // what they're typing into.
-        var tabText = 'Password for ' + ssid;
-        var tab = new UI.TabHeader(tabText);
-        tab.x = TAB_X;
-        tab.y = 3 + MODAL_OFFSET_Y;
-        tab.h = 16;
-
         self._modal = {
             handleInput: function(action) {
-                // Block input while the connect XHR is in flight,
-                // EXCEPT esc which we still allow as a cancel
-                // affordance (the in-flight request continues
-                // server-side, but the user gets the UI back).
-                if (connecting && action !== 'esc') return true;
-
-                // Bottom-bar buttons take priority — flash, fire,
-                // then route the consequence (close on 'esc',
-                // connect on 'run', layout-toggle on 'edit').
-                var btn = btnActionMap[action];
-                if (btn) {
-                    btn.press();
-                    if (window.requestRender) window.requestRender();
-                    setTimeout(function() {
-                        btn.release();
-                        if (window.requestRender) window.requestRender();
-                    }, 30);
-                    if (action === 'esc')  { closeModal();   return true; }
-                    if (action === 'run')  { doConnect();    return true; }
-                    if (action === 'edit') { toggleLayout(); return true; }
+                // Connecting? Block everything except a cancel
+                // via esc. The in-flight request continues
+                // server-side; the user just gets the UI back.
+                if (connecting) {
+                    if (action === 'esc') closeModal();
+                    return true;
                 }
-                // Everything else feeds the keyboard.
-                keyboard.handleInput(action);
-                if (window.requestRender) window.requestRender();
+                // Error visible? Any key dismisses it so the
+                // user can retry.
+                if (errorMsg && (action === 'ok' || action === 'esc' || action === 'back')) {
+                    errorMsg = null;
+                    if (window.requestRender) window.requestRender();
+                    return true;
+                }
+                // TextInputScreen runs the whole password-entry
+                // experience. A `'pop'` return means the user
+                // committed (Save / Done) or discarded — the
+                // onSave / onDiscard callbacks above have
+                // already routed the action. Closing the modal
+                // here would tear the screen down mid-XHR
+                // (Save → doConnect → spinner needs the screen
+                // alive); we delay the teardown to the connect
+                // resolver instead by only closing when no XHR
+                // is in flight. The Discard path closes via its
+                // own callback before this check runs, so it's
+                // safe regardless.
+                var r = screen.handleInput(action);
+                if (r === 'pop' && !connecting && self._modal) {
+                    closeModal();
+                }
                 return true;
             },
             render: function(canvas) {
+                screen.render(canvas);
                 var ctx = canvas.ctx;
-                cursor.update();
-
-                // White background — the connect modal owns the
-                // whole screen, no see-through.
-                canvas.clear('#fff');
-                UI.drawStatusBar(canvas, '');
-
-                // Tab + frame body.
-                tab.render(canvas);
-                var frame = new ResponsiveFrame({
-                    x: FRAME_X, y: FRAME_TOP,
-                    width: FRAME_W, height: FRAME_H,
-                    anchorH: 'left', anchorV: 'top',
-                    strokeColor: '#000', showStroke: true,
-                    fillColor: '#ffffff', showFill: true,
-                    // 3 px corner radius across both sides of the
-                    // body — keeps left (BL) and right (TR/BR)
-                    // visually consistent, and matches the
-                    // ComponentSelectorFrame chevron-bar curvature
-                    // on screens where the bar runs along the
-                    // right edge.
-                    cornerRadius: 3,
-                    corners: { tl: false, tr: true, bl: true, br: true }
-                });
-                frame.render(canvas);
-
-                // Input field — light-grey filled rectangle, no
-                // stroke. Sits centred vertically inside the
-                // frame body, then nudged 5 px UP so it doesn't
-                // visually drift toward the keyboard-overlapped
-                // bottom edge of the frame. Width shrinks 3 px
-                // on each side (vs the frame body) so the input
-                // sits inset rather than flush against the
-                // frame's stroke.
-                var inputX = FRAME_X + 4 + 3;
-                var inputW = FRAME_W - 8 - 6;
-                var inputH = 14;
-                var inputY = FRAME_TOP + Math.floor((FRAME_H - inputH) / 2) - 5;
-                var inputFrame = new ResponsiveFrame({
-                    x: inputX, y: inputY,
-                    width: inputW, height: inputH,
-                    anchorH: 'left', anchorV: 'top',
-                    showStroke: false,
-                    fillColor: '#CCCCCC', showFill: true,
-                    cornerRadius: 2,
-                    corners: { tl: true, tr: true, bl: true, br: true }
-                });
-                inputFrame.render(canvas);
-
-                // Typed text + blinking cursor inside the input.
-                var textX = inputX + 4;
-                var textY = inputY + Math.floor((inputH - 11) / 2);
-                HaxrcorpFont16.draw(ctx, inputText, textX, textY, '#000');
-                if (cursor.isVisible()) {
-                    var cx = textX + HaxrcorpFont16.textWidth(inputText) + 1;
-                    canvas.drawCursor(cx, textY, 1, 11, '#000');
-                }
-
-                // Connecting overlay — paints BEFORE the
-                // keyboard so the keyboard chrome always sits on
-                // top, even where the frame's bottom edge tucks
-                // behind the keyboard. The overlay covers just
-                // the frame body (input area); the keyboard +
-                // bottom buttons paint over its lower portion
-                // and stay fully visible while the spinner runs.
                 if (connecting) {
+                    // Translucent wash + spinner over the whole
+                    // page below the status bar.
                     ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
-                    ctx.fillRect(FRAME_X + 1, FRAME_TOP + 1, FRAME_W - 2, FRAME_H - 2);
-                    var sp        = AnimatedIcons.spinner_22x20px;
-                    var FRAME_MS  = 80;
-                    var spFrameH  = Math.floor(sp.h / sp.frames);
-                    var spFrame   = Math.floor(Date.now() / FRAME_MS) % sp.frames;
-                    var spX       = FRAME_X + Math.floor((FRAME_W - sp.w) / 2);
-                    var spY       = FRAME_TOP + Math.floor((FRAME_H - spFrameH) / 2);
+                    ctx.fillRect(0, 13, canvas.w, canvas.h - 13);
+                    var sp       = AnimatedIcons.spinner_22x20px;
+                    var spFrameH = Math.floor(sp.h / sp.frames);
+                    var spFrame  = Math.floor(Date.now() / 80) % sp.frames;
+                    var spX      = Math.floor((canvas.w - sp.w) / 2);
+                    var spY      = Math.floor((canvas.h - spFrameH) / 2);
                     canvas.drawSpriteFrame(sp, spX, spY, spFrame, '#000');
                 } else if (errorMsg) {
-                    // Error overlay — renders the nmcli-supplied
-                    // message ellipsised to fit. Stays up until
-                    // the user types again or hits esc.
+                    // Single ellipsised error line, parked just
+                    // above the keyboard top edge.
                     var emsg = errorMsg.length > 36
                         ? errorMsg.substring(0, 35) + '…'
                         : errorMsg;
                     var ew = HaxrcorpFont16.textWidth(emsg);
                     HaxrcorpFont16.draw(ctx, emsg,
-                        Math.floor((canvas.w - ew) / 2),
-                        FRAME_TOP + FRAME_H - 14,
-                        '#999999');
-                }
-
-                // Keyboard. Renders AFTER the connecting overlay
-                // so it stays fully visible and on top, hiding
-                // the overlay's lower 4 px (the frame's
-                // intentionally-tucked overlap region).
-                keyboard.render(canvas);
-
-                // Bottom buttons (Close / 123 / Done) — render
-                // last so they sit above the keyboard's empty
-                // bottom margin.
-                for (var bi = 0; bi < bottomBtns.length; bi++) {
-                    var bb = bottomBtns[bi];
-                    if (bb) bb.render(canvas);
+                        Math.floor((canvas.w - ew) / 2), 60, '#999999');
                 }
             }
         };
 
-        // Animation ticker — 80 ms cadence so the connecting
-        // spinner advances one frame per tick (its native frame
-        // duration). Also fast enough for the 500-ms cursor
-        // pulse to feel smooth without a separate timer.
+        // 80 ms ticker for the spinner animation. The
+        // TextInputScreen already runs its own 250 ms blink
+        // ticker for the cursor, but the spinner needs faster
+        // tick to look smooth.
         if (this._modalAnimTimer) clearInterval(this._modalAnimTimer);
         this._modalAnimTimer = setInterval(function() {
             if (window.requestRender) window.requestRender();

@@ -858,7 +858,58 @@ var Icons = (function() {
         ]
     };
 
+    // backspace icon (auto-generated from PNG)
+    var backspace = {
+        w: 15,
+        h: 7,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0xff,            0xff,            0xc0,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x0f,            0xc0,  // row 0
+            0xff,            0xf0,            0x3f,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xf0,            0x00,  // row 1
+            0xfc,            0x0f,            0xff,            0xff,            0xff,            0xc0,            0xfc,            0x0f,            0xff,            0xff,            0xf0,            0x00,  // row 2
+            0x03,            0xff,            0xff,            0xff,            0xff,            0xff,            0x03,            0xff,            0xff,            0xff,            0xf0,            0x00,  // row 3
+            0xfc,            0x0f,            0xff,            0xff,            0xff,            0xc0,            0xfc,            0x0f,            0xff,            0xff,            0xf0,            0x00,  // row 4
+            0xff,            0xf0,            0x3f,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xf0,            0x00,  // row 5
+            0xff,            0xff,            0xc0,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x0f,            0xc0   // row 6
+
+        ]
+    };
+
+    // keyboard_up icon (auto-generated from PNG)
+    var keyboard_up = {
+        w: 8,
+        h: 4,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0xff,            0xff,            0xc0,            0x03,            0xff,            0xff,  // row 0
+            0xff,            0xf0,            0x00,            0x00,            0x0f,            0xff,  // row 1
+            0xfc,            0x00,            0x00,            0x00,            0x00,            0x3f,  // row 2
+            0x00,            0x00,            0x00,            0x00,            0x00,            0x00   // row 3
+
+        ]
+    };
+
+    // keyboard_down icon (auto-generated from PNG)
+    var keyboard_down = {
+        w: 8,
+        h: 4,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,  // row 0
+            0xfc,            0x00,            0x00,            0x00,            0x00,            0x3f,  // row 1
+            0xff,            0xf0,            0x00,            0x00,            0x0f,            0xff,  // row 2
+            0xff,            0xff,            0xc0,            0x03,            0xff,            0xff   // row 3
+
+        ]
+    };
+
     return {
+        keyboard_down: keyboard_down,
+        keyboard_up: keyboard_up,
+        backspace: backspace,
         PTT_reveal: PTT_reveal,
         keyboard_lang: keyboard_lang,
         keyboard_caps_lock_pressed: keyboard_caps_lock_pressed,
