@@ -35,7 +35,7 @@ var RunningApps = (function() {
     // `PlaceholderAppScene` from `imagePath`/`name`/`icon`. App-mode
     // submenus (Settings, Network) provide a factory because they
     // aren't placeholder PNGs — they're real scene types.
-    function open(name, imagePath, icon, factoryFn) {
+    function open(name, imagePath, icon, factoryFn, onCloseFn) {
         if (!name) return;
 
         var existing = null;
@@ -49,18 +49,20 @@ var RunningApps = (function() {
         var entry;
         if (existing) {
             entry = existing;
-            // Refresh imagePath / icon / factoryFn in case they
-            // changed; image stays as-is (the captured snapshot is
-            // what matters).
+            // Refresh imagePath / icon / factoryFn / onCloseFn
+            // in case they changed; image stays as-is (the
+            // captured snapshot is what matters).
             if (imagePath) entry.imagePath = imagePath;
             if (icon)      entry.icon = icon;
             if (factoryFn) entry.factoryFn = factoryFn;
+            if (onCloseFn) entry.onCloseFn = onCloseFn;
         } else {
             entry = {
                 name: name,
                 imagePath: imagePath || null,
                 icon: icon || null,
                 factoryFn: factoryFn || null,
+                onCloseFn: onCloseFn || null,
                 image: null
             };
             if (entry.imagePath) {
@@ -93,7 +95,19 @@ var RunningApps = (function() {
     function close(name) {
         for (var i = apps.length - 1; i >= 0; i--) {
             if (apps[i].name === name) {
+                var entry = apps[i];
                 apps.splice(i, 1);
+                // Fire the entry's onClose hook so app-specific
+                // teardown (stopping a media stream, releasing
+                // a hardware lock, etc.) runs even when the
+                // user kills via the switcher rather than
+                // backing out of the scene. The scene's exit()
+                // doesn't fire on switcher-kills — the scene is
+                // already off the navigation stack — so this is
+                // the only signal an app gets.
+                if (typeof entry.onCloseFn === 'function') {
+                    try { entry.onCloseFn(); } catch (e) {}
+                }
                 if (typeof window.requestRender === 'function') window.requestRender();
                 return;
             }

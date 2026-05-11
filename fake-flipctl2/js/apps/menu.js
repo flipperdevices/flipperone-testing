@@ -206,6 +206,7 @@ var MenuScene = (function() {
             'Screen Keyboard',
             'Network LEDs',
             'Sound',
+            'Voice recorder',
             'Figma live preview',
             'GPIO',
             'Switch to fake-flipctl'
@@ -217,6 +218,7 @@ var MenuScene = (function() {
             'Screen Keyboard': function() { return new KeyboardTestScene(); },
             'Network LEDs': function() { return new NetworkLedsScene(sm); },
             'Sound': function() { return new SoundMenuScene(sm); },
+            'Voice recorder': function() { return new VoiceRecorderScene(sm); },
             'Figma live preview': function() { return new FigmaLivePreviewScene(sm); },
             'Switch to fake-flipctl': function() {
                 fetch('/api/switch/flipctl', { method: 'POST' });
@@ -226,23 +228,58 @@ var MenuScene = (function() {
     }
 
     function appsMenu(sm) {
-        // Placeholder apps. Single source of truth for each app's
-        // PNG mockup and the icon that travels with it (shown next
-        // to the entry in this submenu *and* in the App Switcher's
-        // title bar). Adding a new app: drop a PNG into assets/apps/,
-        // add an entry here, and (optionally) add its icon sprite.
+        // App registry. Single source of truth for each app's
+        // icon (shown next to the entry in this submenu *and* in
+        // the App Switcher's title bar). Two flavours:
+        //
+        //   • Placeholder apps — provide `image` (PNG mockup);
+        //     the factory wraps PlaceholderAppScene so the row
+        //     opens the static asset.
+        //   • Real apps — provide `factory: function(sm) { ... }`
+        //     returning a custom scene. The icon still drives
+        //     the menu row; image is ignored.
+        //
+        // Adding a placeholder: drop a PNG into assets/apps/ and
+        // add an `image` + `icon` entry.
+        // Adding a real app: register the script in index.html,
+        // add an `icon` + `factory` entry below.
+        // Per-entry shape:
+        //   icon          — STATIC sprite (single frame) shown
+        //                   in the menu row when unselected,
+        //                   AND in the App Switcher card title
+        //                   bar (which is animation-unaware).
+        //   iconAnimated  — OPTIONAL multi-frame strip; MenuLine
+        //                   plays it at FRAME_MS cadence while
+        //                   the row is selected. Same convention
+        //                   the main menu's Settings / Network /
+        //                   etc. use.
+        //   image         — placeholder PNG mockup; only used by
+        //                   the PlaceholderAppScene factory.
+        //   factory       — custom scene factory; replaces the
+        //                   placeholder path entirely.
         var APPS = {
+            'Internet radio':  { factory: function(sm) { return new InternetRadioScene(sm); },
+                                 // No dedicated static — MenuLine
+                                 // draws frame 0 of `iconAnimated`
+                                 // when no `icon` is supplied,
+                                 // which is exactly the visual we
+                                 // want for the unselected row.
+                                 icon:         null,
+                                 iconAnimated: (typeof AnimatedIcons !== 'undefined')
+                                     ? AnimatedIcons.internet_radio_anim
+                                     : null },
             'Media':           { image: '/assets/apps/hdmi_screen.png',           icon: Icons.tv_media_box },
             'NMap':            { image: '/assets/apps/nmap_set_up_00.png',        icon: Icons.nmap_eye },
             'Yet another app': { image: '/assets/apps/nmap_set_up_03.png',        icon: Icons.minimal },
             'Router':          { image: '/assets/apps/router_app_placeholder.png',icon: Icons.router }
         };
-        var order = ['Media', 'NMap', 'Yet another app', 'Router'];
+        var order = ['Internet radio', 'Media', 'NMap', 'Yet another app', 'Router'];
 
         var factories = {};
         order.forEach(function(name) {
             var def = APPS[name];
             factories[name] = function() {
+                if (typeof def.factory === 'function') return def.factory(sm);
                 return new PlaceholderAppScene(def.image, name, def.icon);
             };
         });
@@ -250,10 +287,14 @@ var MenuScene = (function() {
         var subMenu = new SubMenuScene(sm, 'Apps', order, factories);
 
         // Surface each app's icon in the menu row so the Apps list
-        // matches the App Switcher visually.
+        // matches the App Switcher visually. Animated strips live
+        // in `iconAnimated` — MenuLine plays them on selection;
+        // unselected rows render `icon` (the static frame).
         for (var i = 0; i < subMenu.items.length; i++) {
             var entryName = subMenu.items[i].text;
-            subMenu.items[i].icon = APPS[entryName].icon;
+            var entryDef  = APPS[entryName];
+            subMenu.items[i].icon         = entryDef.icon;
+            subMenu.items[i].iconAnimated = entryDef.iconAnimated || null;
         }
 
         return subMenu;

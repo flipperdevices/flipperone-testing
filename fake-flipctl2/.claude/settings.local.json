@@ -6,7 +6,24 @@
       "Bash(curl -sS -o /dev/null -w \"html=%{http_code} \" http://127.0.0.1:8900/)",
       "Bash(curl -sS -o /dev/null -w \"js=%{http_code}\\\\n\" http://127.0.0.1:8900/js/sandbox/main.js)",
       "Bash(curl -sS -o /dev/null -w \"comp=%{http_code} \" http://127.0.0.1:8900/js/components/MenuSelectorFrame.js)",
-      "Bash(curl -sS -o /dev/null -w \"main=%{http_code}\\\\n\" http://127.0.0.1:8900/js/sandbox/main.js)"
+      "Bash(curl -sS -o /dev/null -w \"main=%{http_code}\\\\n\" http://127.0.0.1:8900/js/sandbox/main.js)",
+      "Bash(git ls-tree *)",
+      "Bash(sox --version)",
+      "Bash(sox --help)",
+      "Bash(sox --help-format all)",
+      "Bash(ldd /usr/bin/sox)",
+      "Bash(ls /usr/bin/ | grep -iE '^\\(ffplay|ffmpeg|mpg|madplay|mpv|vlc|cvlc|gst|aplay|pacat|paplay|pw-play|pw-cat|mpd|mpc\\)' 2>&1; echo \"---\"; which aplay paplay pw-play pw-cat mpg123 mpg321 madplay 2>&1)",
+      "Read(//usr/lib/aarch64-linux-gnu/sox/**)",
+      "Bash(sox --help-format mp3)",
+      "Bash(dpkg -l)",
+      "Bash(apt-cache search *)",
+      "Bash(apt-get install *)",
+      "Bash(node --check /flipperone-testing/fake-flipctl2/js/apps/internet_radio.js)",
+      "Bash(sudo -n aplay -l)",
+      "Bash(curl -sI -L --max-time 5 \"http://media-ice.musicradio.com/CapitalMP3\")",
+      "Bash(curl -sI -L --max-time 5 \"http://media-ice.musicradio.com/HeartLondonMP3\")",
+      "Bash(curl -s -A 'flipctl-radio/1.0' --max-time 5 'https://de1.api.radio-browser.info/json/stations/bycountry/japan?order=clickcount&reverse=true&limit=15&hidebroken=true&codec=MP3')",
+      "Bash(python3 -c 'import json,sys; data=json.load\\(sys.stdin\\); [print\\(s[\"name\"][:45],\"|\", s[\"url_resolved\"][:80],\"|\", s.get\\(\"bitrate\",\"\"\\),\"k\"\\) for s in data[:15]]')"
     ]
   }
 }

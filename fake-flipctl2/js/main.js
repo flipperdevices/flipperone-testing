@@ -102,14 +102,20 @@
                 // when the intro completes.
                 //
                 // Skipped for "app-like" scenes (PlaceholderAppScene,
-                // and SubMenuScenes that called `markAsApp(...)`,
-                // i.e. Settings / Network) because those scenes are
-                // already in RunningApps as real cards — capturing a
-                // transient on top would just duplicate them.
+                // SubMenuScenes that called `markAsApp(...)` —
+                // i.e. Settings / Network — and any custom scene
+                // class that sets `this._isApp = true` to opt in,
+                // such as InternetRadioScene). Those scenes are
+                // already in RunningApps as real cards; capturing
+                // a transient on top would just duplicate them
+                // and trigger the slide-up-from-bottom intro
+                // intended for cases where Tab opens from a
+                // non-app scene.
                 var isAppScene = active instanceof PlaceholderAppScene
                     || (typeof SubMenuScene !== 'undefined'
                         && active instanceof SubMenuScene
-                        && active._asApp);
+                        && active._asApp)
+                    || (active && active._isApp === true);
                 var transient = null;
                 if (!isAppScene) {
                     var tSnap = document.createElement('canvas');
