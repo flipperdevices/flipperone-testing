@@ -279,7 +279,180 @@ fi
 
 echo
 ########################################
-# 5. Summary
+# 5. Software stack versions
+#    Bottom-up walk through the graphics stack layers:
+#      hardware -> kernel DRM -> libdrm -> Mesa (Panfrost/PanVK)
+#      -> Vulkan loader -> compositor
+########################################
+
+echo "=== Software Stack Versions ==="
+echo
+
+# -- helpers --
+have() { command -v "$1" >/dev/null 2>&1; }
+pkg_ver() { dpkg-query -W -f='${Version}' "$1" 2>/dev/null || true; }
+trim() { sed -E 's/^[[:space:]]+|[[:space:]]+$//g'; }
+
+# ---------- [1] Hardware: Mali GPU identity ----------
+echo "[Hardware — Mali GPU]"
+
+# Device-tree compatible string ("arm,mali-bifrost", "rockchip,rk3576-mali", etc.)
+gpu_dt=""
+for n in /proc/device-tree/gpu* /proc/device-tree/soc*/gpu* /proc/device-tree/soc*/gpu@*; do
+    [ -d "$n" ] || continue
+    if [ -f "$n/compatible" ]; then
+        gpu_dt="$(tr '\0' ' ' < "$n/compatible" | sed 's/  */ /g' | trim)"
+        break
+    fi
+done
+[ -n "$gpu_dt" ] && printf "  %-17s: %s\n" "DT compatible" "$gpu_dt"
+
+# Try kernel ring buffer first, then journalctl (in case buffer rolled over)
+panfrost_log="$(dmesg 2>/dev/null | grep -E 'panfrost.*[0-9a-f]+\.gpu' || true)"
+if [ -z "$panfrost_log" ] && have journalctl; then
+    panfrost_log="$(journalctl -k --no-pager 2>/dev/null | grep -E 'panfrost.*[0-9a-f]+\.gpu' || true)"
+fi
+
+if [ -n "$panfrost_log" ]; then
+    identity="$(echo "$panfrost_log" | grep -i 'IDENTITY' | head -1 | grep -oE '0x[0-9a-fA-F]+' | head -1 || true)"
+    [ -n "$identity" ] && printf "  %-17s: %s\n" "GPU IDENTITY" "$identity"
+
+    shader_present="$(echo "$panfrost_log" | grep -i 'shader_present' | head -1 | grep -oE '0x[0-9a-fA-F]+' | head -1 || true)"
+    if [ -n "$shader_present" ] && have python3; then
+        cores="$(python3 -c "print(bin($shader_present).count('1'))" 2>/dev/null || echo "?")"
+        printf "  %-17s: %s (shader_present=%s)\n" "Shader cores" "$cores" "$shader_present"
+    fi
+
+    clock_hz="$(echo "$panfrost_log" | grep -i 'clock rate' | head -1 | sed -E 's/.*=[[:space:]]*([0-9]+).*/\1/' || true)"
+    if [ -n "$clock_hz" ]; then
+        printf "  %-17s: %s MHz (at probe)\n" "Clock rate" "$((clock_hz / 1000000))"
+    fi
+else
+    echo "  (kernel log unreadable as user — run with sudo for GPU IDENTITY / shader cores)"
+fi
+echo
+
+# ---------- [2] Kernel — DRM/GPU drivers ----------
+echo "[Kernel — DRM/GPU drivers]"
+printf "  %-17s: %s\n" "Kernel" "$kernel_ver"
+for m in panfrost panthor rockchip_drm_vop2 rockchip_drm drm drm_kms_helper; do
+    if [ -d "/sys/module/$m" ]; then
+        state="loaded"
+        [ -f "/sys/module/$m/initstate" ] && state="$(cat "/sys/module/$m/initstate")"
+        srcv=""
+        if [ -f "/sys/module/$m/srcversion" ]; then
+            srcv="$(cat "/sys/module/$m/srcversion")"
+        fi
+        printf "  %-17s: %s%s\n" "$m" "$state" "${srcv:+ (srcversion ${srcv:0:12})}"
+    fi
+done
+echo
+
+# ---------- [3] libdrm — DRM userspace bindings ----------
+echo "[libdrm — userspace DRM bindings]"
+found_libdrm=0
+for p in libdrm2 libdrm-common; do
+    v="$(pkg_ver "$p")"
+    if [ -n "$v" ]; then
+        printf "  %-17s: %s\n" "$p" "$v"
+        found_libdrm=1
+    fi
+done
+if have pkg-config; then
+    libdrm_pc="$(pkg-config --modversion libdrm 2>/dev/null || true)"
+    [ -n "$libdrm_pc" ] && printf "  %-17s: %s\n" "libdrm (pkg-cfg)" "$libdrm_pc"
+fi
+[ "$found_libdrm" -eq 0 ] && echo "  (libdrm package info unavailable — non-dpkg system?)"
+echo
+
+# ---------- [4] Mesa — userspace GL/Vulkan drivers ----------
+echo "[Mesa — userspace GL/Vulkan drivers]"
+# Package-level versions (cheap, always works on Debian)
+for p in libgl1-mesa-dri mesa-vulkan-drivers libegl-mesa0 libegl1-mesa libglapi-mesa libgles2-mesa mesa-utils mesa-utils-extra; do
+    v="$(pkg_ver "$p")"
+    [ -n "$v" ] && printf "  %-17s: %s\n" "$p" "$v"
+done
+
+# GL/GLES runtime info via eglinfo (works headless via surfaceless/gbm platforms)
+if have eglinfo; then
+    egl_out="$(eglinfo 2>/dev/null || true)"
+    if [ -n "$egl_out" ]; then
+        gl_renderer="$(echo "$egl_out" | grep -m1 -iE '^[[:space:]]*opengl( es)?( profile)? renderer' | sed 's/.*: //' | trim)"
+        gl_version="$(echo "$egl_out"  | grep -m1 -iE '^[[:space:]]*opengl( es)?( profile)? version'  | sed 's/.*: //' | trim)"
+        egl_driver="$(echo "$egl_out"  | grep -m1 -iE 'EGL driver name' | sed 's/.*: //' | trim)"
+        [ -n "$egl_driver"  ] && printf "  %-17s: %s\n" "EGL driver"  "$egl_driver"
+        [ -n "$gl_renderer" ] && printf "  %-17s: %s\n" "GL renderer" "$gl_renderer"
+        [ -n "$gl_version"  ] && printf "  %-17s: %s\n" "GL version"  "$gl_version"
+    fi
+else
+    echo "  (install 'mesa-utils-extra' for eglinfo → GL renderer/version)"
+fi
+
+# Vulkan runtime info via vulkaninfo (Vulkan is display-server agnostic, works over SSH)
+if have vulkaninfo; then
+    vk_summary="$(vulkaninfo --summary 2>/dev/null || true)"
+    if [ -n "$vk_summary" ]; then
+        for field in driverName driverInfo deviceName apiVersion driverID; do
+            val="$(echo "$vk_summary" | grep -m1 "$field" | sed 's/.*= //' | trim)"
+            [ -n "$val" ] && printf "  %-17s: %s\n" "Vulkan $field" "$val"
+        done
+    fi
+else
+    echo "  (install 'vulkan-tools' for vulkaninfo → Vulkan driver/version)"
+fi
+echo
+
+# ---------- [5] Vulkan loader & registered ICDs ----------
+echo "[Vulkan loader]"
+for p in libvulkan1 vulkan-tools vulkan-validationlayers; do
+    v="$(pkg_ver "$p")"
+    [ -n "$v" ] && printf "  %-17s: %s\n" "$p" "$v"
+done
+
+icd_files=()
+for d in /usr/share/vulkan/icd.d /etc/vulkan/icd.d /usr/local/share/vulkan/icd.d \
+         "${XDG_CONFIG_HOME:-$HOME/.config}/vulkan/icd.d"; do
+    [ -d "$d" ] || continue
+    for f in "$d"/*.json; do
+        [ -e "$f" ] || continue
+        icd_files+=("$(basename "$f")")
+    done
+done
+if [ ${#icd_files[@]} -gt 0 ]; then
+    printf "  %-17s: %s\n" "Registered ICDs" "${icd_files[*]}"
+fi
+echo
+
+# ---------- [6] Compositor / display server ----------
+echo "[Compositor / Display server]"
+get_first_ver() {
+    # Run a binary's version flag; print whatever looks like a version on line 1
+    local cmd="$1" flag="${2:---version}"
+    "$cmd" "$flag" 2>&1 | head -1 | awk '{print $NF}'
+}
+if have kwin_wayland; then
+    printf "  %-17s: %s\n" "KWin (Wayland)" "$(get_first_ver kwin_wayland)"
+fi
+if have plasmashell; then
+    printf "  %-17s: %s\n" "plasmashell"    "$(get_first_ver plasmashell)"
+fi
+if have sddm; then
+    printf "  %-17s: %s\n" "SDDM"           "$(get_first_ver sddm)"
+fi
+if have Xwayland; then
+    # Xwayland prints "X.Org X Server 24.x.x" — grab last token
+    xwl_ver="$(Xwayland -version 2>&1 | grep -m1 -i 'x server' | awk '{print $NF}')"
+    [ -z "$xwl_ver" ] && xwl_ver="$(Xwayland -version 2>&1 | head -1 | awk '{print $NF}')"
+    printf "  %-17s: %s\n" "Xwayland" "$xwl_ver"
+fi
+for p in libwayland-client0 libwayland-server0 wayland-protocols; do
+    v="$(pkg_ver "$p")"
+    [ -n "$v" ] && printf "  %-17s: %s\n" "$p" "$v"
+done
+
+echo
+########################################
+# 6. Summary
 ########################################
 
 echo "=== Summary ==="
