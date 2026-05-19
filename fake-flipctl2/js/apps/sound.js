@@ -34,7 +34,7 @@ var SoundMenuScene = (function() {
         } else if (action === 'ok') {
             var factory = this.appScenes[this.items[this.selectedIndex]];
             if (factory) this.sceneManager.push(factory());
-        } else if (action === 'back') {
+        } else if (action === 'back' || action === 'esc') {
             return 'pop';
         }
     };
@@ -110,6 +110,10 @@ var PlaySoundScene = (function() {
     };
 
     PlaySoundScene.prototype.handleInput = function(action) {
+        // `back` must escape even while the initial file list is
+        // still loading — otherwise a slow server can strand the
+        // user on a "Loading..." screen with no way out.
+        if (action === 'back' || action === 'esc') return 'pop';
         if (loading) return;
 
         var visible = UI.visibleCount(144);
@@ -223,6 +227,7 @@ var AudioDevicesScene = (function() {
     AudioDevicesScene.prototype.exit = function() {};
 
     AudioDevicesScene.prototype.handleInput = function(action) {
+        if (action === 'back' || action === 'esc') return 'pop';
         if (loading) return;
 
         var visible = UI.visibleCount(144);
@@ -334,6 +339,7 @@ var VolumeScene = (function() {
     VolumeScene.prototype.exit = function() {};
 
     VolumeScene.prototype.handleInput = function(action) {
+        if (action === 'back' || action === 'esc') return 'pop';
         if (loading) return;
 
         var c = controls[selectedControl];
@@ -444,13 +450,13 @@ var RestartDriverScene = (function() {
                 } else {
                     return 'pop';
                 }
-            } else if (action === 'back') {
+            } else if (action === 'back' || action === 'esc') {
                 return 'pop';
             }
             return;
         }
 
-        if (action === 'back' || action === 'ok') return 'pop';
+        if (action === 'back' || action === 'esc' || action === 'ok') return 'pop';
     };
 
     RestartDriverScene.prototype.render = function(canvas) {

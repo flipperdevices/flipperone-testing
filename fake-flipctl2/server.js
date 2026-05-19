@@ -794,7 +794,13 @@ function playSoundFile(filename) {
     // Kill any currently playing audio
     stopSound();
 
-    var cmd = 'play ' + JSON.stringify(filePath);
+    // `channels 2` forces a stereo output stream. The NAU8822's
+    // SAI is wired stereo at the I2S level — opening hw:N,0 in
+    // mono mode drains samples ~4× too fast (chipmunk pitch and
+    // tempo). Asking sox to up-mix to two channels keeps the
+    // codec in its native frame format; a no-op on already-stereo
+    // input.
+    var cmd = 'play ' + JSON.stringify(filePath) + ' channels 2';
     if (selectedAlsaDevice) {
         cmd = 'AUDIODEV=' + selectedAlsaDevice + ' ' + cmd;
     }
@@ -1216,7 +1222,10 @@ function playRecording(filename) {
         return { success: false, error: 'File not found' };
     }
     stopSound();
-    var cmd = 'play ' + JSON.stringify(filePath);
+    // See playSoundFile() for the `channels 2` rationale — the
+    // NAU8822's I2S frame is stereo, mono playback drains 4×
+    // too fast and pitches up to chipmunk.
+    var cmd = 'play ' + JSON.stringify(filePath) + ' channels 2';
     if (selectedAlsaDevice) cmd = 'AUDIODEV=' + selectedAlsaDevice + ' ' + cmd;
     audioChild = exec(cmd, { timeout: 60000 }, function() {
         audioChild = null;

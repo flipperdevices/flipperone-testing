@@ -6,3 +6,14 @@ results/*
 
 # macOS
 .DS_Store
+
+# Voice recorder output — captured WAVs are per-device runtime
+# data, not source. The Node server creates this dir on demand.
+sound/recordings/
+
+# fake-flipctl2 local-only files (formerly in fake-flipctl2/.gitignore).
+# `debug_config.js` is per-developer "boot straight into a scene"
+# config. `.claude/settings.local.json` is Claude Code's per-session
+# permission allowlist — grows with command history.
+fake-flipctl2/js/debug_config.js
+fake-flipctl2/.claude/settings.local.json
