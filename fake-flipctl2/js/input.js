@@ -5,8 +5,8 @@ var Input = (function() {
         'ArrowLeft': 'left',
         'ArrowRight': 'right',
         'Enter': 'ok',
-        'Escape': 'esc',
-        'Backspace': 'esc',
+        'Escape': 'back',
+        'Backspace': 'back',
         'Tab': 'appsw',
         'k': 'ok',
         'i': 'up',
@@ -19,7 +19,7 @@ var Input = (function() {
         'z': 'esc',
         'x': 'edit',
         'c': 'power',
-        'v': 'back',
+        'v': 'del',
         'b': 'run',
     };
 

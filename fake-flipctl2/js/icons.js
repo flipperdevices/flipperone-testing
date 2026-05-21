@@ -906,7 +906,34 @@ var Icons = (function() {
         ]
     };
 
+    // voice_recorder icon (auto-generated from PNG)
+    var voice_recorder = {
+        w: 14,
+        h: 14,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0xff,            0xff,            0xff,            0x00,            0x00,            0x00,            0x03,            0xff,            0xff,            0xff,            0xf0,  // row 0
+            0x00,            0xff,            0xff,            0xc0,            0xcf,            0x3c,            0xf3,            0xcc,            0x0f,            0xff,            0xff,  // row 1
+            0xf0,            0x00,            0xff,            0xff,            0xc0,            0x86,            0x18,            0x61,            0x84,            0x0f,            0xff,  // row 2
+            0xff,            0xf0,            0x00,            0xff,            0xff,            0xc0,            0xcf,            0x3c,            0xf3,            0xcc,            0x0f,  // row 3
+            0xff,            0xff,            0xf0,            0x00,            0xff,            0xff,            0xc0,            0x86,            0x18,            0x61,            0x84,  // row 4
+            0x0f,            0xff,            0xff,            0xf0,            0x00,            0xfc,            0x0f,            0xc0,            0xcf,            0x3c,            0xf3,  // row 5
+            0xcc,            0x0f,            0xc0,            0xff,            0xf0,            0x00,            0xfc,            0x0f,            0xc0,            0x00,            0x00,  // row 6
+            0x00,            0x00,            0x0f,            0xc0,            0xff,            0xf0,            0x00,            0xfc,            0x0f,            0xc0,            0x00,  // row 7
+            0x00,            0x00,            0x00,            0x0f,            0xc0,            0xff,            0xf0,            0x00,            0xfc,            0x0f,            0xff,  // row 8
+            0x00,            0x00,            0x00,            0x03,            0xff,            0xc0,            0xff,            0xf0,            0x00,            0xff,            0xf0,  // row 9
+            0x3f,            0xff,            0xff,            0xff,            0xff,            0xf0,            0x3f,            0xff,            0xf0,            0x00,            0xff,  // row 10
+            0xff,            0xc0,            0x00,            0x00,            0x00,            0x00,            0x0f,            0xff,            0xff,            0xf0,            0x00,  // row 11
+            0xff,            0xff,            0xff,            0xff,            0xf0,            0x3f,            0xff,            0xff,            0xff,            0xff,            0xf0,  // row 12
+            0x00,            0xff,            0xff,            0xff,            0xff,            0xf0,            0x3f,            0xff,            0xff,            0xff,            0xff,  // row 13
+            0xf0,            0x00,            0xff,            0xff,            0xff,            0x00,            0x00,            0x00,            0x03,            0xff,            0xff,  // row 14
+            0xff,            0xf0,            0x00 
+        ]
+    };
+
     return {
+        voice_recorder: voice_recorder,
         keyboard_down: keyboard_down,
         keyboard_up: keyboard_up,
         backspace: backspace,

@@ -246,7 +246,7 @@ var TextInputScreen = (function() {
         var tabBtnY   = SCREEN_H - 2 - TAB_BTN_H;
         var BACKSPACE_BTN_X = SCREEN_W - 52 - TAB_BTN_W;
         this._123Btn       = new UI.NumericTabButton('123', TAB_BTN_X, tabBtnY, TAB_BTN_W, 'edit', function() { self._toggleLayout(); });
-        this._backspaceBtn = new UI.IconTabButton(Icons.backspace, BACKSPACE_BTN_X, tabBtnY, TAB_BTN_W, 'back', function() {
+        this._backspaceBtn = new UI.IconTabButton(Icons.backspace, BACKSPACE_BTN_X, tabBtnY, TAB_BTN_W, 'del', function() {
             if (self.keyboard && self.keyboard.onChar) self.keyboard.onChar('\b');
         });
         this._doneBtn      = new UI.RightButton( 'Done',  BTN_W, 'run', function() { /* run → pop handled in handleInput */ });
@@ -832,18 +832,23 @@ var TextInputScreen = (function() {
             return;
         }
 
-        // Back ('esc' action) on a non-empty field opens the
-        // discard-confirmation modal instead of immediately
-        // popping the scene. Empty fields fall through to the
-        // standard Cancel-button path below — nothing to lose,
-        // so no prompt.
-        if (action === 'esc'
+        // Any exit attempt — Cancel button ('esc' from z) or
+        // Back arrow ('back' from Backspace / Escape) — opens
+        // the discard prompt when there's unsaved text in the
+        // field. Empty fields skip the prompt: 'esc' falls
+        // through to the Cancel bottom-button below; 'back'
+        // commits the discard directly.
+        if ((action === 'esc' || action === 'back')
                 && typeof this.inputText === 'string'
                 && this.inputText.length > 0) {
             this._discardModal.open = true;
             this._discardModal.buttonIndex = 0;
             if (window.requestRender) window.requestRender();
             return;
+        }
+        if (action === 'back') {
+            // Empty-text Back: nothing to discard, just leave.
+            return this._commitDiscard();
         }
 
         // Bottom-bar buttons take priority — flash + run their

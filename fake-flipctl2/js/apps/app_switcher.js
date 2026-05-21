@@ -1453,19 +1453,19 @@ var AppSwitcherScene = (function() {
             return 'pop';
         }
         if (action === 'back') {
-            // Original Back exit. With the recent input.js remap
-            // Backspace / Escape now fire 'esc' instead of 'back',
-            // so 'back' here is essentially the V-key-only path —
-            // 'esc' below covers the Backspace path.
+            // Back arrow (Backspace / Escape) closes the switcher
+            // — nothing else. Killing the focused app is a
+            // separate, dedicated affordance ('esc' / z key,
+            // surfaced via the bottom-bar Kill button).
             return backExit();
         }
 
-        // Esc with no real app under the focus is also a back-exit
-        // — handled BEFORE the phase guard so the user can leave
-        // the switcher even during the kill animation that
-        // follows the last app shutting down. Killing (the
-        // action that triggers a phase change) still lives in
-        // the phase-rest branch below.
+        // Esc with no real app under the focus is also a back-
+        // exit — handled BEFORE the phase guard so the user can
+        // leave the switcher via z (Cancel-style) even during
+        // the kill animation that follows the last app shutting
+        // down. The kill path itself lives in the phase-rest
+        // branch below.
         if (action === 'esc') {
             var preKillTarget = this._findFocused();
             if (!preKillTarget || preKillTarget.transient) {
@@ -1504,13 +1504,12 @@ var AppSwitcherScene = (function() {
             return;
         }
 
-        // Esc kills the focused app — only when there's a real
-        // running app in the focus slot. Transient (Desktop /
-        // Menu) and empty focus fall through to the back-exit
-        // path so Backspace can leave the switcher when there's
-        // nothing left to kill (Backspace remaps to 'esc' in
-        // input.js since the text-input scene needed Backspace
-        // to fire the discard prompt).
+        // Esc (z key — the hardware key under the bottom-bar
+        // Kill button) kills the focused app, but only when
+        // there's a real running app in the focus slot.
+        // Transient (Desktop / Menu) and empty focus fall
+        // through to the back-exit path (handled above the
+        // phase guard).
         if (action === 'esc') {
             var killTarget = this._findFocused();
             if (killTarget && !killTarget.transient) {
@@ -1994,12 +1993,24 @@ var AppSwitcherScene = (function() {
                     this.sceneManager.pop();
                     // Pop any "running app" scenes already on the
                     // stack so the new launch replaces them, rather
-                    // than stacking on top. Two scene shapes count
-                    // as a running app: PlaceholderAppScene and
-                    // SubMenuScenes flagged via markAsApp() (i.e.
-                    // Settings / Network).
+                    // than stacking on top. Three scene shapes
+                    // count as a running app:
+                    //   • PlaceholderAppScene (generic PNG-mockup
+                    //     apps);
+                    //   • SubMenuScene flagged via markAsApp()
+                    //     (Settings / Network treated as apps);
+                    //   • any custom scene that opts in with
+                    //     `_isApp = true` (Internet radio, Voice
+                    //     recorder, …).
+                    // Without the third branch, switching from one
+                    // custom-scene app to another would leave the
+                    // outgoing app on the stack — Back from the
+                    // new app would land on the previous app
+                    // instead of the menu that originally launched
+                    // it.
                     while (true) {
                         var cur = this.sceneManager.current();
+                        if (!cur) break;
                         if (typeof PlaceholderAppScene !== 'undefined'
                                 && cur instanceof PlaceholderAppScene) {
                             this.sceneManager.pop();
@@ -2008,6 +2019,10 @@ var AppSwitcherScene = (function() {
                         if (typeof SubMenuScene !== 'undefined'
                                 && cur instanceof SubMenuScene
                                 && cur._asApp) {
+                            this.sceneManager.pop();
+                            continue;
+                        }
+                        if (cur._isApp === true) {
                             this.sceneManager.pop();
                             continue;
                         }

@@ -108,6 +108,13 @@ var VoiceRecorderScene = (function() {
         this.sceneManager    = sceneManager || null;
         this.displayName     = 'Voice recorder';
         this.breadcrumbTitle = 'Voice recorder';
+        // Opt in to the App Switcher's app handling so killing
+        // this scene from the switcher splices it off the scene
+        // stack (same hook InternetRadioScene uses). Without
+        // `_isApp = true`, closing the switcher after a kill
+        // would land on the killed scene's leftover frame.
+        this._isApp          = true;
+        this.icon            = Icons.voice_recorder;
 
         this.containerY    = UI.STATUS_BAR_H + CONTAINER_Y_OFFSET;
         this.selectedIndex = 0;
@@ -147,6 +154,21 @@ var VoiceRecorderScene = (function() {
     VoiceRecorderScene.prototype.enter = function() {
         var self = this;
         this._fetchList();
+        // Register with the global recents stack so the App
+        // Switcher picks Voice Recorder up on the next Tab. The
+        // 5th arg (`onClose`) is the hook RunningApps fires when
+        // the user kills the app from the switcher — stop any
+        // active playback so the server-side aplay doesn't keep
+        // running after the card animates away. The 4th arg is
+        // the re-launch factory used when the user resurrects
+        // the card from the switcher.
+        if (typeof RunningApps !== 'undefined') {
+            RunningApps.open(this.displayName, null, this.icon,
+                function(sm) { return new VoiceRecorderScene(sm); },
+                function() {
+                    if (self._playing) self._stopPlayback();
+                });
+        }
         // Lightweight 4-s poll while the scene is active so a
         // recording made then-deleted via curl, or a refresh after
         // a server-side change, surfaces without manual reload.

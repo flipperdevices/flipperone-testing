@@ -257,6 +257,11 @@ var MenuScene = (function() {
         //                   the PlaceholderAppScene factory.
         //   factory       — custom scene factory; replaces the
         //                   placeholder path entirely.
+        // Real apps only — mock placeholders (Media / NMap /
+        // "Yet another app" / Router) have been removed. Add new
+        // entries here with a `factory(sm)` that returns the
+        // real scene instance; PlaceholderAppScene fallback is
+        // gone too.
         var APPS = {
             'Internet radio':  { factory: function(sm) { return new InternetRadioScene(sm); },
                                  // No dedicated static — MenuLine
@@ -268,19 +273,29 @@ var MenuScene = (function() {
                                  iconAnimated: (typeof AnimatedIcons !== 'undefined')
                                      ? AnimatedIcons.internet_radio_anim
                                      : null },
-            'Media':           { image: '/assets/apps/hdmi_screen.png',           icon: Icons.tv_media_box },
-            'NMap':            { image: '/assets/apps/nmap_set_up_00.png',        icon: Icons.nmap_eye },
-            'Yet another app': { image: '/assets/apps/nmap_set_up_03.png',        icon: Icons.minimal },
-            'Router':          { image: '/assets/apps/router_app_placeholder.png',icon: Icons.router }
+            'Voice recorder':  { factory:      function(sm) { return new VoiceRecorderScene(sm); },
+                                 icon:         Icons.voice_recorder,
+                                 iconAnimated: null },
+            'Walkie Talkie':   { factory:      function(sm) { return new WalkieTalkieScene(sm); },
+                                 // No dedicated static — MenuLine
+                                 // draws frame 0 of `iconAnimated`
+                                 // for the unselected row, same as
+                                 // Internet radio above.
+                                 icon:         null,
+                                 iconAnimated: (typeof AnimatedIcons !== 'undefined')
+                                     ? AnimatedIcons.walkie_talkie
+                                     : null }
         };
-        var order = ['Internet radio', 'Media', 'NMap', 'Yet another app', 'Router'];
+        var order = ['Internet radio', 'Voice recorder', 'Walkie Talkie'];
 
         var factories = {};
         order.forEach(function(name) {
             var def = APPS[name];
             factories[name] = function() {
-                if (typeof def.factory === 'function') return def.factory(sm);
-                return new PlaceholderAppScene(def.image, name, def.icon);
+                // Every remaining app supplies a real factory.
+                // PlaceholderAppScene is no longer used here —
+                // the mock entries that depended on it are gone.
+                return def.factory(sm);
             };
         });
 
@@ -319,7 +334,8 @@ var MenuScene = (function() {
     var subMenus = {
         'Network': networkMenu,
         // Files / Router have no backing scene yet — factories
-        // return null so pressing ok/run is a no-op until wired up.
+        // return null so pressing ok/run is a no-op until wired
+        // up.
         'Files':   function() { return null; },
         'Apps':    appsMenu,
         'Testing': testingMenu,
