@@ -320,11 +320,21 @@ var MenuScene = (function() {
             'System info',
             'Battery info',
             'Disk info',
-            'Update'
+            'Update',
+            'Reboot'
         ], {
             'Battery info': function() { return new PowerScene(); },
-            'Disk info': function() { return new DiskSpaceScene(); },
-            'Update': function() { return new UpdateScene(); }
+            'Disk info':    function() { return new DiskSpaceScene(); },
+            'Update':       function() { return new UpdateScene(); },
+            // Fire-and-forget POST. Server runs `sudo reboot` in a
+            // detached unit so the response flushes before the OS
+            // tears the connection down — same pattern the
+            // /api/switch/flipctl handler uses. Factory returns
+            // null so no new scene is pushed onto the stack.
+            'Reboot':       function() {
+                fetch('/api/system/reboot', { method: 'POST' });
+                return null;
+            }
         });
         // Treat Settings as a first-class app in the App Switcher.
         subMenu.markAsApp(Icons.system, function(reSm) { return settingsMenu(reSm || sm); });

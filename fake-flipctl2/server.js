@@ -773,6 +773,29 @@ var SOUND_DIR = '/flipperone-testing/sound/audio_files';
 var DRIVER_SCRIPT = '/flipperone-testing/sound/audio-driver-restart.sh';
 var audioChild = null;
 
+// Extra sound entries that live outside SOUND_DIR — the device
+// has its stock list under /flipperone-testing/sound/audio_files
+// but we also want to expose project-bundled assets (e.g. the
+// Walkie Talkie loop) in the same Play sound picker. Keys are the
+// display filenames the picker shows; values are entry objects
+// with `path` (absolute path on disk) and optional `effects`
+// (sox effect string appended to the play command — used here to
+// reverse the on-disk reversed file so the picker plays it
+// forwards while leaving the asset itself reversed for whatever
+// else consumes it). Entries whose path doesn't resolve at read
+// time are silently skipped so nothing breaks if the asset is
+// missing.
+var EXTRA_SOUND_FILES = {
+    // Do not modify the on-disk file — playback applies the sox
+    // `reverse` effect to flip the stream at play time, leaving
+    // the bytes untouched. Format matches spk_mono.wav (PCM
+    // s16le, 48000 Hz, mono).
+    '415_audio.wav': {
+        path:    path.join(BASE, 'assets/apps/walkie_talkie/415_audio.wav'),
+        effects: 'reverse'
+    }
+};
+
 function getSoundFiles() {
     var files = [];
     try {
@@ -780,15 +803,30 @@ function getSoundFiles() {
         for (var i = 0; i < entries.length; i++) {
             if (/\.(wav|flac|ogg|aiff?|mp3|au|snd|caf|w64|wv|amr|voc|sph|xi)$/i.test(entries[i])) files.push(entries[i]);
         }
-        files.sort();
     } catch (e) {}
+    // Append project-bundled extras when their backing file
+    // actually exists. Skip names that already appeared in the
+    // device listing so we don't end up with duplicates.
+    Object.keys(EXTRA_SOUND_FILES).forEach(function(name) {
+        if (files.indexOf(name) !== -1) return;
+        try {
+            if (fs.existsSync(EXTRA_SOUND_FILES[name].path)) files.push(name);
+        } catch (e) {}
+    });
+    files.sort();
     return files;
 }
 
 function playSoundFile(filename) {
     // Sanitize: only allow filenames, no path separators
     if (/[\/\\]/.test(filename)) return { success: false, error: 'Invalid filename' };
-    var filePath = path.join(SOUND_DIR, filename);
+    // Extras take precedence — if the picked name is in our
+    // override map, point sox at the bundled asset instead of
+    // SOUND_DIR. Falls through to the device path otherwise.
+    var extra    = EXTRA_SOUND_FILES[filename];
+    var filePath = (extra && fs.existsSync(extra.path))
+        ? extra.path
+        : path.join(SOUND_DIR, filename);
     if (!fs.existsSync(filePath)) return { success: false, error: 'File not found' };
 
     // Kill any currently playing audio
@@ -801,6 +839,11 @@ function playSoundFile(filename) {
     // codec in its native frame format; a no-op on already-stereo
     // input.
     var cmd = 'play ' + JSON.stringify(filePath) + ' channels 2';
+    // Append per-entry sox effects (e.g. `reverse`) after the
+    // baseline `channels 2` so they apply to the resampled stream.
+    if (extra && extra.effects) {
+        cmd += ' ' + extra.effects;
+    }
     if (selectedAlsaDevice) {
         cmd = 'AUDIODEV=' + selectedAlsaDevice + ' ' + cmd;
     }
@@ -813,6 +856,11 @@ function playSoundFile(filename) {
 }
 
 function stopSound() {
+    // Break the walkie-talkie respawn loop, if one is running.
+    // The looping spawner only re-fires while `walkieActive` is
+    // true, so flipping it here ensures any in-flight SIGKILL
+    // doesn't immediately get followed by a fresh sox process.
+    walkieActive = false;
     if (audioChild) {
         // SIGKILL, not SIGTERM — we want the ALSA device free
         // before the next caller (typically playRadioStream)
@@ -823,6 +871,80 @@ function stopSound() {
         try { audioChild.kill('SIGKILL'); } catch (e) {}
         audioChild = null;
     }
+}
+
+// ── Walkie Talkie audio loop ─────────────────────────────────────
+// The Walkie Talkie scene wants 415_audio.wav playing on repeat
+// for as long as the user is in the app. Playback applies the
+// sox `reverse` effect — same trick the Sound > Play sound
+// picker uses for the same file.
+//
+// Loops by respawning sox each time the previous child exits,
+// guarded by `walkieActive` so an external stop (e.g. user picks
+// another file in Play sound, or the scene's exit hook fires)
+// breaks the cycle. Shares the global `audioChild` slot so the
+// existing one-thing-at-a-time invariant the rest of the audio
+// stack relies on still holds.
+var walkieActive      = false;
+var WALKIE_AUDIO_PATH = path.join(BASE, 'assets/apps/walkie_talkie/415_audio.wav');
+
+function spawnWalkieOnce() {
+    if (!walkieActive) return;
+    if (!fs.existsSync(WALKIE_AUDIO_PATH)) {
+        walkieActive = false;
+        return;
+    }
+    // spawn (not exec) so SIGKILL hits sox directly instead of
+    // the wrapping shell — with exec, killing the shell leaves
+    // sox orphaned and it plays its 17.9 s iteration through to
+    // completion before the loop actually goes silent. spawn
+    // also makes the argv unambiguous (no shell-quoting).
+    var spawn = require('child_process').spawn;
+    var args  = [WALKIE_AUDIO_PATH, 'channels', '2', 'reverse'];
+    var envCopy = Object.assign({}, process.env);
+    if (selectedAlsaDevice) envCopy.AUDIODEV = selectedAlsaDevice;
+    var child = spawn('play', args, { env: envCopy, stdio: 'ignore' });
+    function onLeave() {
+        // Identity-guard: only null the global if we're still the
+        // tracked child. Avoids stomping on a successor that some
+        // other producer (Play sound, radio) installed in the
+        // meantime.
+        if (audioChild === child) audioChild = null;
+        if (walkieActive) {
+            // Brief gap so ALSA can release the device before the
+            // next sox attempts to open it — without this, the
+            // next spawn frequently hits "Device or resource busy"
+            // and exits immediately, which would make the loop
+            // race itself into a tight respawn storm.
+            setTimeout(spawnWalkieOnce, 80);
+        }
+    }
+    child.on('exit',  onLeave);
+    child.on('error', onLeave);
+    audioChild = child;
+}
+
+function startWalkieLoop() {
+    if (walkieActive) return { success: true, already: true };
+    if (!fs.existsSync(WALKIE_AUDIO_PATH)) {
+        return { success: false, error: 'Walkie audio not found' };
+    }
+    // Free the codec first — any other producer (Play sound, a
+    // radio stream) yields immediately. `stopSound()` flips
+    // walkieActive off, so we re-arm it AFTER.
+    stopSound();
+    walkieActive = true;
+    spawnWalkieOnce();
+    return { success: true };
+}
+
+function stopWalkieLoop() {
+    if (!walkieActive) return { success: true, already: true };
+    // stopSound() resets walkieActive to false and kills the
+    // current child; the exit handler then sees walkieActive
+    // false and skips the respawn.
+    stopSound();
+    return { success: true };
 }
 
 // ── Internet radio streaming ─────────────────────────────────────
@@ -2484,6 +2606,27 @@ var server = http.createServer(function(req, res) {
         res.end(JSON.stringify({ success: true }));
         return;
     }
+    // ── /api/walkie/play ────────────────────────────────────────
+    // Start the Walkie Talkie audio loop. The scene's enter()
+    // hits this once on open; the server then keeps respawning
+    // sox on each child exit until /api/walkie/stop (or any
+    // other stopSound() caller) breaks the loop.
+    if (req.url === '/api/walkie/play' && req.method === 'POST') {
+        var wResult = startWalkieLoop();
+        res.writeHead(wResult.success ? 200 : 400,
+                      { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(wResult));
+        return;
+    }
+    // ── /api/walkie/stop ────────────────────────────────────────
+    // Stop the loop. Idempotent — safe to call from exit() even
+    // if the scene never managed to start the loop.
+    if (req.url === '/api/walkie/stop' && req.method === 'POST') {
+        var wsResult = stopWalkieLoop();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(wsResult));
+        return;
+    }
     // ── /api/radio/install ──────────────────────────────────────
     // Installs mpg123 via apt-get. The node server runs as root
     // (it already invokes audio-driver-restart.sh which requires
@@ -2519,6 +2662,22 @@ var server = http.createServer(function(req, res) {
     if (req.url === '/api/version' && req.method === 'GET') {
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify({ id: SERVER_ID }));
+        return;
+    }
+    if (req.url === '/api/system/reboot' && req.method === 'POST') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+
+        // Detach the reboot into a transient unit so the OS can
+        // tear our process down without killing the command
+        // mid-flight (the same trick /api/switch/flipctl uses for
+        // its restart). systemd-run --collect --no-block runs
+        // outside our cgroup; unref keeps node from waiting on it.
+        var sysSpawn = require('child_process').spawn;
+        sysSpawn('systemd-run', ['--collect', '--no-block', 'sh', '-c', 'sudo reboot'], {
+            detached: true,
+            stdio: 'ignore'
+        }).unref();
         return;
     }
     if (req.url === '/api/switch/flipctl' && req.method === 'POST') {
