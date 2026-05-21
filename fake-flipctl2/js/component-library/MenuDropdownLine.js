@@ -33,7 +33,7 @@ var MenuDropdownLine = (function() {
     // close-but-not-identical row can reach in and read them
     // without re-deriving the math.
     var TITLE_X        = 6;     // px from the screen's left edge
-    var TOP_PAD        = 3;     // px from the row's `y` to text / chip top
+    var TOP_PAD        = 2;     // px from the row's `y` to text / chip top
     var CHIP_W         = 180;
     var CHIP_H         = 11;
     var CHIP_RIGHT_PAD = 5;     // px from the screen's right edge

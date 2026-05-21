@@ -1,941 +1,1191 @@
 /**
- * Voice recorder — Wi-Fi-style scenes.
+ * Voice recorder — fresh stub.
  *
- *   VoiceRecorderScene  — main page. Breadcrumb on top, then a
- *                         "New recording" chevron row, a section
- *                         divider, and the saved-recordings list.
- *                         Each row uses the same selector chrome as
- *                         the Wi-Fi page (MenuSelectorFrame for
- *                         non-chevron rows, ComponentSelectorFrame
- *                         with chevron bar for drill-in rows).
- *   RecordingScene      — full-screen active capture. Modal-styled
- *                         card centered in the body, blinking REC +
- *                         MM:SS counter, [Stop] button hint. Triple
- *                         coverage on stop (handleInput, exit,
- *                         pagehide / beforeunload via sendBeacon)
- *                         so the recording cannot leak past the
- *                         scene's lifetime.
- *
- * The list scene also hosts a per-recording detail modal (Play /
- * Delete + size/date info) — same shape as the Wi-Fi connect /
- * verbose modals. Triggered by OK on a saved-recording row.
+ * Everything from the previous Wi-Fi-style list / detail-modal /
+ * RecordingScene implementation has been removed. This file is
+ * intentionally minimal so the UI can be rebuilt from scratch on
+ * top of it. The scene still registers with the App Switcher and
+ * exits on Back so navigation works while we wire the new UI.
  */
 var VoiceRecorderScene = (function() {
-    // ── Style constants (mirror the Wi-Fi page) ──────────────
-    var BREADCRUMB_X       = 4;
-    var BREADCRUMB_Y       = UI.STATUS_BAR_H + 2;
-    var SELECTOR_X         = 4;
-    var SELECTOR_W         = 247;
-    var ROW_H              = 13;
-    var SELECTOR_H         = ROW_H + 2;
-    var SELECTOR_Y_OFFSET  = -1;
-    var DIVIDER_COL        = '#CCCCCC';
-    var CONTAINER_Y_OFFSET = 16;
-    var TEXT_LEFT_PAD      = 5;
-    var STATUS_RIGHT_PAD   = 5;
-    var DIVIDER_ROW_H      = 3;
-
-    // Modal layout (matches the visible-networks / saved-networks
-    // shells: 4 px screen padding, tab + frame stack, max bottom
-    // y = 128).
-    var SCREEN_PAD         = 4;
-    var TAB_H              = 16;
-    var FRAME_PAD_TOP      = 3;
-    var FRAME_PAD_BOTTOM   = 3;
-    var MAX_BOTTOM_Y       = 128;
-    var CANVAS_H           = 144;
-
-    // Local ellipsiser. Wi-Fi has its own; we inline a copy here
-    // so the file stays self-contained.
-    function ellipsizeTo(text, maxW) {
-        text = text == null ? '' : String(text);
-        if (HaxrcorpFont16.textWidth(text) <= maxW) return text;
-        var dots = '…';
-        var dotW = HaxrcorpFont16.textWidth(dots);
-        var s = text;
-        while (s.length > 0
-               && HaxrcorpFont16.textWidth(s) + dotW > maxW) {
-            s = s.substring(0, s.length - 1);
-        }
-        return s + dots;
-    }
-
-    // Strip the .wav extension and the rec- prefix for display —
-    // the timestamp itself is what matters and the chrome is
-    // noise.
-    function displayName(filename) {
-        var s = filename.replace(/\.wav$/i, '');
-        if (s.indexOf('rec-') === 0) s = s.substring(4);
-        return s;
-    }
-
-    // Estimate duration in seconds from the WAV's data size.
-    // 48 kHz × 16-bit × 1 ch = 96 000 bytes/sec; the WAV
-    // header adds ~44 bytes which is well below 1 sec at this
-    // rate, so the rough divide is fine for display purposes.
-    // Keep this in sync with the sox arg block in
-    // `server.js#startRecording` if either side changes.
-    function estimateDurationSec(sizeBytes) {
-        if (typeof sizeBytes !== 'number' || sizeBytes <= 44) return 0;
-        return Math.max(0, (sizeBytes - 44) / 96000);
-    }
-
-    function formatDuration(sec) {
-        if (!sec || sec < 0) return '0:00';
-        var total = Math.round(sec);
-        var mm = Math.floor(total / 60);
-        var ss = total % 60;
-        return mm + ':' + (ss < 10 ? '0' + ss : ss);
-    }
-
-    function formatSize(bytes) {
-        if (typeof bytes !== 'number') return '—';
-        if (bytes < 1024) return bytes + ' B';
-        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-        return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
-    }
-
-    // Pull the YYYYMMDD-HHMMSS chunk out of the filename and
-    // format it as a human-friendly date. Falls back to the raw
-    // display name on shape mismatch.
-    function formatRecordingDate(filename) {
-        var m = filename.match(/^rec-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/);
-        if (!m) return displayName(filename);
-        return m[1] + '-' + m[2] + '-' + m[3] + ' ' + m[4] + ':' + m[5] + ':' + m[6];
-    }
-
     function VoiceRecorderScene(sceneManager) {
         this.sceneManager    = sceneManager || null;
         this.displayName     = 'Voice recorder';
         this.breadcrumbTitle = 'Voice recorder';
-        // Opt in to the App Switcher's app handling so killing
-        // this scene from the switcher splices it off the scene
-        // stack (same hook InternetRadioScene uses). Without
-        // `_isApp = true`, closing the switcher after a kill
-        // would land on the killed scene's leftover frame.
+        // Opt in to App-Switcher app handling so killing this
+        // scene from the switcher splices it out of the
+        // navigation stack cleanly.
         this._isApp          = true;
-        this.icon            = Icons.voice_recorder;
+        this.icon            = (typeof Icons !== 'undefined' && Icons.voice_recorder)
+                                ? Icons.voice_recorder
+                                : null;
+        // Latest per-channel mic levels, 0..100. Updated by SSE
+        // pushes from /api/mic/level/stream; read by render() to
+        // size the black fill inside each meter frame.
+        this._micLeft   = 0;
+        this._micRight  = 0;
+        this._micEventSource = null;
 
-        this.containerY    = UI.STATUS_BAR_H + CONTAINER_Y_OFFSET;
-        this.selectedIndex = 0;
+        // Input-device picker. Mirrors the dropdown-row shape
+        // Internet Radio uses for its Audio device row: a
+        // MenuDropdownLine paired with a wrapping selector
+        // outline, left/right cycles options. The wired-up
+        // device-routing piece comes later — for now we just
+        // hold the current selection in scene state.
+        // Picker registry — every dropdown / cycle row reads its
+        // options + current value out of this map. Key matches
+        // the entry in `_rowPickerKey()` below, and the
+        // dropdown overlay uses `_dropdownKey` to know which
+        // picker it's editing.
+        this._pickers = {
+            inputDevice: {
+                options: ['3.5 Audio', 'Build-in mic'],
+                // Default to the built-in mic — that's the
+                // device a freshly opened Voice Recorder should
+                // listen on without the user needing to hunt
+                // for a setting.
+                current: 'Build-in mic'
+            },
+            format: {
+                options: ['WAV', 'MP3'],
+                current: 'WAV'
+            }
+        };
 
-        // Init data state BEFORE _buildItems(): the builder
-        // reads `_recordings.length` to decide whether to emit
-        // the divider + saved-row entries, so an undefined
-        // value here would throw and the scene would never
-        // render.
-        this._modal       = null;
-        this._recordings  = [];
-        this._loaded      = false;
-        this._playing     = null;
-        this._pollTimer   = null;
+        // Input gain — plain ± row, no dropdown. Range and step
+        // are conservative starter values; the actual codec
+        // probably accepts a wider window. Defaults to +0 dB.
+        this._inputGainDb   = 0;
+        this._inputGainMin  = -20;
+        this._inputGainMax  = 40;
+        this._inputGainStep = 1;
 
-        this.items = [];
-        this._buildItems();
+        // File name — opens TextInputScreen on OK. Left / right
+        // do nothing on this row; the chevron on the selector
+        // frame is the affordance signalling "press OK to edit".
+        this._fileName = 'F1_record_1';
 
-        // Selection chrome — same two frames the Wi-Fi page uses.
-        this.selectorFrame = new MenuSelectorFrame({
-            x: SELECTOR_X, y: 0,
-            width: SELECTOR_W, height: SELECTOR_H,
-            anchorH: 'left', anchorV: 'top',
+        // Folder — drill-in row, no behaviour wired yet. Visual
+        // structure mirrors File name (chevron selector frame,
+        // OK is the future open trigger) so the eventual editor
+        // can slot in without UI shuffling.
+        this._folderName = 'Recording';
+
+        // Timecode — display-only drill-in row, no behaviour
+        // wired yet. Same chevron-selector treatment as File
+        // name / Folder so it slots into the eventual editor
+        // path without a layout shuffle. "HH:MM:SS:FF" shape so
+        // the placeholder reads as a real timecode field.
+        this._timecode = '00:00:00:00';
+
+        // Focused-row index for up / down navigation between
+        // the menu lines below the meters.
+        //   0 → Input gain     (inline ± row)
+        //   1 → Input device   (dropdown row)
+        //   2 → File name      (chevron drill-in row)
+        //   3 → Folder         (chevron drill-in row, stub)
+        //   4 → Format         (dropdown row, plain selector)
+        //   5 → Timecode       (chevron drill-in row, stub)
+        this._selectedRow = 0;
+
+        // Dropdown overlay state — copied from Internet Radio:
+        //   `_dropdownOpen`  flips to true on OK over a
+        //                    picker row,
+        //   `_dropdownKey`   names which picker is being
+        //                    edited (matches a key in
+        //                    `_pickers`),
+        //   `_dropdownIndex` highlighted option index inside
+        //                    the open list.
+        // OK commits whichever index is highlighted; Back / Esc
+        // close without committing (revert).
+        this._dropdownOpen   = false;
+        this._dropdownKey    = null;
+        this._dropdownIndex  = 0;
+        // Shared selector outline — same dimensions Internet
+        // Radio uses (SELECTOR_X=2, W=252, H=15, dropped 1 px
+        // below the row top so it visually centres on the chip).
+        this._selectorFrame = new MenuSelectorFrame({
+            x: 2, y: 0, width: 252, height: 15,
+            anchorH: 'left',   anchorV: 'top',
             strokeColor: '#000', showStroke: true, showFill: false
         });
-        this.chevronSelectorFrame = new ComponentSelectorFrame({
-            x: SELECTOR_X, y: 0,
-            width: SELECTOR_W, height: SELECTOR_H,
-            anchorH: 'left', anchorV: 'top',
+        // Chevron-bearing selector — used on the File name row
+        // (drill-in to TextInputScreen). The chevron paints a
+        // "tap to open" affordance flush against the row's
+        // right edge.
+        this._chevronSelectorFrame = new ComponentSelectorFrame({
+            x: 2, y: 0, width: 252, height: 15,
+            anchorH: 'left',   anchorV: 'top',
             strokeColor: '#000', showStroke: true, showFill: false,
-            cornerRadius: 3,
-            showChevron: true,
-            chevronWidth: 7
+            cornerRadius:  3,
+            showChevron:   true,
+            chevronWidth:  7
         });
+        // Smaller selector outline that lives INSIDE the
+        // dropdown overlay. Width is patched per-render to
+        // match the dropdown body's width (CHIP_WIDTH minus 1
+        // on the right to dodge the bottom-right shadow pixel
+        // MenuSelectorFrame paints — same trick Internet Radio
+        // applies).
+        this._dropdownInnerSelector = new MenuSelectorFrame({
+            x: 0, y: 0, width: 1, height: 15,
+            anchorH: 'left',   anchorV: 'top',
+            strokeColor: '#000', showStroke: true, showFill: false
+        });
+
+        // Left-side app-defined button — "Home". Wired to the
+        // 'esc' action (which `input.js` maps to the 'z' key)
+        // so pressing 'z' anywhere in the scene flashes the
+        // button and pops the stack back to Desktop via
+        // SceneManager.popToRoot. Width 48 matches Internet
+        // Radio's right-side button for visual rhythm.
+        var self = this;
+        this._homeBtn = new UI.LeftButton('Home', 48, 'esc',
+            function() {
+                if (self.sceneManager
+                        && typeof self.sceneManager.popToRoot === 'function') {
+                    self.sceneManager.popToRoot();
+                }
+            });
+
+        // Middle app-defined button — "Files". Slot index 1
+        // (x = 1*(48+2) = 50) so it sits just right of the
+        // Home button with a 2-px gap, matching the bottom-row
+        // pattern in boot_menu_ui_demo. Wired to the 'edit'
+        // action which `input.js` maps to the 'x' key. Only
+        // visible OUT of recording mode — Pause takes over the
+        // middle slot 3 while recording instead.
+        this._filesBtn = new UI.MiddleButton('Files', 1, 48, 2, 'edit',
+            function() { /* not wired yet */ });
+
+        // "Pause" middle button — only rendered / wired while
+        // `_recording` is true; takes over from Files in the
+        // visible bottom row during a recording session. Bound
+        // to the 'del' action which `input.js` maps to the 'v'
+        // key. Slot index is irrelevant — we override `x`
+        // straight after construction so the button's RIGHT
+        // edge sits 52 px from the screen's right edge
+        // (button x = canvas.w - 52 - 48 = 156). That leaves a
+        // 4-px gap between Pause's right edge and Start's left
+        // edge.
+        this._pauseBtn = new UI.MiddleButton('Pause', 0, 48, 2, 'del',
+            function() {
+                // Only meaningful while recording; outside of
+                // that the button isn't even rendered, but
+                // guard anyway in case the input dispatch fires
+                // it in an edge case.
+                if (!self._recording) return;
+                self._togglePause();
+                if (typeof window.requestRender === 'function') {
+                    window.requestRender();
+                }
+            });
+        this._pauseBtn.x = 156;
+
+        // `true` while we're "recording" — collapses rows 2..5
+        // (File name / Folder / Format / Timecode) and reveals a
+        // placeholder ResponsiveFrame in their place. Toggled by
+        // the Start / Stop right button.
+        this._recording = false;
+
+        // Timecode anchor + tick. `_recordStartTime` is set on
+        // each Start press; `_recordTickTimer` runs while
+        // recording so the rendered HH:MM:SS:FF display tracks
+        // wall-clock time. Stopping recording clears the tick;
+        // the next Start re-anchors to the press moment.
+        this._recordStartTime = 0;
+        this._recordTickTimer = null;
+        // Pause sub-state of recording. `_paused` flips on each
+        // Pause press while `_recording` is true; the timecode
+        // tick stops and the lamp icon swaps to recording_pause.
+        // `_pausedElapsed` captures the ms elapsed at pause time
+        // so resuming re-anchors `_recordStartTime` without
+        // losing the in-flight take.
+        this._paused        = false;
+        this._pausedElapsed = 0;
+
+        // Right app-defined button — "Start" / "Stop". Flush
+        // with the right screen edge, width 48 to match Internet
+        // Radio's Play button. Wired to the 'run' action (the
+        // device's primary-action key, mapped from 'b' in
+        // input.js). Pressing it toggles `_recording`, which
+        // also swaps the button label between Start and Stop on
+        // the next render (text is rewritten in render()).
+        this._startBtn = new UI.RightButton('Start', 48, 'run',
+            function() {
+                self._recording = !self._recording;
+                // While recording the only visible row is Input
+                // gain (row 0). Snap focus to it on start so
+                // the selector doesn't hover over nothing.
+                if (self._recording && self._selectedRow >= 1) {
+                    self._selectedRow = 0;
+                }
+                // Link LED follows the recording state: take
+                // LEDs into manual mode + light red on Start,
+                // drop the colour + release manual on Stop.
+                self._applyRecordingLed();
+                // Anchor / clear the running timecode. Start
+                // resets the take from 00:00:00:00 (anchor +
+                // pause state both cleared); Stop just halts
+                // the tick.
+                if (self._recording) {
+                    self._recordStartTime = Date.now();
+                    self._paused          = false;
+                    self._pausedElapsed   = 0;
+                    self._startRecordTick();
+                } else {
+                    self._stopRecordTick();
+                    self._paused          = false;
+                }
+                if (typeof window.requestRender === 'function') {
+                    window.requestRender();
+                }
+            });
     }
 
     VoiceRecorderScene.prototype.enter = function() {
         var self = this;
-        this._fetchList();
         // Register with the global recents stack so the App
-        // Switcher picks Voice Recorder up on the next Tab. The
-        // 5th arg (`onClose`) is the hook RunningApps fires when
-        // the user kills the app from the switcher — stop any
-        // active playback so the server-side aplay doesn't keep
-        // running after the card animates away. The 4th arg is
-        // the re-launch factory used when the user resurrects
-        // the card from the switcher.
+        // Switcher picks Voice Recorder up on the next Tab.
         if (typeof RunningApps !== 'undefined') {
             RunningApps.open(this.displayName, null, this.icon,
                 function(sm) { return new VoiceRecorderScene(sm); },
                 function() {
-                    if (self._playing) self._stopPlayback();
+                    self._closeMicStream();
+                    self._stopMicMonitor();
+                    // Switcher kill: drop the LED back to auto
+                    // so the red recording cue can't outlive
+                    // the scene if the user nukes it mid-take.
+                    self._sendLinkLed(false);
+                    self._sendLedManual(false);
+                    self._stopRecordTick();
                 });
         }
-        // Lightweight 4-s poll while the scene is active so a
-        // recording made then-deleted via curl, or a refresh after
-        // a server-side change, surfaces without manual reload.
-        if (this._pollTimer) clearInterval(this._pollTimer);
-        this._pollTimer = setInterval(function() { self._fetchList(); }, 4000);
+        // Kick the server-side arecord monitor and open one
+        // long-lived SSE connection. Replaces the previous
+        // 50-ms XHR poll — the server now pushes updates from
+        // inside the arecord chunk handler so the Node event
+        // loop isn't doing 20 req/sec of HTTP overhead while
+        // the user sits on this page.
+        this._startMicMonitor();
+        this._openMicStream();
     };
+
     VoiceRecorderScene.prototype.exit = function() {
-        if (this._pollTimer) {
-            clearInterval(this._pollTimer);
-            this._pollTimer = null;
-        }
-        // Don't keep audio playing when leaving the scene.
-        if (this._playing) this._stopPlayback();
+        this._closeMicStream();
+        this._stopMicMonitor();
+        this._micLeft = 0;
+        this._micRight = 0;
+        // Tear down the running timecode tick so it doesn't
+        // keep firing requestRender after the scene leaves.
+        this._stopRecordTick();
+        // Drop the LED back to auto on exit so the red
+        // recording cue never strays past the scene's lifetime,
+        // even if the user backs out without hitting Stop
+        // first.
+        this._sendLinkLed(false);
+        this._sendLedManual(false);
     };
 
-    VoiceRecorderScene.prototype._fetchList = function() {
-        var self = this;
+    // Fire-and-forget kickoff / teardown for the server-side
+    // arecord process. Both are idempotent on the server.
+    VoiceRecorderScene.prototype._startMicMonitor = function() {
         try {
             var xhr = new XMLHttpRequest();
-            xhr.open('GET', '/api/record/list', true);
-            xhr.timeout = 4000;
-            xhr.onload = function() {
-                if (xhr.status === 200) {
-                    try {
-                        var data = JSON.parse(xhr.responseText);
-                        self._recordings = (data && data.files) || [];
-                    } catch (e) { self._recordings = []; }
-                }
-                self._loaded = true;
-                self._buildItems();
-                if (window.requestRender) window.requestRender();
-            };
-            xhr.onerror   = function() { self._loaded = true; };
-            xhr.ontimeout = function() { self._loaded = true; };
+            xhr.open('POST', '/api/mic/level/start', true);
+            xhr.timeout = 1500;
             xhr.send();
-        } catch (e) { self._loaded = true; }
+        } catch (e) { /* mocked server / offline — ignore */ }
     };
-
-    VoiceRecorderScene.prototype._playFile = function(filename) {
-        var self = this;
-        self._playing = filename;
+    VoiceRecorderScene.prototype._stopMicMonitor = function() {
         try {
             var xhr = new XMLHttpRequest();
-            xhr.open('POST', '/api/record/play', true);
-            xhr.setRequestHeader('Content-Type', 'application/json');
-            xhr.timeout = 10000;
-            xhr.onerror   = function() { self._playing = null; if (window.requestRender) window.requestRender(); };
-            xhr.ontimeout = function() { self._playing = null; if (window.requestRender) window.requestRender(); };
-            xhr.send(JSON.stringify({ file: filename }));
-        } catch (e) { self._playing = null; }
-        if (window.requestRender) window.requestRender();
-    };
-
-    VoiceRecorderScene.prototype._stopPlayback = function() {
-        var self = this;
-        try {
-            var xhr = new XMLHttpRequest();
-            xhr.open('POST', '/api/sound/stop', true);
-            xhr.timeout = 3000;
-            xhr.onload = function() { self._playing = null; if (window.requestRender) window.requestRender(); };
+            xhr.open('POST', '/api/mic/level/stop', true);
+            xhr.timeout = 1500;
             xhr.send();
-        } catch (e) { self._playing = null; }
+        } catch (e) { /* mocked server / offline — ignore */ }
+    };
+    // Opens the SSE stream. `EventSource` auto-reconnects on
+    // transport blips so we don't need to wire retry logic
+    // ourselves — set `_micEventSource` once and let it run.
+    VoiceRecorderScene.prototype._openMicStream = function() {
+        var self = this;
+        if (this._micEventSource) return;
+        if (typeof EventSource === 'undefined') return;
+        try {
+            this._micEventSource = new EventSource('/api/mic/level/stream');
+        } catch (e) {
+            this._micEventSource = null;
+            return;
+        }
+        this._micEventSource.onmessage = function(ev) {
+            try {
+                var d = JSON.parse(ev.data);
+                if (typeof d.left  === 'number') self._micLeft  = d.left;
+                if (typeof d.right === 'number') self._micRight = d.right;
+                if (typeof window.requestRender === 'function') {
+                    window.requestRender();
+                }
+            } catch (e) {}
+        };
+        // Transport-level error fires when the connection drops;
+        // EventSource handles the reconnect on its own. We just
+        // need to make sure we don't leak the previous handle if
+        // the browser decides to discard it.
+        this._micEventSource.onerror = function() {
+            // Leave the EventSource attached — it'll re-attempt
+            // automatically. No state change needed.
+        };
+    };
+    VoiceRecorderScene.prototype._closeMicStream = function() {
+        if (!this._micEventSource) return;
+        try { this._micEventSource.close(); } catch (e) {}
+        this._micEventSource = null;
     };
 
-    VoiceRecorderScene.prototype._deleteFile = function(filename, cb) {
+    // ── Link-LED helpers (mirror WalkieTalkieScene) ──────────────
+    // /api/led/set writes the colour + on flag; /api/led/manual
+    // tells the server's auto state-driven LED loop to step
+    // aside so our colour sticks. We engage manual mode for the
+    // duration of a recording and drop it the moment recording
+    // stops (or the scene exits / is killed from the switcher).
+    VoiceRecorderScene.prototype._sendLinkLed = function(on) {
         try {
             var xhr = new XMLHttpRequest();
-            xhr.open('POST', '/api/record/delete', true);
+            xhr.open('POST', '/api/led/set', true);
             xhr.setRequestHeader('Content-Type', 'application/json');
-            xhr.timeout = 4000;
-            xhr.onload = function() { cb && cb(xhr.status === 200); };
-            xhr.onerror   = function() { cb && cb(false); };
-            xhr.ontimeout = function() { cb && cb(false); };
-            xhr.send(JSON.stringify({ file: filename }));
-        } catch (e) { cb && cb(false); }
+            xhr.timeout = 1500;
+            xhr.send(JSON.stringify({
+                led: 'link',
+                r:   on ? 255 : 0,
+                g:   0,
+                b:   0,
+                on:  !!on
+            }));
+        } catch (e) { /* mocked server / offline — ignore */ }
+    };
+    VoiceRecorderScene.prototype._sendLedManual = function(enabled) {
+        try {
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', '/api/led/manual', true);
+            xhr.setRequestHeader('Content-Type', 'application/json');
+            xhr.timeout = 1500;
+            xhr.send(JSON.stringify({ enabled: !!enabled }));
+        } catch (e) { /* mocked server / offline — ignore */ }
     };
 
-    // Rebuild items list. First row is always "New recording"
-    // (chevron). When recordings exist, a divider follows, then
-    // one chevron row per recording. Empty case: just the
-    // sentinel row + a placeholder gray "No recordings" line
-    // is rendered as a non-selectable row.
-    VoiceRecorderScene.prototype._buildItems = function() {
+    // Reconciles the physical Link LED with the current
+    // recording state. LED is red only when we're actively
+    // capturing audio — i.e. recording AND not paused. Pause
+    // drops the LED to off (the on-screen `recording_pause`
+    // icon is the user's visual cue that the take is held).
+    // Called from Start / Stop, Pause / Resume, and every
+    // teardown path so the red cue can never linger.
+    VoiceRecorderScene.prototype._applyRecordingLed = function() {
+        if (this._recording && !this._paused) {
+            this._sendLedManual(true);
+            this._sendLinkLed(true);
+        } else {
+            this._sendLinkLed(false);
+            this._sendLedManual(false);
+        }
+    };
+
+    // ── Running timecode ─────────────────────────────────────────
+    // The Start press fully anchors a fresh take (00:00:00:00);
+    // Pause / Resume re-anchor without losing elapsed time. The
+    // tick (~30 Hz) is purely a re-render kicker — it doesn't
+    // mutate state, so starting / stopping it is safe at any
+    // point during a take.
+    VoiceRecorderScene.prototype._startRecordTick = function() {
         var self = this;
-        var items = [];
-        items.push({
-            text: 'New recording',
-            chevron: true,
-            isNewRecording: true,
-            onPress: function() {
-                if (self.sceneManager) {
-                    self.sceneManager.push(new RecordingScene(self.sceneManager));
-                }
+        if (this._recordTickTimer) clearInterval(this._recordTickTimer);
+        this._recordTickTimer = setInterval(function() {
+            if (typeof window.requestRender === 'function') {
+                window.requestRender();
             }
-        });
-        if (this._recordings.length > 0) {
-            items.push({ kind: 'divider' });
-            for (var i = 0; i < this._recordings.length; i++) {
-                var r = this._recordings[i];
-                items.push({
-                    text: displayName(r.name),
-                    file: r.name,
-                    size: r.size,
-                    mtime: r.mtime,
-                    chevron: true,
-                    onPress: (function(rec) {
-                        return function() { self._openDetailModal(rec); };
-                    })(r)
-                });
-            }
-        }
-        this.items = items;
-        if (this.selectedIndex >= items.length) {
-            this.selectedIndex = Math.max(0, items.length - 1);
-        }
-        if (items[this.selectedIndex] && items[this.selectedIndex].kind === 'divider') {
-            this.selectedIndex = this._nextSelectable(this.selectedIndex, 1);
+        }, 33);
+    };
+    VoiceRecorderScene.prototype._stopRecordTick = function() {
+        if (this._recordTickTimer) {
+            clearInterval(this._recordTickTimer);
+            this._recordTickTimer = null;
         }
     };
 
-    VoiceRecorderScene.prototype._nextSelectable = function(idx, dir) {
-        var n = this.items.length;
-        if (n === 0) return 0;
-        for (var step = 0; step < n; step++) {
-            idx = (idx + dir + n) % n;
-            var it = this.items[idx];
-            if (!it || it.kind !== 'divider') return idx;
+    // Pause / Resume toggle. While paused we freeze the
+    // displayed elapsed by capturing it into `_pausedElapsed`
+    // and stopping the re-render tick — the lamp icon also
+    // swaps to recording_pause in render(). Resuming
+    // back-dates `_recordStartTime` so the running
+    // `Date.now() - _recordStartTime` math picks up where it
+    // left off without a jump.
+    VoiceRecorderScene.prototype._togglePause = function() {
+        if (!this._recording) return;
+        if (this._paused) {
+            // Resume.
+            this._recordStartTime = Date.now() - this._pausedElapsed;
+            this._paused = false;
+            this._startRecordTick();
+        } else {
+            // Pause.
+            this._pausedElapsed = Date.now() - this._recordStartTime;
+            this._paused = true;
+            this._stopRecordTick();
         }
-        return 0;
+        // Link LED follows recording state minus pause —
+        // _applyRecordingLed reads both flags and reconciles.
+        this._applyRecordingLed();
+    };
+
+    // Format an elapsed-ms count as HH:MM:SS:FF (FF = hundredths
+    // of a second, the convention the placeholder Timecode row
+    // used). Caps at 99:59:59:99 — well beyond any plausible
+    // voice-memo session.
+    function pad2(n) { return (n < 10 ? '0' + n : '' + n); }
+    VoiceRecorderScene.prototype._formatTimecode = function(ms) {
+        if (ms < 0) ms = 0;
+        var hh = Math.floor(ms / 3600000);
+        var mm = Math.floor((ms % 3600000) / 60000);
+        var ss = Math.floor((ms % 60000) / 1000);
+        var ff = Math.floor((ms % 1000) / 10);
+        if (hh > 99) hh = 99;
+        return pad2(hh) + ':' + pad2(mm) + ':' + pad2(ss) + ':' + pad2(ff);
+    };
+
+    // "+0 dB" / "+5 dB" / "-3 dB" — always-signed integer
+    // decibels so positive and negative values are visually
+    // distinct in the chip. Zero shows as "+0 dB" to match the
+    // user-facing convention.
+    VoiceRecorderScene.prototype._formatGain = function(db) {
+        var sign = db >= 0 ? '+' : '';
+        return sign + db + ' dB';
+    };
+
+    // Row-index → picker-key lookup. Returns `null` for rows
+    // that don't carry a picker (Input gain, File name, Folder,
+    // Timecode). Keeping this in one place means every "is
+    // this a picker row?" check is identical across
+    // handleInput and render.
+    VoiceRecorderScene.prototype._rowPickerKey = function(rowIdx) {
+        if (rowIdx === 1) return 'inputDevice';
+        if (rowIdx === 4) return 'format';
+        return null;
+    };
+
+    // Row-index → human-readable title for the dropdown overlay
+    // header. Only called when the dropdown is open, so non-
+    // picker rows never reach this and a default fallback isn't
+    // worth the bytes.
+    VoiceRecorderScene.prototype._rowTitle = function(rowIdx) {
+        if (rowIdx === 1) return 'Input device';
+        if (rowIdx === 4) return 'Format';
+        return '';
     };
 
     VoiceRecorderScene.prototype.handleInput = function(action) {
-        if (this._modal) {
-            this._modal.handleInput(action);
+        // ── Open dropdown owns input until it closes ──────────
+        // Mirrors Internet Radio: when the picker is open, the
+        // page-level row navigation steps aside completely.
+        if (this._dropdownOpen) {
+            var picker = this._pickers[this._dropdownKey];
+            if (!picker || !picker.options.length) {
+                this._dropdownOpen = false;
+                this._dropdownKey  = null;
+                return;
+            }
+            var optsOpen = picker.options;
+            if (action === 'back' || action === 'esc') {
+                // Close without committing — `picker.current`
+                // is untouched, so the chip snaps back to
+                // whatever value it had before OK opened the
+                // picker.
+                this._dropdownOpen = false;
+                this._dropdownKey  = null;
+                if (typeof window.requestRender === 'function') {
+                    window.requestRender();
+                }
+                return;
+            }
+            if (action === 'down') {
+                this._dropdownIndex =
+                    (this._dropdownIndex + 1) % optsOpen.length;
+                if (typeof window.requestRender === 'function') {
+                    window.requestRender();
+                }
+                return;
+            }
+            if (action === 'up') {
+                this._dropdownIndex =
+                    (this._dropdownIndex - 1 + optsOpen.length) % optsOpen.length;
+                if (typeof window.requestRender === 'function') {
+                    window.requestRender();
+                }
+                return;
+            }
+            if (action === 'ok' || action === 'run') {
+                // Commit the highlighted option and close.
+                picker.current     = optsOpen[this._dropdownIndex];
+                this._dropdownOpen = false;
+                this._dropdownKey  = null;
+                if (typeof window.requestRender === 'function') {
+                    window.requestRender();
+                }
+                return;
+            }
             return;
         }
-        if (action === 'back' || action === 'esc') return 'pop';
-        if (action === 'down') {
-            this.selectedIndex = this._nextSelectable(this.selectedIndex, 1);
+
+        if (action === 'back') return 'pop';
+
+        // Shared press-flash + onPress dispatch for app-defined
+        // buttons. Mirrors Internet Radio's Play-button code:
+        // press → request render → release after 30 ms → fire
+        // the callback. The brief pressed-frame is the visual
+        // confirmation the user hit a real button rather than
+        // escaped a modal or triggered some hidden shortcut.
+        function flashAndFire(btn) {
+            if (!btn) return;
+            btn.press();
+            if (typeof window.requestRender === 'function') {
+                window.requestRender();
+            }
+            setTimeout(function() {
+                btn.release();
+                if (typeof window.requestRender === 'function') {
+                    window.requestRender();
+                }
+            }, 30);
+            if (typeof btn.onPress === 'function') btn.onPress();
+        }
+
+        // 'esc' (mapped from 'z') fires the Home button.
+        if (action === 'esc' && this._homeBtn) {
+            flashAndFire(this._homeBtn);
             return;
         }
-        if (action === 'up') {
-            this.selectedIndex = this._nextSelectable(this.selectedIndex, -1);
+        // 'edit' (mapped from 'x') fires the Files button —
+        // but Files only exists outside recording mode, so the
+        // dispatch is gated by `_recording`.
+        if (action === 'edit' && this._filesBtn && !this._recording) {
+            flashAndFire(this._filesBtn);
             return;
         }
-        if (action === 'ok' || action === 'run') {
-            var sel = this.items[this.selectedIndex];
-            if (sel && sel.onPress) sel.onPress();
+        // 'del' (mapped from 'v') fires the Pause button —
+        // only meaningful while recording.
+        if (action === 'del' && this._pauseBtn && this._recording) {
+            flashAndFire(this._pauseBtn);
+            return;
+        }
+        // 'run' (mapped from 'b' — device primary action) fires
+        // the Start / Stop button. Suppressed while paused —
+        // the right slot is "Empty" during pause, so 'b' is a
+        // no-op until the user hits Continue first.
+        if (action === 'run' && this._startBtn && !this._paused) {
+            flashAndFire(this._startBtn);
+            return;
+        }
+
+        // Up / down move the focus between the menu lines.
+        // While recording only Input gain (row 0) is visible,
+        // so the focus stays pinned there.
+        if (action === 'up' || action === 'down') {
+            var rowCount = this._recording ? 1 : 6;
+            if (action === 'down') {
+                this._selectedRow = (this._selectedRow + 1) % rowCount;
+            } else {
+                this._selectedRow = (this._selectedRow - 1 + rowCount) % rowCount;
+            }
+            if (typeof window.requestRender === 'function') {
+                window.requestRender();
+            }
+            return;
+        }
+
+        // OK is a row-specific action:
+        //   • Picker rows (Input device / Format) → open the
+        //                    dropdown overlay, seeded with the
+        //                    current option's index so the
+        //                    highlight starts where the user
+        //                    last left it.
+        //   • Input gain   → no-op (left / right handles it).
+        //   • File name    → push TextInputScreen pre-filled
+        //                    with the current filename.
+        //   • Folder       → no-op (drill-in not wired yet).
+        if (action === 'ok') {
+            var pkOk = this._rowPickerKey(this._selectedRow);
+            if (pkOk) {
+                var pOk      = this._pickers[pkOk];
+                var idxStart = pOk.options.indexOf(pOk.current);
+                this._dropdownIndex = idxStart >= 0 ? idxStart : 0;
+                this._dropdownKey   = pkOk;
+                this._dropdownOpen  = true;
+                if (typeof window.requestRender === 'function') {
+                    window.requestRender();
+                }
+            } else if (this._selectedRow === 2) {
+                this._openFileNameEditor();
+            }
+            return;
+        }
+
+        // Left / right is also row-specific:
+        //   • Picker rows (Input device / Format) → cycle
+        //                    options inline (no overlay).
+        //   • Input gain   → bump ±_inputGainStep, clamped to
+        //                    [_inputGainMin, _inputGainMax].
+        //   • File name / Folder → intentionally no-op.
+        if (action === 'left' || action === 'right') {
+            var pkLR = this._rowPickerKey(this._selectedRow);
+            if (pkLR) {
+                var pLR = this._pickers[pkLR];
+                if (!pLR || pLR.options.length <= 1) return;
+                var idx = pLR.options.indexOf(pLR.current);
+                if (idx < 0) idx = 0;
+                idx = (action === 'right')
+                    ? (idx + 1) % pLR.options.length
+                    : (idx - 1 + pLR.options.length) % pLR.options.length;
+                pLR.current = pLR.options[idx];
+            } else if (this._selectedRow === 0) {
+                var delta = (action === 'right')
+                    ? this._inputGainStep
+                    : -this._inputGainStep;
+                var next  = this._inputGainDb + delta;
+                if (next < this._inputGainMin) next = this._inputGainMin;
+                if (next > this._inputGainMax) next = this._inputGainMax;
+                this._inputGainDb = next;
+            }
+            // File name (2) / Folder (3) rows: no-op.
+            if (typeof window.requestRender === 'function') {
+                window.requestRender();
+            }
             return;
         }
     };
 
-    // ── Per-recording detail modal ───────────────────────────
-    // Wi-Fi-verbose-style modal: ResponsiveFrame body + black
-    // TabHeader (recording date), simple action list:
-    //   • Play / Stop (toggle, surfaces playback state)
-    //   • Delete this recording
-    // Followed by a small info section: Size, Duration. Esc /
-    // Back closes. Selection skips dividers via nextSelectable.
-    VoiceRecorderScene.prototype._openDetailModal = function(rec) {
+    // Push the shared TextInputScreen pre-seeded with the
+    // current filename. The keyboard takes over input until the
+    // user commits (Save) or discards; either way it pops itself
+    // off the scene stack and we resume painting the list page.
+    VoiceRecorderScene.prototype._openFileNameEditor = function() {
         var self = this;
-        var FRAME_X      = SCREEN_PAD;
-        var FRAME_W      = 256 - SCREEN_PAD * 2;
-        var KV_H         = 12;
-        var DIVIDER_H    = 3;
-        var INNER_LABEL_GAP = 4;
-
-        // Local selection / state.
-        var selectedIdx = 0;
-        var pressedIdx  = -1;
-        var deleting    = false;
-
-        function rowsList() {
-            var rows = [];
-            rows.push({
-                kind: 'action',
-                text: (self._playing === rec.name) ? 'Stop' : 'Play',
-                selectable: true,
-                onPress: function() {
-                    if (self._playing === rec.name) {
-                        self._stopPlayback();
-                    } else {
-                        self._playFile(rec.name);
-                    }
+        if (typeof TextInputScreen === 'undefined' || !this.sceneManager) return;
+        var screen = new TextInputScreen({
+            displayName: 'File name',
+            title:       'File name',
+            initialText: this._fileName,
+            onSave: function(text) {
+                // Trim incidental whitespace; reject an empty
+                // string so the row never reads as blank.
+                var clean = (text == null ? '' : String(text)).replace(/^\s+|\s+$/g, '');
+                if (clean.length === 0) return;
+                self._fileName = clean;
+                if (typeof window.requestRender === 'function') {
+                    window.requestRender();
                 }
-            });
-            rows.push({
-                kind: 'action',
-                text: 'Delete this recording',
-                selectable: true,
-                onPress: function() {
-                    if (deleting) return;
-                    deleting = true;
-                    // If we're playing the file we're about to
-                    // delete, stop first so the OS isn't holding
-                    // the descriptor open.
-                    if (self._playing === rec.name) self._stopPlayback();
-                    self._deleteFile(rec.name, function() {
-                        deleting = false;
-                        self._fetchList();
-                        // Close the modal — the file is gone, so
-                        // there's nothing to drill into.
-                        closeModal();
-                    });
-                }
-            });
-            rows.push({ kind: 'sectionDivider', selectable: false });
-            // Info section.
-            rows.push({
-                kind: 'kv', selectable: false,
-                label: 'Size:',     value: formatSize(rec.size)
-            });
-            rows.push({
-                kind: 'kv', selectable: false,
-                label: 'Duration:', value: formatDuration(estimateDurationSec(rec.size))
-            });
-            rows.push({
-                kind: 'kv', selectable: false,
-                label: 'Date:',     value: formatRecordingDate(rec.name)
-            });
-            return rows;
-        }
-
-        function rowHeightOf(row) {
-            if (row.kind === 'sectionDivider') return DIVIDER_H;
-            if (row.kind === 'action')         return ROW_H;
-            return KV_H;
-        }
-
-        function nextSelectable(rows, idx, dir) {
-            var n = rows.length;
-            for (var step = 0; step < n; step++) {
-                idx = (idx + dir + n) % n;
-                if (rows[idx].selectable) return idx;
             }
-            return -1;
-        }
-
-        var listSelector = new MenuSelectorFrame({
-            x: 0, y: 0, width: 1, height: ROW_H + 2,
-            anchorH: 'left', anchorV: 'top',
-            strokeColor: '#000', showStroke: true, showFill: false
         });
-        var tab = new UI.TabHeader(formatRecordingDate(rec.name));
-        tab.x = FRAME_X;
-        tab.h = TAB_H;
-
-        function computeLayout() {
-            var rows = rowsList();
-            var rowOffsets = [];
-            var contentH   = 0;
-            for (var i = 0; i < rows.length; i++) {
-                rowOffsets.push(contentH);
-                contentH += rowHeightOf(rows[i]);
-            }
-            var maxModalH = MAX_BOTTOM_Y - SCREEN_PAD;
-            var maxFrameH = maxModalH - TAB_H;
-            var frameH    = Math.min(maxFrameH,
-                contentH + FRAME_PAD_TOP + FRAME_PAD_BOTTOM);
-            if (frameH < 28) frameH = 28;
-            var modalH    = TAB_H + frameH;
-            var centeredY = Math.floor((CANVAS_H - modalH) / 2);
-            var pinnedY   = MAX_BOTTOM_Y - modalH;
-            var topY      = Math.min(centeredY, pinnedY);
-            if (topY < SCREEN_PAD) topY = SCREEN_PAD;
-            var frameY    = topY + TAB_H;
-            var innerTop  = frameY + FRAME_PAD_TOP;
-            var innerH    = frameH - FRAME_PAD_TOP - FRAME_PAD_BOTTOM;
-            return { topY: topY, frameY: frameY, frameH: frameH,
-                     innerTop: innerTop, innerH: innerH,
-                     contentH: contentH, rows: rows,
-                     rowOffsets: rowOffsets };
-        }
-
-        function closeModal() {
-            self._modal = null;
-            if (window.requestRender) window.requestRender();
-        }
-
-        self._modal = {
-            handleInput: function(action) {
-                if (action === 'back' || action === 'esc') {
-                    closeModal();
-                    return true;
-                }
-                var rows = rowsList();
-                if (action === 'down') {
-                    selectedIdx = nextSelectable(rows, selectedIdx, 1);
-                    if (window.requestRender) window.requestRender();
-                    return true;
-                }
-                if (action === 'up') {
-                    selectedIdx = nextSelectable(rows, selectedIdx, -1);
-                    if (window.requestRender) window.requestRender();
-                    return true;
-                }
-                if (action === 'ok' || action === 'run') {
-                    var sel = rows[selectedIdx];
-                    if (!sel || !sel.onPress) return true;
-                    pressedIdx = selectedIdx;
-                    if (window.requestRender) window.requestRender();
-                    setTimeout(function() {
-                        pressedIdx = -1;
-                        if (window.requestRender) window.requestRender();
-                    }, 30);
-                    sel.onPress();
-                    return true;
-                }
-                return false;
-            },
-            render: function(canvas) {
-                var ctx = canvas.ctx;
-                ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
-                ctx.fillRect(0, 0, canvas.w, canvas.h);
-
-                var L = computeLayout();
-                var INNER_X   = FRAME_X + 3;
-                var dynInnerW = FRAME_W - 6;
-
-                tab.y = L.topY;
-
-                var frame = new ResponsiveFrame({
-                    x: FRAME_X, y: L.frameY,
-                    width: FRAME_W, height: L.frameH,
-                    anchorH: 'left', anchorV: 'top',
-                    strokeColor: '#000', showStroke: true,
-                    fillColor: '#ffffff', showFill: true,
-                    cornerRadius: 3,
-                    corners: { tl: false, tr: true, bl: true, br: true }
-                });
-                frame.render(canvas);
-                tab.render(canvas);
-
-                ctx.save();
-                ctx.beginPath();
-                ctx.rect(FRAME_X + 1, L.frameY + 1, FRAME_W - 2, L.frameH - 2);
-                ctx.clip();
-
-                var rows = L.rows;
-                var selectedY = -1;
-                for (var i = 0; i < rows.length; i++) {
-                    var row = rows[i];
-                    var rowAbsY = L.innerTop + L.rowOffsets[i];
-                    var rh = rowHeightOf(row);
-                    if (i === selectedIdx) selectedY = rowAbsY;
-                    var isSelected = (i === selectedIdx);
-                    var isPressed  = (i === pressedIdx);
-                    var fg    = isPressed ? '#fff' : '#000';
-                    var fgDim = isPressed ? '#fff' : '#999999';
-                    if (isPressed && row.selectable) {
-                        canvas.drawRoundRect(INNER_X, rowAbsY - 1,
-                            dynInnerW, rh + 2, 2, '#000');
-                    }
-                    if (row.kind === 'sectionDivider') {
-                        canvas.drawHLine(INNER_X + 3, rowAbsY + 1,
-                            dynInnerW - 6, '#CCCCCC');
-                    } else if (row.kind === 'action') {
-                        HaxrcorpFont16.draw(ctx, row.text,
-                            INNER_X + 5, rowAbsY + 1, fg);
-                    } else if (row.kind === 'kv') {
-                        var lblColor = isPressed ? '#fff' : '#6D6D6D';
-                        HaxrcorpFont16.draw(ctx, row.label,
-                            INNER_X + 5, rowAbsY + 1, lblColor);
-                        var lblW = HaxrcorpFont16.textWidth(row.label);
-                        var valStr = String(row.value);
-                        var valMaxW = dynInnerW - 5 - lblW - INNER_LABEL_GAP - 2;
-                        HaxrcorpFont16.draw(ctx, ellipsizeTo(valStr, valMaxW),
-                            INNER_X + 5 + lblW + INNER_LABEL_GAP,
-                            rowAbsY + 1, fg);
-                    }
-                }
-                ctx.restore();
-
-                if (selectedY >= 0 && pressedIdx !== selectedIdx) {
-                    var sH = rowHeightOf(rows[selectedIdx]) + 2;
-                    ctx.save();
-                    ctx.beginPath();
-                    ctx.rect(FRAME_X + 1, L.frameY + 1, FRAME_W - 2, L.frameH - 2);
-                    ctx.clip();
-                    listSelector.setSize(dynInnerW, sH);
-                    listSelector.setPosition(INNER_X, selectedY - 1);
-                    listSelector.render(canvas);
-                    ctx.restore();
-                }
-            }
-        };
-
-        if (window.requestRender) window.requestRender();
+        this.sceneManager.push(screen);
     };
+
+    // Title-bar metrics — ported from Internet Radio so app
+    // screens share the same chrome. Status bar stays as the
+    // top strip; immediately under it sits a 16-px-tall light-
+    // gray header carrying the app icon + name in
+    // Born2bSportyV2Medium.
+    var TITLE_H        = 16;
+    var TITLE_FILL     = '#D9D9D9';
+    var ICON_X         = 2;     // 2 px in from the left edge
+    var TITLE_TEXT_X   = 18;    // 14-px icon ends at col 15, then 2 px gap
+    var TITLE_TEXT_DY  = 1;     // baseline drop below status-bar bottom
 
     VoiceRecorderScene.prototype.render = function(canvas) {
-        // Refresh items every frame so the "playing" indicator on
-        // saved-recording rows updates if playback toggles via
-        // the modal underneath.
-        this._buildItems();
         canvas.clear('#fff');
-        UI.drawStatusBar(canvas, '');
+        // (1) Standard status bar across the top. Empty title —
+        // the gray app-title bar below carries the app name, so
+        // the status bar just shows battery / wifi / etc.
+        if (typeof UI !== 'undefined' && typeof UI.drawStatusBar === 'function') {
+            UI.drawStatusBar(canvas, '');
+        }
+        // (2) App-title header. Full-width 16-px gray strip
+        // flush against the status bar's bottom edge, same fill
+        // colour Internet Radio uses.
+        var ctx = canvas.ctx;
+        var titleY = UI.STATUS_BAR_H;
+        ctx.fillStyle = TITLE_FILL;
+        ctx.fillRect(0, titleY, canvas.w, TITLE_H);
+        // (3) App icon — static 14×14 grayscale sprite. Sits at
+        // x=2 / y=titleY+1 so the cap aligns with the title text
+        // baseline (matches the +1 nudge Internet Radio applies
+        // to its animated icon).
+        if (this.icon) {
+            canvas.drawSprite(this.icon, ICON_X, titleY + 1, '#000');
+        }
+        // (4) Title text — Born2bSportyV2Medium, 18 px in from
+        // the left, 1 px below the status bar so the cap line
+        // is tight against the strip's top edge.
+        Born2bSportyV2Medium.draw(ctx, this.displayName,
+            TITLE_TEXT_X, UI.STATUS_BAR_H + TITLE_TEXT_DY, '#000');
 
-        // Breadcrumb.
-        var titles = (this.sceneManager && typeof this.sceneManager.breadcrumb === 'function')
-            ? this.sceneManager.breadcrumb()
-            : (this.breadcrumbTitle ? [this.breadcrumbTitle] : []);
-        var trail = titles.length ? '> ' + titles.join(' > ') : '';
-        if (trail) {
-            HaxrcorpFont16.draw(canvas.ctx, trail,
-                BREADCRUMB_X, BREADCRUMB_Y, '#CCCCCC');
+        // (5) Stereo mic-level meters. Two horizontal chambers
+        // stacked with a 1-px gap. Each chamber is the same
+        // 238 × 7 ResponsiveFrame (gray fill #D9D9D9, black
+        // stroke, 2-px corners). The current peak for each
+        // channel paints as a left-anchored black ResponsiveFrame
+        // on top — left corners always rounded so they meet the
+        // gray chamber's curve, right corners square unless the
+        // level is at 100 % so the moving edge reads as the
+        // current value. Same pattern MenuDropdownLine uses for
+        // its slider chip.
+        var METER_X       = 13;
+        var METER_W       = 238;
+        var METER_H       = 7;
+        var METER_R       = 2;
+        var METER_GAP     = 1;
+        var METER_GRAY    = '#D9D9D9';
+        var METER_BLACK   = '#000000';
+        var METER_TOP_Y   = 31;
+        var METER_BOT_Y   = METER_TOP_Y + METER_H + METER_GAP;
+
+        // L / R channel labels. Right-aligned 2 px before each
+        // meter's left edge so the gap between glyph and chamber
+        // stays consistent regardless of the glyph's natural
+        // width. Vertically nudged so the cap line sits centred
+        // on the 7-px chamber (HaxrcorpFont16's visible cap
+        // starts ~row 2 / spans ~9 rows; -1 lands the centre at
+        // y + ~3).
+        function drawChannelLabel(ch, meterY) {
+            var w = HaxrcorpFont16.textWidth(ch);
+            HaxrcorpFont16.draw(ctx, ch,
+                METER_X - 2 - w, meterY - 1, '#000');
+        }
+        drawChannelLabel('L', METER_TOP_Y);
+        drawChannelLabel('R', METER_BOT_Y);
+
+        function drawMeter(y, levelPct) {
+            // Gray chamber — no stroke, just the rounded fill.
+            new ResponsiveFrame({
+                x: METER_X,        y: y,
+                width: METER_W,    height: METER_H,
+                anchorH: 'left',   anchorV: 'top',
+                fillColor:    METER_GRAY,
+                showFill:     true,
+                showStroke:   false,
+                cornerRadius: METER_R
+            }).render(canvas);
+            // Black peak fill — width proportional to level.
+            // Clamp to 0..100 so a bad poll can't draw past the
+            // chamber's right edge.
+            var lvl = Math.max(0, Math.min(100, levelPct));
+            if (lvl <= 0) return;
+            var fillW   = Math.round(METER_W * lvl / 100);
+            var isFull  = fillW >= METER_W;
+            new ResponsiveFrame({
+                x: METER_X,        y: y,
+                width: fillW,      height: METER_H,
+                anchorH: 'left',   anchorV: 'top',
+                fillColor:    METER_BLACK,
+                strokeColor:  METER_BLACK,
+                showFill:     true,
+                showStroke:   false,
+                cornerRadius: METER_R,
+                corners: {
+                    tl: true,      bl: true,
+                    tr: isFull,    br: isFull
+                }
+            }).render(canvas);
         }
 
-        var y = this.containerY;
-        var selectedY = y;
-        var TEXT_DY = 1;
-        for (var i = 0; i < this.items.length; i++) {
-            var item = this.items[i];
-            if (item.kind === 'divider') {
-                canvas.drawHLine(SELECTOR_X + 3, y + 1,
-                    SELECTOR_W - 6, DIVIDER_COL);
-                y += DIVIDER_ROW_H;
-                continue;
-            }
-            if (i === this.selectedIndex) selectedY = y;
-            var isSelected = (i === this.selectedIndex);
+        drawMeter(METER_TOP_Y, this._micLeft);
+        drawMeter(METER_BOT_Y, this._micRight);
 
-            // Saved-recording rows: name on left, "Playing"
-            // marker on right when this row's file is the one
-            // being played back. New-recording row: just label.
-            var rowText = item.text;
-            var rightTxt = '';
-            if (item.file && this._playing === item.file) {
-                rightTxt = 'Playing';
-            }
-            var rightW = rightTxt ? HaxrcorpFont16.textWidth(rightTxt) : 0;
-            var rightX = SELECTOR_X + SELECTOR_W - rightW - STATUS_RIGHT_PAD - 8;
-            // Ellipsise label so it can't collide with the
-            // right-side marker (or the chevron-bar selector
-            // when this row is highlighted).
-            var labelMaxW = (rightTxt ? rightX : SELECTOR_X + SELECTOR_W - 12)
-                          - (SELECTOR_X + TEXT_LEFT_PAD);
-            var labelText = ellipsizeTo(rowText, labelMaxW);
-            HaxrcorpFont16.draw(canvas.ctx, labelText,
-                SELECTOR_X + TEXT_LEFT_PAD, y + TEXT_DY, '#000');
-            if (rightTxt) {
-                HaxrcorpFont16.draw(canvas.ctx, rightTxt,
-                    SELECTOR_X + SELECTOR_W - rightW - STATUS_RIGHT_PAD - 8,
-                    y + TEXT_DY, isSelected ? '#000' : '#999999');
-            }
+        // (6) Input-device picker row. MenuDropdownLine renders
+        // the title flush against the left edge and the value
+        // chip anchored to the right edge — same shape as
+        // Internet Radio's "Audio device" row. Selector outline
+        // (the page-level focus indicator) wraps the row 1 px
+        // below the row's top y so it centres on the chip
+        // baseline rather than riding flush.
+        // Rows now stack flush against each other — the gap was
+        // 1 px previously. 0 keeps the column tighter so all 5
+        // rows fit comfortably under the meters.
+        var ROW_GAP    = 0;
+        var gainRowY   = METER_BOT_Y + METER_H + 2;
+        var deviceRowY = gainRowY   + MenuDropdownLine.HEIGHT + ROW_GAP;
+        var fileRowY   = deviceRowY + MenuDropdownLine.HEIGHT + ROW_GAP;
+        var folderRowY = fileRowY   + MenuDropdownLine.HEIGHT + ROW_GAP;
+        var formatRowY   = folderRowY + MenuDropdownLine.HEIGHT + ROW_GAP;
+        var timecodeRowY = formatRowY + MenuDropdownLine.HEIGHT + ROW_GAP;
+        // Table that maps row index to its y anchor so the
+        // selector / dropdown overlay can look up the row
+        // position without re-doing the math.
+        var rowYs = [gainRowY, deviceRowY, fileRowY, folderRowY, formatRowY, timecodeRowY];
 
-            y += ROW_H;
-        }
+        // Input gain row (row 0, topmost) — inline ± value,
+        // no dropdown. Always visible, including while
+        // recording so the user can still ride the gain.
+        new MenuDropdownLine({
+            y:        gainRowY,
+            title:    'Input gain',
+            value:    this._formatGain(this._inputGainDb),
+            selected: !this._dropdownOpen && this._selectedRow === 0
+        }).render(canvas);
 
-        // Empty-state placeholder when there are no recordings
-        // (only the New-recording sentinel exists). Sits below
-        // the divider position so the layout reads as intentional.
-        if (this._loaded && this._recordings.length === 0) {
-            var msg = 'No recordings yet';
-            HaxrcorpFont16.draw(canvas.ctx, msg,
-                SELECTOR_X + TEXT_LEFT_PAD,
-                this.containerY + ROW_H + DIVIDER_ROW_H + 6, '#999999');
-        }
+        // Rows 1..5 are only present out of recording mode.
+        // While `_recording` is true a single placeholder frame
+        // takes their slot (drawn further down).
+        if (!this._recording) {
+            // Input device row (row 1) — dropdown picker.
+            new MenuDropdownLine({
+                y:        deviceRowY,
+                title:    'Input device',
+                value:    this._pickers.inputDevice.current,
+                // Show the `< value >` arrows only when this
+                // row is both focused AND the dropdown isn't
+                // open — same dual condition Internet Radio
+                // uses so the arrows never compete with the
+                // open overlay for focus.
+                selected: !this._dropdownOpen && this._selectedRow === 1
+            }).render(canvas);
 
-        // Selector frame on selected row.
-        var selItem = this.items[this.selectedIndex];
-        var useChevronFrame = !!(selItem && selItem.chevron);
-        if (useChevronFrame) {
-            this.chevronSelectorFrame.setPosition(SELECTOR_X, selectedY + SELECTOR_Y_OFFSET);
-            this.chevronSelectorFrame.setSize(SELECTOR_W, SELECTOR_H);
-            this.chevronSelectorFrame.render(canvas);
+            // File name row — drill-in to TextInputScreen on OK.
+            // `selected: false` always: left / right do nothing
+            // on this row so we never want the `<` / `>`
+            // arrows that MenuDropdownLine paints when
+            // selected — the chevron on the selector frame is
+            // the only affordance.
+            new MenuDropdownLine({
+                y:        fileRowY,
+                title:    'File name',
+                value:    this._fileName,
+                selected: false
+            }).render(canvas);
+
+            // Folder row — same visual treatment as File name.
+            // OK is intentionally a no-op for now; the chevron
+            // is present so the row matches its eventual
+            // drill-in behaviour without shifting layout when
+            // that lands.
+            new MenuDropdownLine({
+                y:        folderRowY,
+                title:    'Folder',
+                value:    this._folderName,
+                selected: false
+            }).render(canvas);
+
+            // Format row — second dropdown picker. Shares all
+            // the overlay machinery the Input device row uses;
+            // the plain (non-chevron) selector frame matches
+            // the spec.
+            new MenuDropdownLine({
+                y:        formatRowY,
+                title:    'Format',
+                value:    this._pickers.format.current,
+                selected: !this._dropdownOpen && this._selectedRow === 4
+            }).render(canvas);
+
+            // Timecode row — display-only drill-in. Same
+            // chevron-selector treatment as File name / Folder.
+            new MenuDropdownLine({
+                y:        timecodeRowY,
+                title:    'Timecode',
+                value:    this._timecode,
+                selected: false
+            }).render(canvas);
         } else {
-            this.selectorFrame.setPosition(SELECTOR_X, selectedY + SELECTOR_Y_OFFSET);
-            this.selectorFrame.setSize(SELECTOR_W, SELECTOR_H);
-            this.selectorFrame.render(canvas);
+            // Recording rectangle — light-gray rounded panel
+            // that replaces the bottom menu rows while a
+            // recording session is active. Anchored at (3, 68)
+            // per the spec; fills the remaining horizontal
+            // space with a 3-px margin on the right so the
+            // panel reads symmetrically. Height fills down to
+            // ~2 px above the bottom-button row so the panel
+            // and the Start / Stop button don't kiss.
+            var REC_RECT_X = 3;
+            var REC_RECT_Y = 68;
+            var REC_RECT_W = canvas.w - 6;
+            var REC_RECT_H = 60;
+            new ResponsiveFrame({
+                x: REC_RECT_X,   y: REC_RECT_Y,
+                width: REC_RECT_W, height: REC_RECT_H,
+                anchorH: 'left',   anchorV: 'top',
+                fillColor:    '#000000',
+                showFill:     true,
+                showStroke:   false,
+                cornerRadius: 4
+            }).render(canvas);
+            // File name in Born2bSportyV2Medium, 7 px in from
+            // the rectangle's left edge and 1 px down from its
+            // top edge — labels the current take so the user
+            // sees what file is being written while the rows
+            // that normally hold this info are hidden.
+            var FN_TEXT_X = REC_RECT_X + 7;
+            var FN_TEXT_Y = REC_RECT_Y + 1;
+            Born2bSportyV2Medium.draw(canvas.ctx, this._fileName,
+                FN_TEXT_X, FN_TEXT_Y, '#FFFFFF');
+            // Horizontal white hairline 6 px below the visible
+            // bottom of the file-name text. Born2bSportyV2Medium's
+            // visible glyph spans rows 2..11 of its 18-row
+            // bitmap, so the visible bottom sits at draw-y + 11.
+            // Divider at draw-y + 11 + 6 = draw-y + 17 →
+            // y = FN_TEXT_Y + 17. Spans the full width of the
+            // recording rectangle.
+            canvas.drawHLine(REC_RECT_X, FN_TEXT_Y + 17,
+                REC_RECT_W, '#FFFFFF');
+
+            // Record lamp — swaps icon based on pause state:
+            //   recording   → Icons.record_circle  (10×10)
+            //   paused      → Icons.recording_pause (14×18)
+            // Both anchor at the same top-left (6 px in from
+            // the rect's left edge, 27 px down from its top).
+            // Timecode anchors against the smaller of the two
+            // (LAMP_W = 10) so its x doesn't jitter when the
+            // user toggles pause — the pause icon's right edge
+            // (at x = lampX + 14 = 23) ends up flush with the
+            // text's left edge, which still reads cleanly.
+            var LAMP_W = 10;
+            var LAMP_H = 10;
+            var lampX  = REC_RECT_X + 6;
+            var lampY  = REC_RECT_Y + 27;
+            var lampIcon = (this._paused
+                            && typeof Icons !== 'undefined'
+                            && Icons.recording_pause)
+                ? Icons.recording_pause
+                : (typeof Icons !== 'undefined' ? Icons.record_circle : null);
+            if (lampIcon) {
+                canvas.drawSprite(lampIcon, lampX, lampY, '#FFFFFF');
+            }
+
+            // Running timecode — HH:MM:SS:FF. When paused the
+            // tick is halted and `_pausedElapsed` carries the
+            // frozen value forward so the readout sits still
+            // until Pause is toggled off (which back-dates
+            // `_recordStartTime` so the running math picks up
+            // where it left off without a jump).
+            var elapsedMs;
+            if (this._paused) {
+                elapsedMs = this._pausedElapsed;
+            } else if (this._recordStartTime) {
+                elapsedMs = Date.now() - this._recordStartTime;
+            } else {
+                elapsedMs = 0;
+            }
+            var tcText = this._formatTimecode(elapsedMs);
+            // Lamp bbox right = lampX + LAMP_W = 19. Gap 4 →
+            // text x = 23. Born2bSporty's visible cap spans
+            // rows 2..11 (centre at draw-y + 6.5); to centre on
+            // the lamp's centre y (100) the draw-y lands at
+            // 100 - 7 (1-px nudge to balance optical centring).
+            Born2bSportyV2Medium.draw(canvas.ctx, tcText,
+                lampX + LAMP_W + 4, lampY + (LAMP_H / 2) - 7, '#FFFFFF');
+
+            // Format + Folder annotations along the bottom edge
+            // of the recording rectangle. Format on the left, 6
+            // px in from the rect's left edge; Folder follows
+            // with 7 px padding. Both in HaxrcorpFont16. The y
+            // anchor (bottom - 3 - 11) places the bitmap's
+            // bottom row 3 px above the rect's bottom edge.
+            var BOTTOM_TEXT_Y = REC_RECT_Y + REC_RECT_H - 3 - 11;
+            var formatText    = this._pickers.format.current || '';
+            var formatTextX   = REC_RECT_X + 6;
+            HaxrcorpFont16.draw(canvas.ctx, formatText,
+                formatTextX, BOTTOM_TEXT_Y, '#FFFFFF');
+            var formatW       = HaxrcorpFont16.textWidth(formatText);
+            HaxrcorpFont16.draw(canvas.ctx, this._folderName,
+                formatTextX + formatW + 7, BOTTOM_TEXT_Y, '#FFFFFF');
+
+            // Right-aligned stack of three labels along the
+            // recording rectangle's right edge, 5 px in from
+            // the right and stacked from bottom up:
+            //   1. "1h 30m"     — at BOTTOM_TEXT_Y (shared
+            //                      baseline with Format /
+            //                      Folder on the left).
+            //   2. "8.3 GB"     — 4-px gap above (1).
+            //   3. "Available:" — 4-px gap above (2).
+            // All three are static placeholders for now;
+            // eventually they'll show remaining take length,
+            // free disk space, and the "Available:" label.
+            // Spacing maths use HaxrcorpFont16's 11-row bitmap
+            // height and a 4-row inter-line gap.
+            var RIGHT_PAD     = 5;
+            var LINE_H        = 11;
+            var LINE_GAP      = 2;
+            var rightTextX    = REC_RECT_X + REC_RECT_W - RIGHT_PAD;
+            function drawRightAligned(ctx, text, y) {
+                var w = HaxrcorpFont16.textWidth(text);
+                HaxrcorpFont16.draw(ctx, text, rightTextX - w, y, '#FFFFFF');
+            }
+
+            var bottomLineY = BOTTOM_TEXT_Y;
+            var midLineY    = bottomLineY - LINE_GAP - LINE_H;   // 99
+            var topLineY    = midLineY    - LINE_GAP - LINE_H;   // 84
+            drawRightAligned(canvas.ctx, '1h 30m',     bottomLineY);
+            drawRightAligned(canvas.ctx, '8.3 GB',     midLineY);
+            drawRightAligned(canvas.ctx, 'Available:', topLineY);
         }
 
-        if (this._modal) this._modal.render(canvas);
+        // Page-level selector outline anchored to the focused
+        // row. File name / Folder / Timecode rows use the
+        // chevron-bearing variant; the picker / value rows use
+        // the plain outline. Suppressed entirely while the
+        // dropdown overlay is open so the inner-selector inside
+        // it is the only "this is focused" cue on screen.
+        if (!this._dropdownOpen) {
+            var selY  = rowYs[this._selectedRow];
+            var frame = (this._selectedRow === 2
+                      || this._selectedRow === 3
+                      || this._selectedRow === 5)
+                ? this._chevronSelectorFrame
+                : this._selectorFrame;
+            frame.setPosition(2, selY);
+            frame.setSize(252, 15);
+            frame.render(canvas);
+        }
+
+        // App-defined buttons — drawn before the dropdown
+        // overlay so the overlay's wash mutes them along with
+        // the rest of the page chrome.
+        //
+        // Layout by mode (5 slots, left → right):
+        //   idle      : Home  | Files | …     | …       | Start
+        //   recording : Home  | …     | …     | Pause   | Stop
+        //   paused    : Home  | …     | …     | Resume  | …
+        //
+        // The right-button label flips between Start and Stop
+        // each render; the middle slot's button flips between
+        // Pause and Resume the same way.
+        if (this._startBtn) {
+            this._startBtn.text = this._recording ? 'Stop' : 'Start';
+        }
+        if (this._pauseBtn) {
+            this._pauseBtn.text = this._paused ? 'Resume' : 'Pause';
+        }
+        if (this._homeBtn) this._homeBtn.render(canvas);
+        // Files appears only when idle (out of recording).
+        if (!this._recording && this._filesBtn) {
+            this._filesBtn.render(canvas);
+        }
+        // Pause / Continue appears while recording (both
+        // running and paused — label flip handles the state).
+        if (this._recording && this._pauseBtn) {
+            this._pauseBtn.render(canvas);
+        }
+        // Start / Stop appears in idle and while recording but
+        // NOT while paused — that slot is intentionally empty
+        // during pause so the only routes out are Continue or
+        // Home.
+        if (this._startBtn && !this._paused) {
+            this._startBtn.render(canvas);
+        }
+
+        // (7) Dropdown overlay — painted LAST so it sits above
+        // all the page chrome. Anchored at the chip's top-left
+        // of whichever picker row owns the open dropdown
+        // (Input device, Format, or any future picker), so it
+        // reads as "this chip grew downward to reveal its
+        // options".
+        if (this._dropdownOpen && this._dropdownKey) {
+            // Find the row that owns the open key by walking
+            // the same lookup handleInput uses — keeps the two
+            // sides in lockstep.
+            var openRowIdx = -1;
+            for (var ri = 0; ri < rowYs.length; ri++) {
+                if (this._rowPickerKey(ri) === this._dropdownKey) {
+                    openRowIdx = ri;
+                    break;
+                }
+            }
+            if (openRowIdx >= 0) {
+                var chipX = canvas.w
+                          - MenuDropdownLine.CHIP_WIDTH
+                          - 5;                          // CHIP_RIGHT_PAD
+                var chipY = rowYs[openRowIdx] + MenuDropdownLine.TOP_PAD;
+                this._renderDropdown(canvas, chipX, chipY);
+            }
+        }
+    };
+
+    // Port of Internet Radio's `_renderDropdown`. Same visual
+    // layering: semi-transparent white wash → re-drawn row
+    // title for crispness → gray ResponsiveFrame body → items
+    // stacked with 1-px dividers → MenuSelectorFrame around
+    // the highlighted item.
+    VoiceRecorderScene.prototype._renderDropdown = function(canvas, chipX, chipY) {
+        var ctx     = canvas.ctx;
+        var picker  = this._pickers[this._dropdownKey];
+        if (!picker) return;
+        var options = picker.options || [];
+        if (!options.length) return;
+
+        var ITEM_H = 13;
+        var DIV_H  = 1;
+        var W      = MenuDropdownLine.CHIP_WIDTH;       // 180
+        var n      = options.length;
+        // body height = N items + (N-1) dividers + 1 px top + 1 px bottom
+        var H      = ITEM_H * n + DIV_H * (n - 1) + 2;
+
+        // (1) Wash everything else out — same alpha the verbose
+        // wifi modals and Internet Radio's dropdown use.
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
+        ctx.fillRect(0, 0, canvas.w, canvas.h);
+
+        // (2) Re-draw the row title in solid black so it stays
+        // crisp on top of the wash — visual anchor for "you're
+        // picking the value of THIS row". Title string comes
+        // from the same lookup `handleInput` uses so we never
+        // drift out of sync. Coords mirror MenuDropdownLine's
+        // title position (TITLE_X = 6, draw y = chipY since
+        // chipY already equals row.y + TOP_PAD).
+        var openRowIdx = -1;
+        for (var ti = 0; ti < 5; ti++) {
+            if (this._rowPickerKey(ti) === this._dropdownKey) {
+                openRowIdx = ti;
+                break;
+            }
+        }
+        var titleStr = openRowIdx >= 0 ? this._rowTitle(openRowIdx) : '';
+        if (titleStr) {
+            HaxrcorpFont16.draw(ctx, titleStr, 6, chipY, '#000');
+        }
+
+        // (3) Body. Same fill colour as the closed chip so the
+        // dropdown reads as the chip growing downward.
+        new ResponsiveFrame({
+            x: chipX, y: chipY,
+            width: W, height: H,
+            anchorH: 'left', anchorV: 'top',
+            showStroke: false,
+            showFill:   true, fillColor: MenuDropdownLine.CHIP_FILL,
+            cornerRadius: 3,
+            corners: { tl: true, tr: true, bl: true, br: true }
+        }).render(canvas);
+
+        // (4) Items + dividers. Items are centred HaxrcorpFont16;
+        // each item block is ITEM_H tall with a 1-px divider
+        // after it (except the last). Top stroke = row 0; first
+        // item sits at row 1.
+        var selectedItemY = chipY + 1;
+        for (var i = 0; i < n; i++) {
+            var itemY = chipY + 1 + i * (ITEM_H + DIV_H);
+            var label = String(options[i]);
+            var labelW = HaxrcorpFont16.textWidth(label);
+            HaxrcorpFont16.draw(ctx, label,
+                chipX + Math.floor((W - labelW) / 2),
+                itemY + 1, '#000');
+            if (i === this._dropdownIndex) selectedItemY = itemY;
+            if (i < n - 1) {
+                canvas.drawHLine(chipX + 1, itemY + ITEM_H,
+                    W - 2, '#999999');
+            }
+        }
+
+        // (5) Inner selector outline around the highlighted item.
+        // Inset 1 px on the right so MenuSelectorFrame's BR
+        // shadow pixel doesn't run past the body's right edge.
+        this._dropdownInnerSelector.setPosition(chipX, selectedItemY);
+        this._dropdownInnerSelector.setSize(W - 1, ITEM_H + 2);
+        this._dropdownInnerSelector.render(canvas);
     };
 
     return VoiceRecorderScene;
-})();
-
-// ─────────────────────────────────────────────────────────────
-// RecordingScene — active capture screen. Modal-styled card
-// (TabHeader + ResponsiveFrame) with a blinking REC dot and
-// MM:SS counter centred in the body. Triple coverage on stop:
-//   • exit()                    ← scene pop
-//   • pagehide                  ← tab close, /api/version reload, TTY switch
-//   • beforeunload              ← dev-browser navigation
-// All paths POST /api/record/stop; the server is idempotent.
-// ─────────────────────────────────────────────────────────────
-var RecordingScene = (function() {
-    var SCREEN_PAD       = 4;
-    var TAB_H            = 16;
-    var FRAME_BOTTOM_Y   = 128;
-    var FRAME_X          = SCREEN_PAD;
-    var FRAME_W          = 256 - SCREEN_PAD * 2;
-    var FRAME_TOP_Y      = SCREEN_PAD + TAB_H + 4;     // a touch below the tab
-    var FRAME_H          = FRAME_BOTTOM_Y - FRAME_TOP_Y;
-
-    function pad2(n) { return n < 10 ? '0' + n : String(n); }
-
-    function RecordingScene(sceneManager) {
-        this.sceneManager    = sceneManager || null;
-        this.displayName     = 'Recording';
-        this.breadcrumbTitle = 'Recording';
-
-        // 'starting' → 'recording' → ('done' on error). We never
-        // transition to 'done' on a successful start; the user
-        // ends the recording by popping the scene.
-        this.state         = 'starting';
-        this.startedAt     = 0;
-        this.elapsedMs     = 0;
-        this.error         = '';
-        this.filename      = '';
-        this._tickHandle   = null;
-        this._unloadHandler = null;
-        // Real-time mic level (0..1, peak amplitude over the
-        // last ~100 ms). Updated by the SSE subscription below.
-        // `_levelPeakHold` decays slowly on top of the live
-        // value so the user can spot transients even when the
-        // bar's settling cadence is faster than the eye.
-        this._level        = 0;
-        this._levelPeakHold = 0;
-        this._levelPeakAt   = 0;
-        this._levelES      = null;
-        this._tab          = new UI.TabHeader('Recording');
-        this._tab.x = FRAME_X;
-        this._tab.y = SCREEN_PAD;
-        this._tab.h = TAB_H;
-    }
-
-    RecordingScene.prototype.enter = function() {
-        var self = this;
-        try {
-            var xhr = new XMLHttpRequest();
-            xhr.open('POST', '/api/record/start', true);
-            xhr.timeout = 5000;
-            xhr.onload = function() {
-                if (xhr.status === 200) {
-                    try {
-                        var data = JSON.parse(xhr.responseText);
-                        if (data && data.success) {
-                            self.state     = 'recording';
-                            self.startedAt = Date.now();
-                            self.filename  = data.file || '';
-                            if (window.requestRender) window.requestRender();
-                            return;
-                        }
-                        self.error = (data && data.error) || 'Start failed';
-                    } catch (e) { self.error = 'Start failed'; }
-                } else {
-                    try {
-                        var ed = JSON.parse(xhr.responseText);
-                        self.error = (ed && ed.error) || ('HTTP ' + xhr.status);
-                    } catch (e) { self.error = 'HTTP ' + xhr.status; }
-                }
-                self.state = 'done';
-                if (window.requestRender) window.requestRender();
-            };
-            xhr.onerror   = function() { self.state = 'done'; self.error = 'Network error';   if (window.requestRender) window.requestRender(); };
-            xhr.ontimeout = function() { self.state = 'done'; self.error = 'Start timed out'; if (window.requestRender) window.requestRender(); };
-            xhr.send();
-        } catch (e) {
-            self.state = 'done';
-            self.error = String(e.message || e);
-        }
-
-        // 250 ms tick. Drives both the counter and the blinking
-        // REC dot's redraw cadence. The dot's visibility is
-        // wall-clock-phased (every 500 ms) so a missed redraw
-        // doesn't drift the visual rhythm.
-        this._tickHandle = setInterval(function() {
-            if (self.state === 'recording') {
-                self.elapsedMs = Date.now() - self.startedAt;
-                if (window.requestRender) window.requestRender();
-            }
-        }, 250);
-
-        // Page-unload safety net — stop the recording on every
-        // path the page can disappear down. sendBeacon is the
-        // durable cross-engine option; fetch with keepalive
-        // isn't supported in the Cog WebKit build this device
-        // runs.
-        this._unloadHandler = function() {
-            try { navigator.sendBeacon('/api/record/stop'); } catch (e) {}
-        };
-        window.addEventListener('pagehide',     this._unloadHandler);
-        window.addEventListener('beforeunload', this._unloadHandler);
-
-        // Real-time level meter — same SSE pattern the touchpad
-        // stream uses. Each `data: <float>` message updates the
-        // current level. We keep a separate peak-hold value that
-        // tracks the maximum the level reached recently, decayed
-        // every redraw — gives the meter a satisfying "hold then
-        // fall" indicator without interpreting it as a delayed
-        // baseline.
-        try {
-            this._levelES = new EventSource('/api/record/level');
-            this._levelES.onmessage = function(e) {
-                var v = parseFloat(e.data);
-                if (isNaN(v) || v < 0) v = 0;
-                if (v > 1) v = 1;
-                self._level = v;
-                if (v >= self._levelPeakHold) {
-                    self._levelPeakHold = v;
-                    self._levelPeakAt   = Date.now();
-                }
-                if (window.requestRender) window.requestRender();
-            };
-            this._levelES.onerror = function() { /* tolerate dropouts */ };
-        } catch (e) { this._levelES = null; }
-    };
-
-    RecordingScene.prototype.exit = function() {
-        if (this._tickHandle) {
-            clearInterval(this._tickHandle);
-            this._tickHandle = null;
-        }
-        if (this._unloadHandler) {
-            window.removeEventListener('pagehide',     this._unloadHandler);
-            window.removeEventListener('beforeunload', this._unloadHandler);
-            this._unloadHandler = null;
-        }
-        if (this._levelES) {
-            try { this._levelES.close(); } catch (e) {}
-            this._levelES = null;
-        }
-        // Always POST stop — server is idempotent so this is
-        // safe even if the recording never started.
-        try {
-            var xhr = new XMLHttpRequest();
-            xhr.open('POST', '/api/record/stop', true);
-            xhr.timeout = 5000;
-            xhr.send();
-        } catch (e) { /* best effort */ }
-    };
-
-    RecordingScene.prototype.handleInput = function(action) {
-        // Any commit-ish key stops the recording. Listed
-        // explicitly so the intent reads cleanly.
-        if (action === 'ok' || action === 'back' || action === 'esc' || action === 'run') {
-            return 'pop';
-        }
-    };
-
-    RecordingScene.prototype.render = function(canvas) {
-        var ctx = canvas.ctx;
-        canvas.clear('#fff');
-        UI.drawStatusBar(canvas, '');
-
-        // Tab + frame body — same shell language as the Wi-Fi
-        // modals, but rendered directly in the scene (no overlay
-        // dim) since there's no underlying page to peek through.
-        this._tab.render(canvas);
-        var frame = new ResponsiveFrame({
-            x: FRAME_X, y: FRAME_TOP_Y,
-            width: FRAME_W, height: FRAME_H,
-            anchorH: 'left', anchorV: 'top',
-            strokeColor: '#000', showStroke: true,
-            fillColor: '#ffffff', showFill: true,
-            cornerRadius: 3,
-            corners: { tl: false, tr: true, bl: true, br: true }
-        });
-        frame.render(canvas);
-
-        if (this.state === 'starting') {
-            var s1 = 'Starting…';
-            var s1W = HaxrcorpFont16.textWidth(s1);
-            HaxrcorpFont16.draw(ctx, s1,
-                FRAME_X + Math.floor((FRAME_W - s1W) / 2),
-                FRAME_TOP_Y + Math.floor((FRAME_H - 11) / 2), '#000');
-            return;
-        }
-        if (this.state === 'done') {
-            var s2  = 'Failed';
-            var s2W = HaxrcorpFont16.textWidth(s2);
-            HaxrcorpFont16.draw(ctx, s2,
-                FRAME_X + Math.floor((FRAME_W - s2W) / 2),
-                FRAME_TOP_Y + 10, '#000');
-            var msg = this.error || '(no detail)';
-            if (msg.length > 38) msg = msg.substring(0, 37) + '…';
-            var emW = HaxrcorpFont16.textWidth(msg);
-            HaxrcorpFont16.draw(ctx, msg,
-                FRAME_X + Math.floor((FRAME_W - emW) / 2),
-                FRAME_TOP_Y + 26, '#999999');
-            HaxrcorpFont16.draw(ctx, '[Back]',
-                FRAME_X + 6, FRAME_TOP_Y + FRAME_H - 14, '#999999');
-            return;
-        }
-
-        // 'recording' state — main display.
-        // 1) Big timer MM:SS centered horizontally.
-        var totalSec = Math.floor(this.elapsedMs / 1000);
-        var mm = Math.floor(totalSec / 60);
-        var ss = totalSec % 60;
-        var timerStr = pad2(mm) + ':' + pad2(ss);
-        // We don't have a big-font glyph stack so HaxrcorpFont16
-        // drawn at a y-offset acts as the "headline". Centred.
-        var timerW = HaxrcorpFont16.textWidth(timerStr);
-        var timerY = FRAME_TOP_Y + 14;
-        HaxrcorpFont16.draw(ctx, timerStr,
-            FRAME_X + Math.floor((FRAME_W - timerW) / 2),
-            timerY, '#000');
-
-        // 2) Blinking REC indicator above the timer. Wall-clock
-        // phased so the cadence is stable across redraw skips.
-        var dotOn = (Math.floor(Date.now() / 500) % 2) === 0;
-        var label = 'REC';
-        var lblW  = HaxrcorpFont16.textWidth(label);
-        var dotR  = 3;
-        var dotGap = 4;
-        var groupW = (dotR * 2) + dotGap + lblW;
-        var groupX = FRAME_X + Math.floor((FRAME_W - groupW) / 2);
-        var groupY = FRAME_TOP_Y + 1;
-        if (dotOn) {
-            // Filled red-ish dot. We're monochrome so just black.
-            ctx.fillStyle = '#000';
-            ctx.fillRect(groupX, groupY + 2, dotR * 2, dotR * 2);
-        }
-        HaxrcorpFont16.draw(ctx, label,
-            groupX + (dotR * 2) + dotGap, groupY, '#000');
-
-        // 3) Mic level meter. Outlined rectangle filled black
-        // proportional to the current peak level, with a 1-px
-        // peak-hold tick that decays. Centred horizontally,
-        // ~16 px below the timer.
-        var lvl = this._level || 0;
-        if (lvl < 0) lvl = 0;
-        if (lvl > 1) lvl = 1;
-        // Gentle log-ish curve so quiet voice doesn't read as
-        // "barely moving". Math.sqrt is a cheap stand-in for a
-        // proper dB scale and looks fine for a UI meter.
-        var disp = Math.sqrt(lvl);
-        // Decay the peak-hold by 0.5 / second after the last
-        // peak update. Snaps the indicator back if the user
-        // stops talking.
-        var now = Date.now();
-        var decay = (now - this._levelPeakAt) / 1000 * 0.5;
-        var peak = this._levelPeakHold - decay;
-        if (peak < disp) peak = disp;
-        if (peak < 0)    peak = 0;
-        if (peak > 1)    peak = 1;
-        this._levelPeakHold = peak;
-        this._levelPeakAt   = now;
-
-        var barW = 200;
-        var barH = 8;
-        var barX = FRAME_X + Math.floor((FRAME_W - barW) / 2);
-        var barY = timerY + 18;
-        canvas.drawFrame(barX, barY, barW, barH, '#000');
-        var fillW = Math.floor((barW - 2) * disp);
-        if (fillW > 0) {
-            ctx.fillStyle = '#000';
-            ctx.fillRect(barX + 1, barY + 1, fillW, barH - 2);
-        }
-        // Peak-hold tick: 1 px vertical line at the recent
-        // maximum's position, sat just inside the inner area.
-        var peakX = barX + 1 + Math.floor((barW - 2) * Math.sqrt(peak)) - 1;
-        if (peakX < barX + 1)             peakX = barX + 1;
-        if (peakX > barX + barW - 2)      peakX = barX + barW - 2;
-        ctx.fillStyle = '#000';
-        ctx.fillRect(peakX, barY + 1, 1, barH - 2);
-
-        // 4) Hint + stop affordance at the bottom of the frame.
-        var hint = 'Press OK or Back to stop';
-        var hintW = HaxrcorpFont16.textWidth(hint);
-        HaxrcorpFont16.draw(ctx, hint,
-            FRAME_X + Math.floor((FRAME_W - hintW) / 2),
-            FRAME_TOP_Y + FRAME_H - 14, '#999999');
-    };
-
-    return RecordingScene;
 })();

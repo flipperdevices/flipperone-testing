@@ -932,7 +932,52 @@ var Icons = (function() {
         ]
     };
 
+    // record_circle icon (auto-generated from PNG)
+    var record_circle = {
+        w: 10,
+        h: 10,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0xff,            0xff,            0xc0,            0x00,            0x00,            0x3f,            0xff,            0xf0,  // row 0
+            0x00,            0xfc,            0x00,            0x00,            0x00,            0x00,            0x00,            0x03,  // row 1
+            0xf0,            0x00,            0xfc,            0x00,            0x00,            0x00,            0x00,            0x00,  // row 2
+            0x03,            0xf0,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,  // row 3
+            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,  // row 4
+            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,  // row 5
+            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,  // row 6
+            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0xfc,  // row 7
+            0x00,            0x00,            0x00,            0x00,            0x00,            0x03,            0xf0,            0x00,  // row 8
+            0xfc,            0x00,            0x00,            0x00,            0x00,            0x00,            0x03,            0xf0,  // row 9
+            0x00,            0xff,            0xff,            0xc0,            0x00,            0x00,            0x3f,            0xff,  // row 10
+            0xf0,            0x00 
+        ]
+    };
+
+    // recording_pause icon (auto-generated from PNG)
+    var recording_pause = {
+        w: 7,
+        h: 10,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0x00,            0x00,            0x3f,            0x00,            0x00,            0x00,  // row 0
+            0x00,            0x00,            0x3f,            0x00,            0x00,            0x00,  // row 1
+            0x00,            0x00,            0x3f,            0x00,            0x00,            0x00,  // row 2
+            0x00,            0x00,            0x3f,            0x00,            0x00,            0x00,  // row 3
+            0x00,            0x00,            0x3f,            0x00,            0x00,            0x00,  // row 4
+            0x00,            0x00,            0x3f,            0x00,            0x00,            0x00,  // row 5
+            0x00,            0x00,            0x3f,            0x00,            0x00,            0x00,  // row 6
+            0x00,            0x00,            0x3f,            0x00,            0x00,            0x00,  // row 7
+            0x00,            0x00,            0x3f,            0x00,            0x00,            0x00,  // row 8
+            0x00,            0x00,            0x3f,            0x00,            0x00,            0x00   // row 9
+
+        ]
+    };
+
     return {
+        recording_pause: recording_pause,
+        record_circle: record_circle,
         voice_recorder: voice_recorder,
         keyboard_down: keyboard_down,
         keyboard_up: keyboard_up,

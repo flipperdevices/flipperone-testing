@@ -947,6 +947,124 @@ function stopWalkieLoop() {
     return { success: true };
 }
 
+// ── Microphone level monitor ─────────────────────────────────────
+// Spawns arecord against hw:1,0 in S16_LE stereo 48 kHz, reads the
+// raw PCM stream off stdout, and tracks the peak amplitude per
+// channel as integer percentages 0..100. Clients poll
+// /api/mic/level for the latest values to drive on-screen meters.
+//
+// arecord writes ~192 KB/s; we only ever inspect the chunks that
+// arrive (no accumulation), so memory and CPU stay bounded. A
+// trailing odd byte at the end of a chunk is dropped — the next
+// chunk's leading byte will pair up naturally.
+var micChild         = null;
+var micLeft          = 0;
+var micRight         = 0;
+// SSE subscribers receiving live level pushes. Populated by the
+// /api/mic/level/stream handler; emptied as connections close.
+// `_lastNotifyAt` rate-limits broadcasts to ~20 Hz even if
+// arecord chunks arrive faster, so the network and the renderer
+// stay calm.
+var micSubscribers   = [];
+var micLastNotifyAt  = 0;
+var MIC_NOTIFY_MIN_MS = 50;
+
+function notifyMicSubscribers() {
+    if (!micSubscribers.length) return;
+    var now = Date.now();
+    if (now - micLastNotifyAt < MIC_NOTIFY_MIN_MS) return;
+    micLastNotifyAt = now;
+    var payload = 'data: ' + JSON.stringify({ left: micLeft, right: micRight }) + '\n\n';
+    // Iterate in reverse so a write-error splice doesn't skip a
+    // neighbouring subscriber.
+    for (var i = micSubscribers.length - 1; i >= 0; i--) {
+        try { micSubscribers[i].write(payload); }
+        catch (e) { micSubscribers.splice(i, 1); }
+    }
+}
+
+// Lowest-CPU peak walker for the live meter:
+//
+//  1. `--period-size=2048` asks ALSA for ~43-ms periods so
+//     stdout 'data' fires ~23×/sec instead of the default
+//     ~200×/sec. Fewer event-loop wake-ups beats clever inner
+//     loops every time.
+//  2. The MIC_COMPUTE_MIN_MS throttle is a safety net in case
+//     the device ignores the period hint and gives us small
+//     chunks anyway — we short-circuit fast and skip the
+//     peak walk.
+//  3. Inside the walk we stride by MIC_DECIMATE_STRIDE frames
+//     (32 bytes per step at 8× decimation). Peaks at audio
+//     frequencies are sustained across many samples, so 1-in-8
+//     reads chase the same envelope at a fraction of the JS
+//     loop cost.
+var MIC_COMPUTE_MIN_MS  = 45;
+var MIC_DECIMATE_STRIDE = 32;   // bytes per inner-loop step = 8 stereo frames
+var micLastComputeAt    = 0;
+
+function startMicLevelMonitor() {
+    if (micChild) return { success: true, already: true };
+    var spawn = require('child_process').spawn;
+    try {
+        micChild = spawn('arecord', [
+            '-D', 'hw:1,0',
+            '-f', 'S16_LE',
+            '-r', '48000',
+            '-c', '2',
+            '--period-size=2048'
+        ], { stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch (e) {
+        micChild = null;
+        return { success: false, error: String(e.message || e) };
+    }
+
+    micChild.stdout.on('data', function(chunk) {
+        // Coarse throttle so a chatty device can't make us walk
+        // chunks more often than we need to. The peak we
+        // sample is at most 45 ms stale — invisible at meter
+        // refresh rates.
+        var now = Date.now();
+        if (now - micLastComputeAt < MIC_COMPUTE_MIN_MS) return;
+        micLastComputeAt = now;
+        // Each interleaved stereo frame is 4 bytes: L low, L high,
+        // R low, R high. Stride by MIC_DECIMATE_STRIDE bytes so
+        // we only inspect 1-in-N frames; with N=8 this is ~60
+        // reads per period at 2048 frames, plenty for a peak
+        // meter while keeping the loop nearly free.
+        var len = chunk.length - (chunk.length % 4);
+        var pL  = 0, pR = 0;
+        for (var i = 0; i + 3 < len; i += MIC_DECIMATE_STRIDE) {
+            var sL = chunk.readInt16LE(i);
+            var sR = chunk.readInt16LE(i + 2);
+            if (sL < 0) sL = -sL;
+            if (sR < 0) sR = -sR;
+            if (sL > pL) pL = sL;
+            if (sR > pR) pR = sR;
+        }
+        // 32767 is the max int16. Round to integer percent so the
+        // JSON stays compact and the meter pixel math is clean.
+        micLeft  = Math.round(pL * 100 / 32767);
+        micRight = Math.round(pR * 100 / 32767);
+        notifyMicSubscribers();
+    });
+    var onLeave = function() {
+        if (micChild) micChild = null;
+        micLeft = 0; micRight = 0;
+    };
+    micChild.on('exit',  onLeave);
+    micChild.on('error', onLeave);
+    return { success: true };
+}
+
+function stopMicLevelMonitor() {
+    if (!micChild) return { success: true, already: true };
+    try { micChild.kill('SIGKILL'); } catch (e) {}
+    micChild = null;
+    micLeft  = 0;
+    micRight = 0;
+    return { success: true };
+}
+
 // ── Internet radio streaming ─────────────────────────────────────
 // mpg123 streams MP3/Shoutcast/Icecast directly over HTTP, so the
 // radio scene can hand us a URL and we hand it straight to a
@@ -2625,6 +2743,66 @@ var server = http.createServer(function(req, res) {
         var wsResult = stopWalkieLoop();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(wsResult));
+        return;
+    }
+    // ── /api/mic/level/start ─────────────────────────────────────
+    // Spawns arecord on hw:1,0 so subsequent /api/mic/level GETs
+    // return live peak values for both channels. Idempotent.
+    if (req.url === '/api/mic/level/start' && req.method === 'POST') {
+        var mlsResult = startMicLevelMonitor();
+        res.writeHead(mlsResult.success ? 200 : 400,
+                      { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(mlsResult));
+        return;
+    }
+    // ── /api/mic/level/stop ──────────────────────────────────────
+    // Kill the arecord child. Idempotent — safe to call on scene
+    // exit even if the monitor was never started.
+    if (req.url === '/api/mic/level/stop' && req.method === 'POST') {
+        var mlxResult = stopMicLevelMonitor();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(mlxResult));
+        return;
+    }
+    // ── /api/mic/level ───────────────────────────────────────────
+    // Latest peak amplitudes (0..100 integer percent) for both
+    // stereo channels. Returns 0/0 when the monitor isn't running.
+    if (req.url === '/api/mic/level' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ left: micLeft, right: micRight }));
+        return;
+    }
+    // ── /api/mic/level/stream ────────────────────────────────────
+    // Server-Sent Events stream — one persistent connection, the
+    // server pushes `data: {"left":N,"right":N}\n\n` lines every
+    // time arecord delivers a chunk (rate-limited to ~20 Hz inside
+    // notifyMicSubscribers). Replaces the 50-ms polling loop the
+    // scene used to run: one HTTP transaction instead of N per
+    // second, so the Node event loop stays free for other things
+    // (e.g. the touchpad event stream).
+    if (req.url === '/api/mic/level/stream' && req.method === 'GET') {
+        res.writeHead(200, {
+            'Content-Type':  'text/event-stream',
+            'Cache-Control': 'no-store, no-transform',
+            'Connection':    'keep-alive',
+            // Disable proxy buffering for environments that
+            // honour this hint (nginx, etc.). Harmless otherwise.
+            'X-Accel-Buffering': 'no'
+        });
+        // Seed the client with the current state so the meters
+        // don't sit at 0 until the next arecord chunk arrives.
+        res.write('data: ' + JSON.stringify({ left: micLeft, right: micRight }) + '\n\n');
+        micSubscribers.push(res);
+        // Cleanup on either side closing the socket. Both events
+        // can fire; the indexOf-guard makes the splice idempotent.
+        var drop = function() {
+            var idx = micSubscribers.indexOf(res);
+            if (idx >= 0) micSubscribers.splice(idx, 1);
+        };
+        req.on('close', drop);
+        req.on('error', drop);
+        res.on('close', drop);
+        res.on('error', drop);
         return;
     }
     // ── /api/radio/install ──────────────────────────────────────
