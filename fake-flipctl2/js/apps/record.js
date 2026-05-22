@@ -39,12 +39,15 @@ var VoiceRecorderScene = (function() {
         // picker it's editing.
         this._pickers = {
             inputDevice: {
-                options: ['3.5 Audio', 'Build-in mic'],
-                // Default to the built-in mic — that's the
-                // device a freshly opened Voice Recorder should
-                // listen on without the user needing to hunt
-                // for a setting.
-                current: 'Build-in mic'
+                // Populated on enter() by _fetchInputDevices()
+                // from /api/sound/inputs. While the fetch is in
+                // flight the row shows a single "Loading…" entry
+                // so it never reads as blank; if the codec card
+                // isn't present the server returns an error
+                // string we surface as the only option (e.g.
+                // "NAU8822 not found") instead of stale fakes.
+                options: ['Loading…'],
+                current: 'Loading…'
             },
             format: {
                 options: ['WAV', 'MP3'],
@@ -269,6 +272,7 @@ var VoiceRecorderScene = (function() {
         // the user sits on this page.
         this._startMicMonitor();
         this._openMicStream();
+        this._fetchInputDevices();
     };
 
     VoiceRecorderScene.prototype.exit = function() {
@@ -341,6 +345,98 @@ var VoiceRecorderScene = (function() {
         if (!this._micEventSource) return;
         try { this._micEventSource.close(); } catch (e) {}
         this._micEventSource = null;
+    };
+
+    // Pull the real input-source list from the server and rewrite
+    // the Input device picker in place. On success the picker
+    // options become the labels reported by /api/sound/inputs
+    // (e.g. "Internal mic", "Headset mic") and `current` snaps
+    // to whichever entry the server says the codec mux is on so
+    // first paint matches reality. On a server error
+    // (`NAU8822 not found`) or a transport failure that single
+    // string takes the picker over so the row surfaces the
+    // actual reason instead of showing stale fakes.
+    //
+    // The raw [{id,label}] list is also retained on `_inputDevices`
+    // so _postInputDevice can map the user-visible label back to
+    // an id for /api/sound/input mutations.
+    VoiceRecorderScene.prototype._fetchInputDevices = function() {
+        var self = this;
+        function applyFailure(label) {
+            self._inputDevices = [];
+            var picker = self._pickers.inputDevice;
+            picker.options = [label];
+            picker.current = label;
+            if (typeof window.requestRender === 'function') {
+                window.requestRender();
+            }
+        }
+        try {
+            var xhr = new XMLHttpRequest();
+            xhr.open('GET', '/api/sound/inputs', true);
+            xhr.timeout = 1500;
+            xhr.onload = function() {
+                var data;
+                try { data = JSON.parse(xhr.responseText || '{}'); }
+                catch (e) { applyFailure('NAU8822 not found'); return; }
+                if (data.error || !data.inputs || !data.inputs.length) {
+                    applyFailure(data.error || 'No inputs');
+                    return;
+                }
+                self._inputDevices = data.inputs;
+                var picker = self._pickers.inputDevice;
+                picker.options = data.inputs.map(function(d) { return d.label; });
+                var matched = null;
+                if (data.current) {
+                    for (var i = 0; i < data.inputs.length; i++) {
+                        if (data.inputs[i].id === data.current) {
+                            matched = data.inputs[i].label;
+                            break;
+                        }
+                    }
+                }
+                picker.current = matched || picker.options[0];
+                if (typeof window.requestRender === 'function') {
+                    window.requestRender();
+                }
+            };
+            xhr.onerror   = function() { applyFailure('NAU8822 not found'); };
+            xhr.ontimeout = function() { applyFailure('NAU8822 not found'); };
+            xhr.send();
+        } catch (e) {
+            applyFailure('NAU8822 not found');
+        }
+    };
+
+    // Map the picker's current label back to the server-side id
+    // (`internal`, `headset`, …). Returns null when the picker
+    // is on a placeholder like "Loading…" or "NAU8822 not found"
+    // — those aren't real selections so the POST short-circuits.
+    VoiceRecorderScene.prototype._inputIdForCurrent = function() {
+        var list = this._inputDevices || [];
+        var label = this._pickers.inputDevice.current;
+        for (var i = 0; i < list.length; i++) {
+            if (list[i].label === label) return list[i].id;
+        }
+        return null;
+    };
+
+    // Fire-and-forget POST that flips the NAU8822 input mux on
+    // the server side. Called every time the user lands on a
+    // new Input device selection (left / right inline cycle or
+    // dropdown OK commit). No response handling — the next
+    // /api/mic/level/stream tick will already reflect whichever
+    // mic now feeds the ADC, which is the user-visible confirm.
+    VoiceRecorderScene.prototype._postInputDevice = function() {
+        var id = this._inputIdForCurrent();
+        if (!id) return;
+        try {
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', '/api/sound/input', true);
+            xhr.setRequestHeader('Content-Type', 'application/json');
+            xhr.timeout = 1500;
+            xhr.send(JSON.stringify({ id: id }));
+        } catch (e) { /* offline / no XHR — ignore */ }
     };
 
     // ── Link-LED helpers (mirror WalkieTalkieScene) ──────────────
@@ -526,8 +622,12 @@ var VoiceRecorderScene = (function() {
             if (action === 'ok' || action === 'run') {
                 // Commit the highlighted option and close.
                 picker.current     = optsOpen[this._dropdownIndex];
+                var committedKey   = this._dropdownKey;
                 this._dropdownOpen = false;
                 this._dropdownKey  = null;
+                if (committedKey === 'inputDevice') {
+                    this._postInputDevice();
+                }
                 if (typeof window.requestRender === 'function') {
                     window.requestRender();
                 }
@@ -646,6 +746,9 @@ var VoiceRecorderScene = (function() {
                     ? (idx + 1) % pLR.options.length
                     : (idx - 1 + pLR.options.length) % pLR.options.length;
                 pLR.current = pLR.options[idx];
+                if (pkLR === 'inputDevice') {
+                    this._postInputDevice();
+                }
             } else if (this._selectedRow === 0) {
                 var delta = (action === 'right')
                     ? this._inputGainStep

@@ -1602,6 +1602,91 @@ function getSoundOutputs() {
     return result;
 }
 
+// ── High-level audio inputs ─────────────────────────────────────
+// Capture-side sibling of getSoundOutputs(). The NAU8822 codec
+// exposes two physical input paths through its input mux —
+// `Internal mic` (on-board PCB mic, routed via MicN/MicP) and
+// `Headset mic` (3.5 mm jack, routed via L2/R2). Both terminate
+// at the same ALSA capture device, so `arecord -l` alone can't
+// surface the split — we describe the codec paths directly and
+// deliberately omit a `device` field (it would be identical on
+// every entry, which makes the two real inputs look like
+// duplicates). No jack-detect control exists on this build, so
+// the Headset entry is always offered.
+//
+// `selectedInputId` tracks which path the codec mux was last
+// told to use so /api/sound/inputs reflects reality without
+// re-reading every numid on each poll. setSoundInput() is the
+// only writer.
+var selectedInputId = 'internal';
+
+// Per-input mixer recipe. `.on` is the set of simple-mixer
+// switches that need to be on for this path to feed the ADC;
+// `.off` is positively muted so a stale open route on the
+// OTHER path can't bleed signal in once the user switches.
+// Names are simple-mixer (no "Switch" suffix); the underlying
+// numids are 73/74 (Mic source enable) + 92/95 (L2/R2 line
+// inputs) + 93/94/96/97 (MicN/MicP mic-preamp routes).
+var INPUT_PATHS = {
+    internal: {
+        on:  ['Internal Microphone',
+              'Left Input Mixer MicN',  'Left Input Mixer MicP',
+              'Right Input Mixer MicN', 'Right Input Mixer MicP'],
+        off: ['Headset Microphone',
+              'Left Input Mixer L2',    'Right Input Mixer R2']
+    },
+    headset: {
+        on:  ['Headset Microphone',
+              'Left Input Mixer L2',    'Right Input Mixer R2'],
+        off: ['Internal Microphone',
+              'Left Input Mixer MicN',  'Left Input Mixer MicP',
+              'Right Input Mixer MicN', 'Right Input Mixer MicP']
+    }
+};
+
+function getSoundInputs() {
+    var card = getNau8822Card();
+    if (!card) {
+        return { inputs: [], error: 'NAU8822 not found' };
+    }
+    return {
+        inputs: [
+            { id: 'internal', label: 'Internal mic' },
+            { id: 'headset',  label: 'Headset mic' }
+        ],
+        current: selectedInputId
+    };
+}
+
+// Flip the NAU8822 input mux to the named path. Mirrors
+// _applyOutputState on the playback side: each amixer call is
+// best-effort (the control set varies slightly across driver
+// builds), and we update `selectedInputId` only after the
+// batch lands so a partial failure leaves the cached state
+// honest about what was attempted.
+function setSoundInput(id) {
+    var path = INPUT_PATHS[id];
+    if (!path) {
+        return { success: false, error: 'Unknown input id' };
+    }
+    var card = getNau8822Card();
+    if (!card) {
+        return { success: false, error: 'NAU8822 not found' };
+    }
+    function setCtrl(ctrl, state) {
+        try {
+            execSync('amixer -c ' + card + ' set '
+                   + JSON.stringify(ctrl) + ' ' + state
+                   + ' 2>/dev/null',
+                   { encoding: 'utf8', timeout: 1500 });
+        } catch (e) { /* control absent — skip */ }
+    }
+    for (var i = 0; i < path.on.length;  i++) setCtrl(path.on[i],  'on');
+    for (var j = 0; j < path.off.length; j++) setCtrl(path.off[j], 'off');
+    selectedInputId = id;
+    return { success: true, id: id };
+}
+
 // Apply an output's device + codec mixer state without re-
 // querying the output list. Split out from setSoundOutput so
 // getSoundOutputs() can use it during lazy default-init
@@ -2657,6 +2742,39 @@ var server = http.createServer(function(req, res) {
     if (req.url === '/api/sound/outputs' && req.method === 'GET') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(getSoundOutputs()));
+        return;
+    }
+    // ── /api/sound/inputs ───────────────────────────────────────
+    // High-level inputs for the Voice recorder app's picker —
+    // see getSoundInputs() for the rationale (Internal mic /
+    // Headset mic split happens inside the NAU8822 codec's input
+    // mux; both terminate at the same ALSA capture device).
+    // Returns { inputs: [], error: 'NAU8822 not found' } when
+    // the codec card isn't present so the picker can surface
+    // the actual reason instead of falling back to stale
+    // defaults.
+    if (req.url === '/api/sound/inputs' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(getSoundInputs()));
+        return;
+    }
+    // ── /api/sound/input ────────────────────────────────────────
+    // Flip the NAU8822 input mux to the requested path
+    // ({"id":"internal"} or {"id":"headset"}). 400 on unknown id
+    // or when the codec card isn't present (setSoundInput
+    // surfaces the same `error` string getSoundInputs would).
+    if (req.url === '/api/sound/input' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            if (err || !data || !data.id) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: 'Invalid request' }));
+                return;
+            }
+            var inResult = setSoundInput(data.id);
+            res.writeHead(inResult.success ? 200 : 400,
+                          { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(inResult));
+        });
         return;
     }
     if (req.url === '/api/sound/output' && req.method === 'POST') {

@@ -32,48 +32,6 @@
 
     scenes.push(new DesktopScene(scenes));
 
-    // ── Debug-mode boot shortcut ──────────────────────────────
-    // When `js/debug_config.js` is present locally and sets
-    // `DEBUG_CONFIG.enabled = true`, push the named scene on
-    // top of Desktop so each page refresh drops the developer
-    // straight into the scene they're iterating on. The file
-    // is gitignored — production loads never see this branch
-    // because `typeof DEBUG_CONFIG` is `'undefined'` without
-    // the local override.
-    //
-    // Friendly names mirror the Testing / Apps submenu labels
-    // (e.g. 'On screen keyboard' → KeyboardTestScene) so the
-    // string in debug_config.js reads like the navigation path
-    // the developer would have taken by hand. Add entries here
-    // as new debuggable scenes appear.
-    if (typeof DEBUG_CONFIG !== 'undefined' && DEBUG_CONFIG.enabled) {
-        var DEBUG_SCENE_MAP = {
-            'On screen keyboard': function(sm) { return new KeyboardTestScene(); },
-            'Touchpad':           function(sm) { return new TouchpadTestScene(); },
-            'Touchpad ABS':       function(sm) { return new TouchpadAbsScene(); },
-            'Network LEDs':       function(sm) { return new NetworkLedsScene(sm); },
-            'Screen':             function(sm) { return new ScreenTestScene(); },
-            'Voice recorder':     function(sm) { return new VoiceRecorderScene(sm); },
-            'Internet radio':     function(sm) { return new InternetRadioScene(sm); },
-            'Wi-Fi':              function(sm) { return new WifiScene(sm); }
-        };
-        var debugFactory = DEBUG_SCENE_MAP[DEBUG_CONFIG.scene];
-        if (typeof debugFactory === 'function') {
-            var debugScene = debugFactory(scenes);
-            if (debugScene && typeof debugScene.render === 'function') {
-                scenes.push(debugScene);
-            }
-        } else if (DEBUG_CONFIG.scene) {
-            // Soft-fail with a console hint so the developer
-            // doesn't get a blank screen if they typo'd the
-            // scene name in debug_config.js.
-            // eslint-disable-next-line no-console
-            console.warn('debug_config.js: unknown scene "'
-                + DEBUG_CONFIG.scene + '". Known: '
-                + Object.keys(DEBUG_SCENE_MAP).join(', '));
-        }
-    }
-
     // Poll the server every 2s and reload the page when the underlying
     // server changes. The signature combines HTTP status with the body id
     // so any of these triggers a reload:
