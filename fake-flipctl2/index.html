@@ -51,6 +51,11 @@
     <script src="js/apps/modem5g.js"></script>
     <script src="js/apps/diskspace.js"></script>
     <script src="js/apps/power.js"></script>
+    <!-- Local-only developer override (gitignored). When
+         present, `main.js` checks `DEBUG_CONFIG.enabled` and
+         pushes the named scene on top of Desktop on load. Safe
+         to 404 — `main.js` guards on `typeof DEBUG_CONFIG`. -->
+    <script src="js/debug_config.js"></script>
     <script src="js/main.js"></script>
 </body>
 </html>

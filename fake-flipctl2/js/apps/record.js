@@ -8,6 +8,30 @@
  * exits on Back so navigation works while we wire the new UI.
  */
 var VoiceRecorderScene = (function() {
+    // Default filename pattern. Shown verbatim in the File name
+    // row — the `YYYYMMDD-HHMMSS` part is a literal placeholder,
+    // not a live clock — and only expanded into a concrete
+    // timestamp at Start press by `_expandTemplateName`.
+    var DEFAULT_NAME_TEMPLATE = 'F1-REC-YYYYMMDD-HHMMSS';
+
+    // Substitute the `YYYYMMDD-HHMMSS` token in `s` with the
+    // current local-time stamp in that exact format. Anything
+    // outside the token is preserved, so "Meeting YYYYMMDD-HHMMSS"
+    // → "Meeting 20260522-161853".
+    function _expandTemplateName(s) {
+        if (typeof s !== 'string') return s;
+        var d   = new Date();
+        var pad = function(n) { return n < 10 ? '0' + n : String(n); };
+        var stamp = d.getFullYear()
+                  + pad(d.getMonth() + 1)
+                  + pad(d.getDate())
+                  + '-'
+                  + pad(d.getHours())
+                  + pad(d.getMinutes())
+                  + pad(d.getSeconds());
+        return s.replace(/YYYYMMDD-HHMMSS/g, stamp);
+    }
+
     function VoiceRecorderScene(sceneManager) {
         this.sceneManager    = sceneManager || null;
         this.displayName     = 'Voice recorder';
@@ -39,20 +63,44 @@ var VoiceRecorderScene = (function() {
         // picker it's editing.
         this._pickers = {
             inputDevice: {
-                // Populated on enter() by _fetchInputDevices()
-                // from /api/sound/inputs. While the fetch is in
-                // flight the row shows a single "Loading…" entry
-                // so it never reads as blank; if the codec card
-                // isn't present the server returns an error
-                // string we surface as the only option (e.g.
-                // "NAU8822 not found") instead of stale fakes.
-                options: ['Loading…'],
-                current: 'Loading…'
+                options: ['3.5 Audio', 'Build-in mic'],
+                // Default to the built-in mic — that's the
+                // device a freshly opened Voice Recorder should
+                // listen on without the user needing to hunt
+                // for a setting.
+                current: 'Build-in mic'
             },
             format: {
-                options: ['WAV', 'MP3'],
+                // Seed with the three supported formats so the
+                // picker still works pre-fetch; _fetchRecordFormats
+                // overwrites this with the server's authoritative
+                // availability map (MP3 / OGG may need install).
+                options: ['WAV', 'MP3', 'OGG'],
                 current: 'WAV'
             }
+        };
+        // Per-format availability map populated by _fetchRecordFormats
+        // on enter. Picker shows all three formats; selecting an
+        // unavailable one opens the install modal.
+        this._formatMeta = {
+            WAV: { id: 'wav', ext: 'wav', available: true },
+            MP3: { id: 'mp3', ext: 'mp3', available: true, package: 'lame' },
+            OGG: { id: 'ogg', ext: 'ogg', available: true, package: 'vorbis-tools' }
+        };
+        // Install-dependency modal — same shape as
+        // InternetRadioScene's _installModal. Pops when the
+        // user commits an unavailable format or presses Start
+        // with one selected.
+        //   missing     — encoder absent; Install / Cancel
+        //   installing  — POST /api/record/install in flight
+        //   failed      — install failed; Retry / Cancel
+        this._installModal = {
+            open:        false,
+            state:       'missing',
+            buttonIndex: 0,
+            output:      '',
+            formatId:    null,
+            onSuccess:   null
         };
 
         // Input gain — plain ± row, no dropdown. Range and step
@@ -66,7 +114,18 @@ var VoiceRecorderScene = (function() {
         // File name — opens TextInputScreen on OK. Left / right
         // do nothing on this row; the chevron on the selector
         // frame is the affordance signalling "press OK to edit".
-        this._fileName = 'F1_record_1';
+        //
+        // Default is the literal template `F1-REC-YYYYMMDD-HHMMSS`;
+        // the placeholder is expanded at Start press by
+        // `_expandTemplateName`. `_fileNameAuto` flips false
+        // once the user saves an edited value — the editor
+        // then re-seeds with their literal text on next open.
+        this._fileName     = DEFAULT_NAME_TEMPLATE;
+        this._fileNameAuto = true;
+        // Snapshot of the expanded name once a take starts —
+        // rendered in the recording rectangle so the user sees
+        // the actual filename being written. Cleared on Stop.
+        this._recordingDisplayName = null;
 
         // Folder — drill-in row, no behaviour wired yet. Visual
         // structure mirrors File name (chevron selector frame,
@@ -236,9 +295,48 @@ var VoiceRecorderScene = (function() {
                     self._paused          = false;
                     self._pausedElapsed   = 0;
                     self._startRecordTick();
+                    // Expand the template token in the File
+                    // name row into a concrete timestamp at
+                    // press time. The row's display value
+                    // (`_fileName`) stays as the template; only
+                    // `_recordingDisplayName` and the value
+                    // sent to the server carry the expanded
+                    // form. If the user has edited the name
+                    // and stripped the token, expand is a
+                    // no-op and we use their literal text.
+                    self._recordingDisplayName =
+                        _expandTemplateName(self._fileName);
+                    // Resolve the current Format picker label
+                    // to its server-side id.
+                    var fmtLabel = self._pickers.format.current;
+                    var fmtMeta  = self._formatMeta[fmtLabel];
+                    var fmtId    = (fmtMeta && fmtMeta.id) || 'wav';
+                    self._postStartRecord(fmtId,
+                            self._recordingDisplayName,
+                            function(result) {
+                        if (result && result.success) {
+                            self._serverFile = result.file || null;
+                            return;
+                        }
+                        // Server refused — back out cleanly.
+                        self._recording            = false;
+                        self._recordingDisplayName = null;
+                        self._stopRecordTick();
+                        self._applyRecordingLed();
+                        if (typeof window.requestRender === 'function') {
+                            window.requestRender();
+                        }
+                        if (typeof console !== 'undefined' && console.warn) {
+                            console.warn('Record start failed:',
+                                result && result.error);
+                        }
+                    });
                 } else {
                     self._stopRecordTick();
-                    self._paused          = false;
+                    self._paused               = false;
+                    self._postStopRecord();
+                    self._serverFile           = null;
+                    self._recordingDisplayName = null;
                 }
                 if (typeof window.requestRender === 'function') {
                     window.requestRender();
@@ -262,6 +360,10 @@ var VoiceRecorderScene = (function() {
                     self._sendLinkLed(false);
                     self._sendLedManual(false);
                     self._stopRecordTick();
+                    // Stop server-side recording too — it's
+                    // idempotent on the server so safe even if
+                    // we weren't actually recording.
+                    if (self._recording) self._postStopRecord();
                 });
         }
         // Kick the server-side arecord monitor and open one
@@ -272,7 +374,8 @@ var VoiceRecorderScene = (function() {
         // the user sits on this page.
         this._startMicMonitor();
         this._openMicStream();
-        this._fetchInputDevices();
+        this._fetchInputGain();
+        this._fetchRecordFormats();
     };
 
     VoiceRecorderScene.prototype.exit = function() {
@@ -289,6 +392,17 @@ var VoiceRecorderScene = (function() {
         // first.
         this._sendLinkLed(false);
         this._sendLedManual(false);
+        // Mid-take exit: close the sox capture pipeline
+        // server-side. Idempotent so this is safe even when
+        // the user wasn't actually recording.
+        if (this._recording) this._postStopRecord();
+        this._recording            = false;
+        this._recordingDisplayName = null;
+        // Install-modal spinner timer (started in _runInstall).
+        if (this._installAnimTimer) {
+            clearInterval(this._installAnimTimer);
+            this._installAnimTimer = null;
+        }
     };
 
     // Fire-and-forget kickoff / teardown for the server-side
@@ -347,98 +461,6 @@ var VoiceRecorderScene = (function() {
         this._micEventSource = null;
     };
 
-    // Pull the real input-source list from the server and rewrite
-    // the Input device picker in place. On success the picker
-    // options become the labels reported by /api/sound/inputs
-    // (e.g. "Internal mic", "Headset mic") and `current` snaps
-    // to whichever entry the server says the codec mux is on so
-    // first paint matches reality. On a server error
-    // (`NAU8822 not found`) or a transport failure that single
-    // string takes the picker over so the row surfaces the
-    // actual reason instead of showing stale fakes.
-    //
-    // The raw [{id,label}] list is also retained on `_inputDevices`
-    // so _postInputDevice can map the user-visible label back to
-    // an id for /api/sound/input mutations.
-    VoiceRecorderScene.prototype._fetchInputDevices = function() {
-        var self = this;
-        function applyFailure(label) {
-            self._inputDevices = [];
-            var picker = self._pickers.inputDevice;
-            picker.options = [label];
-            picker.current = label;
-            if (typeof window.requestRender === 'function') {
-                window.requestRender();
-            }
-        }
-        try {
-            var xhr = new XMLHttpRequest();
-            xhr.open('GET', '/api/sound/inputs', true);
-            xhr.timeout = 1500;
-            xhr.onload = function() {
-                var data;
-                try { data = JSON.parse(xhr.responseText || '{}'); }
-                catch (e) { applyFailure('NAU8822 not found'); return; }
-                if (data.error || !data.inputs || !data.inputs.length) {
-                    applyFailure(data.error || 'No inputs');
-                    return;
-                }
-                self._inputDevices = data.inputs;
-                var picker = self._pickers.inputDevice;
-                picker.options = data.inputs.map(function(d) { return d.label; });
-                var matched = null;
-                if (data.current) {
-                    for (var i = 0; i < data.inputs.length; i++) {
-                        if (data.inputs[i].id === data.current) {
-                            matched = data.inputs[i].label;
-                            break;
-                        }
-                    }
-                }
-                picker.current = matched || picker.options[0];
-                if (typeof window.requestRender === 'function') {
-                    window.requestRender();
-                }
-            };
-            xhr.onerror   = function() { applyFailure('NAU8822 not found'); };
-            xhr.ontimeout = function() { applyFailure('NAU8822 not found'); };
-            xhr.send();
-        } catch (e) {
-            applyFailure('NAU8822 not found');
-        }
-    };
-
-    // Map the picker's current label back to the server-side id
-    // (`internal`, `headset`, …). Returns null when the picker
-    // is on a placeholder like "Loading…" or "NAU8822 not found"
-    // — those aren't real selections so the POST short-circuits.
-    VoiceRecorderScene.prototype._inputIdForCurrent = function() {
-        var list = this._inputDevices || [];
-        var label = this._pickers.inputDevice.current;
-        for (var i = 0; i < list.length; i++) {
-            if (list[i].label === label) return list[i].id;
-        }
-        return null;
-    };
-
-    // Fire-and-forget POST that flips the NAU8822 input mux on
-    // the server side. Called every time the user lands on a
-    // new Input device selection (left / right inline cycle or
-    // dropdown OK commit). No response handling — the next
-    // /api/mic/level/stream tick will already reflect whichever
-    // mic now feeds the ADC, which is the user-visible confirm.
-    VoiceRecorderScene.prototype._postInputDevice = function() {
-        var id = this._inputIdForCurrent();
-        if (!id) return;
-        try {
-            var xhr = new XMLHttpRequest();
-            xhr.open('POST', '/api/sound/input', true);
-            xhr.setRequestHeader('Content-Type', 'application/json');
-            xhr.timeout = 1500;
-            xhr.send(JSON.stringify({ id: id }));
-        } catch (e) { /* offline / no XHR — ignore */ }
-    };
-
     // ── Link-LED helpers (mirror WalkieTalkieScene) ──────────────
     // /api/led/set writes the colour + on flag; /api/led/manual
     // tells the server's auto state-driven LED loop to step
@@ -484,6 +506,340 @@ var VoiceRecorderScene = (function() {
         } else {
             this._sendLinkLed(false);
             this._sendLedManual(false);
+        }
+    };
+
+    // ── Input gain (slider) ─────────────────────────────────────
+    // Pull the server's current input-gain value (and the
+    // slider's allowed range) so the on-screen ± row starts in
+    // sync with whatever the codec was last set to.
+    VoiceRecorderScene.prototype._fetchInputGain = function() {
+        var self = this;
+        try {
+            var xhr = new XMLHttpRequest();
+            xhr.open('GET', '/api/sound/input/gain', true);
+            xhr.timeout = 1500;
+            xhr.onload = function() {
+                var data;
+                try { data = JSON.parse(xhr.responseText || '{}'); }
+                catch (e) { return; }
+                if (typeof data.min === 'number') self._inputGainMin = data.min;
+                if (typeof data.max === 'number') self._inputGainMax = data.max;
+                if (typeof data.db  === 'number') {
+                    var db = data.db;
+                    if (db < self._inputGainMin) db = self._inputGainMin;
+                    if (db > self._inputGainMax) db = self._inputGainMax;
+                    self._inputGainDb = db;
+                }
+                if (typeof window.requestRender === 'function') {
+                    window.requestRender();
+                }
+            };
+            xhr.send();
+        } catch (e) { /* offline — keep defaults */ }
+    };
+    // Debounced ~60 ms POST so a held arrow key only fires one
+    // amixer cascade per pause instead of one per keyboard repeat.
+    VoiceRecorderScene.prototype._postInputGain = function() {
+        var self = this;
+        if (this._gainPostTimer) clearTimeout(this._gainPostTimer);
+        this._gainPostTimer = setTimeout(function() {
+            self._gainPostTimer = null;
+            try {
+                var xhr = new XMLHttpRequest();
+                xhr.open('POST', '/api/sound/input/gain', true);
+                xhr.setRequestHeader('Content-Type', 'application/json');
+                xhr.timeout = 1500;
+                xhr.send(JSON.stringify({ db: self._inputGainDb }));
+            } catch (e) { /* offline — ignore */ }
+        }, 60);
+    };
+
+    // ── Recording start / stop ──────────────────────────────────
+    // Posts /api/record/start with {format, name}. On 409
+    // (missing encoder package), pops the install modal and
+    // retries on success. On cancel, surfaces the original
+    // failure.
+    VoiceRecorderScene.prototype._postStartRecord = function(formatId, name, onResult) {
+        var self = this;
+        var done = false;
+        function finish(result) {
+            if (done) return;
+            done = true;
+            if (typeof onResult === 'function') onResult(result);
+        }
+        try {
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', '/api/record/start', true);
+            xhr.setRequestHeader('Content-Type', 'application/json');
+            xhr.timeout = 2500;
+            xhr.onload = function() {
+                var data;
+                try { data = JSON.parse(xhr.responseText || '{}'); }
+                catch (e) { data = { success: false, error: 'Bad response' }; }
+                if (!data.success && data.missingPackage && data.missingFormat) {
+                    self._openInstallModal(data.missingFormat, function() {
+                        self._postStartRecord(formatId, name, function(r2) { finish(r2); });
+                    });
+                    // Detect cancel via the open flag dropping
+                    // without the success continuation firing.
+                    var cancelWatch = setInterval(function() {
+                        if (!self._installModal.open && !done) {
+                            clearInterval(cancelWatch);
+                            finish(data);
+                        } else if (done) {
+                            clearInterval(cancelWatch);
+                        }
+                    }, 120);
+                    return;
+                }
+                finish(data);
+            };
+            xhr.onerror   = function() { finish({ success: false, error: 'Network error' }); };
+            xhr.ontimeout = function() { finish({ success: false, error: 'Timeout' }); };
+            var body = { format: formatId || 'wav' };
+            if (name) body.name = name;
+            xhr.send(JSON.stringify(body));
+        } catch (e) {
+            finish({ success: false, error: String(e.message || e) });
+        }
+    };
+    VoiceRecorderScene.prototype._postStopRecord = function() {
+        try {
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', '/api/record/stop', true);
+            xhr.setRequestHeader('Content-Type', 'application/json');
+            xhr.timeout = 2500;
+            xhr.send('{}');
+        } catch (e) { /* offline — ignore */ }
+    };
+
+    // ── Format availability ─────────────────────────────────────
+    VoiceRecorderScene.prototype._fetchRecordFormats = function() {
+        var self = this;
+        try {
+            var xhr = new XMLHttpRequest();
+            xhr.open('GET', '/api/record/formats', true);
+            xhr.timeout = 2500;
+            xhr.onload = function() {
+                if (xhr.status !== 200) return;
+                var data;
+                try { data = JSON.parse(xhr.responseText || '{}'); }
+                catch (e) { return; }
+                if (!data || !Array.isArray(data.formats)) return;
+                for (var i = 0; i < data.formats.length; i++) {
+                    var f = data.formats[i];
+                    if (!f || !f.label) continue;
+                    self._formatMeta[f.label] = {
+                        id:        f.id,
+                        ext:       f.ext,
+                        available: !!f.available,
+                        package:   f.package
+                    };
+                }
+                if (typeof window.requestRender === 'function') {
+                    window.requestRender();
+                }
+            };
+            xhr.send();
+        } catch (e) { /* offline — keep optimistic defaults */ }
+    };
+
+    // ── Install modal ───────────────────────────────────────────
+    VoiceRecorderScene.prototype._openInstallModal = function(formatId, onSuccess) {
+        var m = this._installModal;
+        m.open        = true;
+        m.state       = 'missing';
+        m.buttonIndex = 0;
+        m.output      = '';
+        m.formatId    = formatId;
+        m.onSuccess   = onSuccess || null;
+        if (typeof window.requestRender === 'function') {
+            window.requestRender();
+        }
+    };
+    VoiceRecorderScene.prototype._runInstall = function() {
+        var self = this;
+        var m    = self._installModal;
+        m.state  = 'installing';
+        m.output = '';
+        if (!self._installAnimTimer) {
+            self._installAnimTimer = setInterval(function() {
+                if (typeof window.requestRender === 'function') {
+                    window.requestRender();
+                }
+            }, 80);
+        }
+        var stopAnim = function() {
+            if (self._installAnimTimer) {
+                clearInterval(self._installAnimTimer);
+                self._installAnimTimer = null;
+            }
+        };
+        var finish = function(success, output) {
+            stopAnim();
+            if (success) {
+                self._fetchRecordFormats();
+                var cb = m.onSuccess;
+                m.open       = false;
+                m.onSuccess  = null;
+                m.formatId   = null;
+                if (typeof window.requestRender === 'function') {
+                    window.requestRender();
+                }
+                if (typeof cb === 'function') cb();
+                return;
+            }
+            m.state       = 'failed';
+            m.output      = output || '';
+            m.buttonIndex = 0;
+            if (typeof window.requestRender === 'function') {
+                window.requestRender();
+            }
+        };
+        try {
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', '/api/record/install', true);
+            xhr.setRequestHeader('Content-Type', 'application/json');
+            xhr.timeout = 90000;
+            xhr.onload = function() {
+                if (xhr.status === 200) {
+                    try {
+                        var data = JSON.parse(xhr.responseText || '{}');
+                        finish(!!data.success, data.output);
+                        return;
+                    } catch (e) {}
+                }
+                finish(false, 'HTTP ' + xhr.status);
+            };
+            xhr.onerror   = function() { finish(false, 'Network error'); };
+            xhr.ontimeout = function() { finish(false, 'Timeout'); };
+            xhr.send(JSON.stringify({ id: m.formatId }));
+        } catch (e) {
+            finish(false, String(e.message || e));
+        }
+    };
+    VoiceRecorderScene.prototype._handleInstallModalInput = function(action) {
+        var m = this._installModal;
+        if (m.state === 'installing') return;
+        if (action === 'up' || action === 'down') {
+            m.buttonIndex = (m.buttonIndex === 0) ? 1 : 0;
+            if (typeof window.requestRender === 'function') {
+                window.requestRender();
+            }
+            return;
+        }
+        if (action === 'ok' || action === 'run') {
+            if (m.buttonIndex === 0) {
+                this._runInstall();
+            } else {
+                m.open      = false;
+                m.onSuccess = null;
+                m.formatId  = null;
+                if (typeof window.requestRender === 'function') {
+                    window.requestRender();
+                }
+            }
+            return;
+        }
+        if (action === 'back' || action === 'esc') {
+            m.open      = false;
+            m.onSuccess = null;
+            m.formatId  = null;
+            if (typeof window.requestRender === 'function') {
+                window.requestRender();
+            }
+            return;
+        }
+    };
+    VoiceRecorderScene.prototype._renderInstallModal = function(canvas) {
+        var ctx = canvas.ctx;
+        var m   = this._installModal;
+        var W = 150, H = 70;
+        var X = Math.floor((canvas.w - W) / 2);
+        var Y = Math.floor((canvas.h - H) / 2);
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
+        ctx.fillRect(0, 0, canvas.w, canvas.h);
+        new ResponsiveFrame({
+            x: X, y: Y, width: W, height: H,
+            anchorH: 'left', anchorV: 'top',
+            strokeColor: '#000', showStroke: true,
+            fillColor:   '#fff', showFill:   true,
+            cornerRadius: 4,
+            corners: { tl: true, tr: true, bl: true, br: true }
+        }).render(canvas);
+        var titleY = Y + 6;
+        var bodyY  = Y + 23;
+        var BTN_H  = 14;
+        var BTN_W  = W - 16;
+        var BTN_X  = X + Math.floor((W - BTN_W) / 2);
+        var btn1Y  = Y + 36;
+        var btn2Y  = Y + 52;
+        function centerSporty(text, y) {
+            var tw = Born2bSportyV2Medium.textWidth(text);
+            Born2bSportyV2Medium.draw(ctx, text,
+                X + Math.floor((W - tw) / 2), y, '#000');
+        }
+        function centerHaxrcorp(text, y, color) {
+            var tw = HaxrcorpFont16.textWidth(text);
+            HaxrcorpFont16.draw(ctx, text,
+                X + Math.floor((W - tw) / 2), y, color || '#000');
+        }
+        var fmtLabel = (m.formatId || '').toUpperCase() || 'codec';
+        if (m.state === 'installing') {
+            centerSporty('Installing', titleY);
+            if (typeof AnimatedIcons !== 'undefined'
+                    && AnimatedIcons.spinner_22x20px) {
+                var sp       = AnimatedIcons.spinner_22x20px;
+                var FRAME_MS = 80;
+                var spFrameH = Math.floor(sp.h / sp.frames);
+                var spFrame  = Math.floor(Date.now() / FRAME_MS) % sp.frames;
+                var spX      = X + Math.floor((W - sp.w) / 2);
+                var spY      = Y + Math.floor((H - spFrameH) / 2) + 4;
+                canvas.drawSpriteFrame(sp, spX, spY, spFrame, '#000');
+            }
+            return;
+        }
+        if (m.state === 'missing') {
+            centerSporty('Install ' + fmtLabel + '?', titleY);
+            centerHaxrcorp('Encoder needed for recording', bodyY, '#666');
+            this._drawStackedButton(canvas, BTN_X, btn1Y, BTN_W, BTN_H,
+                'Install', m.buttonIndex === 0);
+            this._drawStackedButton(canvas, BTN_X, btn2Y, BTN_W, BTN_H,
+                'Cancel',  m.buttonIndex === 1);
+            return;
+        }
+        centerSporty('Install failed', titleY);
+        var lines = (m.output || '').split('\n');
+        var lastLine = '';
+        for (var li = lines.length - 1; li >= 0; li--) {
+            var t = lines[li].trim();
+            if (t) { lastLine = t; break; }
+        }
+        if (lastLine.length > 28) lastLine = lastLine.slice(0, 26) + '..';
+        centerHaxrcorp(lastLine, bodyY, '#666');
+        this._drawStackedButton(canvas, BTN_X, btn1Y, BTN_W, BTN_H,
+            'Retry',  m.buttonIndex === 0);
+        this._drawStackedButton(canvas, BTN_X, btn2Y, BTN_W, BTN_H,
+            'Cancel', m.buttonIndex === 1);
+    };
+    VoiceRecorderScene.prototype._drawStackedButton = function(canvas, x, y, w, h, label, selected) {
+        var ctx = canvas.ctx;
+        var lw  = HaxrcorpFont16.textWidth(label);
+        var labelY = y + Math.floor((h - 11) / 2);
+        HaxrcorpFont16.draw(ctx, label,
+            x + Math.floor((w - lw) / 2), labelY, '#000');
+        if (selected) {
+            if (!this._installBtnSelector) {
+                this._installBtnSelector = new MenuSelectorFrame({
+                    x: 0, y: 0, width: 1, height: 1,
+                    anchorH: 'left', anchorV: 'top',
+                    strokeColor: '#000', showStroke: true, showFill: false
+                });
+            }
+            this._installBtnSelector.setPosition(x, y);
+            this._installBtnSelector.setSize(w, h);
+            this._installBtnSelector.render(canvas);
         }
     };
 
@@ -580,6 +936,13 @@ var VoiceRecorderScene = (function() {
     };
 
     VoiceRecorderScene.prototype.handleInput = function(action) {
+        // ── Install modal owns input first ────────────────────
+        // It draws on top of every other element including the
+        // dropdown overlay, so input dispatch matches that
+        // layering — give the modal first refusal.
+        if (this._installModal.open) {
+            return this._handleInstallModalInput(action);
+        }
         // ── Open dropdown owns input until it closes ──────────
         // Mirrors Internet Radio: when the picker is open, the
         // page-level row navigation steps aside completely.
@@ -620,13 +983,29 @@ var VoiceRecorderScene = (function() {
                 return;
             }
             if (action === 'ok' || action === 'run') {
-                // Commit the highlighted option and close.
-                picker.current     = optsOpen[this._dropdownIndex];
+                var pickedLabel    = optsOpen[this._dropdownIndex];
                 var committedKey   = this._dropdownKey;
                 this._dropdownOpen = false;
                 this._dropdownKey  = null;
-                if (committedKey === 'inputDevice') {
-                    this._postInputDevice();
+                // Format row needs an availability gate — an
+                // unavailable encoder pops the install modal
+                // and only commits the new picker value on a
+                // successful install.
+                if (committedKey === 'format') {
+                    var meta = this._formatMeta[pickedLabel];
+                    if (meta && !meta.available && meta.package) {
+                        var pickerRef = picker;
+                        this._openInstallModal(meta.id, function() {
+                            pickerRef.current = pickedLabel;
+                            if (typeof window.requestRender === 'function') {
+                                window.requestRender();
+                            }
+                        });
+                    } else {
+                        picker.current = pickedLabel;
+                    }
+                } else {
+                    picker.current = pickedLabel;
                 }
                 if (typeof window.requestRender === 'function') {
                     window.requestRender();
@@ -745,9 +1124,25 @@ var VoiceRecorderScene = (function() {
                 idx = (action === 'right')
                     ? (idx + 1) % pLR.options.length
                     : (idx - 1 + pLR.options.length) % pLR.options.length;
-                pLR.current = pLR.options[idx];
-                if (pkLR === 'inputDevice') {
-                    this._postInputDevice();
+                var nextLabel = pLR.options[idx];
+                // Format row mirrors the dropdown gate: an
+                // unavailable encoder opens the install modal
+                // and only commits the new value on success.
+                if (pkLR === 'format') {
+                    var fmeta = this._formatMeta[nextLabel];
+                    if (fmeta && !fmeta.available && fmeta.package) {
+                        var pkRef = pLR;
+                        this._openInstallModal(fmeta.id, function() {
+                            pkRef.current = nextLabel;
+                            if (typeof window.requestRender === 'function') {
+                                window.requestRender();
+                            }
+                        });
+                    } else {
+                        pLR.current = nextLabel;
+                    }
+                } else {
+                    pLR.current = nextLabel;
                 }
             } else if (this._selectedRow === 0) {
                 var delta = (action === 'right')
@@ -756,7 +1151,10 @@ var VoiceRecorderScene = (function() {
                 var next  = this._inputGainDb + delta;
                 if (next < this._inputGainMin) next = this._inputGainMin;
                 if (next > this._inputGainMax) next = this._inputGainMax;
-                this._inputGainDb = next;
+                if (next !== this._inputGainDb) {
+                    this._inputGainDb = next;
+                    this._postInputGain();
+                }
             }
             // File name (2) / Folder (3) rows: no-op.
             if (typeof window.requestRender === 'function') {
@@ -773,16 +1171,25 @@ var VoiceRecorderScene = (function() {
     VoiceRecorderScene.prototype._openFileNameEditor = function() {
         var self = this;
         if (typeof TextInputScreen === 'undefined' || !this.sceneManager) return;
+        // Seed with the EXPANDED template when the user hasn't
+        // touched the name — they need real digits to edit
+        // (e.g. drop the seconds). Once they save an edit,
+        // `_fileNameAuto` flips false and we re-seed with their
+        // literal text on next open.
+        var seed = this._fileNameAuto
+            ? _expandTemplateName(this._fileName)
+            : this._fileName;
         var screen = new TextInputScreen({
             displayName: 'File name',
             title:       'File name',
-            initialText: this._fileName,
+            initialText: seed,
             onSave: function(text) {
                 // Trim incidental whitespace; reject an empty
                 // string so the row never reads as blank.
                 var clean = (text == null ? '' : String(text)).replace(/^\s+|\s+$/g, '');
                 if (clean.length === 0) return;
-                self._fileName = clean;
+                self._fileName     = clean;
+                self._fileNameAuto = false;
                 if (typeof window.requestRender === 'function') {
                     window.requestRender();
                 }
@@ -1022,9 +1429,15 @@ var VoiceRecorderScene = (function() {
             // top edge — labels the current take so the user
             // sees what file is being written while the rows
             // that normally hold this info are hidden.
+            // Render the EXPANDED name (`_recordingDisplayName`,
+            // snapped on Start) not the template stored in
+            // `_fileName`. Falling back to `_fileName` is just
+            // defensive — `_recordingDisplayName` is always set
+            // by the Start path before the rectangle paints.
             var FN_TEXT_X = REC_RECT_X + 7;
             var FN_TEXT_Y = REC_RECT_Y + 1;
-            Born2bSportyV2Medium.draw(canvas.ctx, this._fileName,
+            var fnText    = this._recordingDisplayName || this._fileName;
+            Born2bSportyV2Medium.draw(canvas.ctx, fnText,
                 FN_TEXT_X, FN_TEXT_Y, '#FFFFFF');
             // Horizontal white hairline 6 px below the visible
             // bottom of the file-name text. Born2bSportyV2Medium's
@@ -1205,6 +1618,15 @@ var VoiceRecorderScene = (function() {
                 var chipY = rowYs[openRowIdx] + MenuDropdownLine.TOP_PAD;
                 this._renderDropdown(canvas, chipX, chipY);
             }
+        }
+
+        // Install-dependency modal — drawn LAST so it sits
+        // above every other element including the dropdown.
+        // Open state is set by _openInstallModal; the modal
+        // owns input the entire time it's open (gated at the
+        // top of handleInput).
+        if (this._installModal.open) {
+            this._renderInstallModal(canvas);
         }
     };
 

@@ -1002,16 +1002,38 @@ var MIC_COMPUTE_MIN_MS  = 45;
 var MIC_DECIMATE_STRIDE = 32;   // bytes per inner-loop step = 8 stereo frames
 var micLastComputeAt    = 0;
 
-function startMicLevelMonitor() {
+// Client-intent flag for the live mic-level monitor. The recorder
+// temporarily kills arecord while sox owns the codec but leaves
+// this flag alone, so the record-finalize callbacks know whether
+// to bring the meter back up. /api/mic/level/start and
+// /api/mic/level/stop are the only writers.
+var micMonitorRequested = false;
+
+// Low-level mic-monitor lifecycle — spawns / kills arecord
+// without touching `micMonitorRequested`. Called from
+// startRecording and the record-finalize paths, which swap the
+// codec owner without flipping the client-visible intent.
+function startMicLevelMonitorLowLevel() {
     if (micChild) return { success: true, already: true };
+    // Apply the cached input gain so the on-screen meters
+    // reflect whatever the slider was last set to, not whatever
+    // mixer state the codec happens to be in.
+    var gainCard = getNau8822Card();
+    if (gainCard) applyInputGain(gainCard, inputGainDb);
     var spawn = require('child_process').spawn;
     try {
+        // --buffer-size=4096 caps mic buffer at ~85 ms (2 periods
+        // at 2048 frames / 48 kHz). ALSA's default buffer is 8+
+        // periods (~340 ms+) which made the meter visibly lag the
+        // codec — a gain change would fire instantly but the
+        // bars would only react half a second later.
         micChild = spawn('arecord', [
             '-D', 'hw:1,0',
             '-f', 'S16_LE',
             '-r', '48000',
             '-c', '2',
-            '--period-size=2048'
+            '--period-size=2048',
+            '--buffer-size=4096'
         ], { stdio: ['ignore', 'pipe', 'ignore'] });
     } catch (e) {
         micChild = null;
@@ -1056,13 +1078,24 @@ function startMicLevelMonitor() {
     return { success: true };
 }
 
-function stopMicLevelMonitor() {
+function stopMicLevelMonitorLowLevel() {
     if (!micChild) return { success: true, already: true };
     try { micChild.kill('SIGKILL'); } catch (e) {}
     micChild = null;
     micLeft  = 0;
     micRight = 0;
     return { success: true };
+}
+
+// API-facing wrappers — update the client-intent flag and
+// delegate to the low-level lifecycle.
+function startMicLevelMonitor() {
+    micMonitorRequested = true;
+    return startMicLevelMonitorLowLevel();
+}
+function stopMicLevelMonitor() {
+    micMonitorRequested = false;
+    return stopMicLevelMonitorLowLevel();
 }
 
 // ── Internet radio streaming ─────────────────────────────────────
@@ -1222,6 +1255,29 @@ function updateLevelFromChunk(chunk) {
     if (recordLevel > 1) recordLevel = 1;
 }
 
+// Mono-PCM sibling of the stereo peak walk in the mic-monitor
+// stdout handler. Called from the recorder's data handlers
+// while sox owns the codec — the live mic-monitor arecord is
+// parked during recording, so without this the on-screen
+// bars would freeze the moment Start is pressed.
+function updateMicLevelFromRecordingChunk(chunk) {
+    var now = Date.now();
+    if (now - micLastComputeAt < MIC_COMPUTE_MIN_MS) return;
+    micLastComputeAt = now;
+    var len = chunk.length - (chunk.length % 2);
+    if (len <= 0) return;
+    var peak = 0;
+    for (var i = 0; i + 1 < len; i += MIC_DECIMATE_STRIDE) {
+        var s = chunk.readInt16LE(i);
+        if (s < 0) s = -s;
+        if (s > peak) peak = s;
+    }
+    var pct = Math.round(peak * 100 / 32767);
+    micLeft  = pct;
+    micRight = pct;
+    notifyMicSubscribers();
+}
+
 // Reset the live level. Called from sox's `exit` / `error`
 // handlers via `finalize()` so the meter snaps back to 0 the
 // instant a recording ends — without this the last frame's
@@ -1230,17 +1286,33 @@ function stopLevelPoll() {
     recordLevel = 0;
 }
 
-function buildRecordingFilename() {
-    // rec-YYYYMMDD-HHMMSS.wav — sortable, unique-per-second.
-    // Local time so the filename matches what the user sees on
-    // the device clock (the recordings list also uses local).
+// Strip everything that could turn a user-supplied filename
+// into a path-traversal / weird-file-name footgun.
+function sanitizeRecordingName(name) {
+    var s = String(name == null ? '' : name);
+    s = s.replace(/[\x00-\x1f]/g, '');
+    s = s.replace(/[\/\\]/g, '');
+    s = s.replace(/\.\./g, '');
+    s = s.replace(/\.(wav|mp3|ogg)$/i, '');
+    s = s.replace(/^\s+|\s+$/g, '');
+    if (s.length > 128) s = s.slice(0, 128);
+    return s;
+}
+
+function buildRecordingFilename(ext, name) {
+    var safeExt = ext || 'wav';
+    if (name) {
+        var clean = sanitizeRecordingName(name);
+        if (clean) return clean + '.' + safeExt;
+    }
+    // rec-YYYYMMDD-HHMMSS.<ext> — sortable, unique-per-second.
     var d   = new Date();
     var pad = function(n) { return n < 10 ? '0' + n : String(n); };
     return 'rec-'
          + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate())
          + '-'
          + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds())
-         + '.wav';
+         + '.' + safeExt;
 }
 
 function getRecordings() {
@@ -1248,7 +1320,7 @@ function getRecordings() {
     try {
         var entries = fs.readdirSync(RECORDINGS_DIR);
         for (var i = 0; i < entries.length; i++) {
-            if (!/\.wav$/i.test(entries[i])) continue;
+            if (!/\.(wav|mp3|ogg)$/i.test(entries[i])) continue;
             try {
                 var st = fs.statSync(path.join(RECORDINGS_DIR, entries[i]));
                 files.push({
@@ -1264,44 +1336,173 @@ function getRecordings() {
     return files;
 }
 
-// Pump the NAU8822's mic / capture chain to maximum-ish gain
-// via amixer. Different driver builds expose different control
-// names, so we fire off every plausible one and ignore failures
-// — the controls that don't exist throw and the ones that do
-// land. Hardware gain has a much cleaner SNR than the post-hoc
-// software gain in sox's effect chain, so we lean on it first.
-function bumpRecordingMicGain(card) {
-    if (!card) return;
-    var attempts = [
-        // Mic preamp boost — cheapest gain in the chain.
-        ['Mic Boost',     '3'],
-        ['Mic Boost',     '20dB'],
-        // PGA / capture volume.
-        ['Mic',           '100%'],
-        ['Mic',           '63'],
-        ['Capture',       '100%'],
-        ['Capture',       '63'],
-        ['Input PGA',     '100%'],
-        ['Left Input PGA','100%'],
-        ['Right Input PGA','100%'],
-        // Some builds split the boost into a switch.
-        ['Mic Boost',     'on'],
-        ['Capture',       'on']
-    ];
-    for (var i = 0; i < attempts.length; i++) {
-        var ctrl = attempts[i][0];
-        var val  = attempts[i][1];
+// Single-knob input gain. The voice-recorder UI exposes one
+// slider in [INPUT_GAIN_MIN_DB, INPUT_GAIN_MAX_DB] dB and POSTs
+// every change here; recording start also re-applies the
+// cached value so a take begins with the slider position the
+// user can see. The "dB" units are nominal — they label the
+// slider's UI range, not a calibrated codec dB. We map the
+// position linearly onto each writable capture control's
+// 0..100 % range for a smooth monotonic ramp without
+// depending on amixer's per-build dB scaling.
+var INPUT_GAIN_MIN_DB = -20;
+var INPUT_GAIN_MAX_DB = 40;
+var inputGainDb       = 0;
+// Cache of amixer controls that responded on the first
+// applyInputGain call. Until populated we fire the full
+// discovery volley (~16 amixer calls / ~1 s of blocked event
+// loop); once populated we fire only the 1-3 controls that
+// actually exist, which keeps the slider responsive AND lets
+// arecord stdout drain so the meter doesn't lag a second
+// behind the codec.
+//   { pctCtrls: [string,…], boostCtrls: [string,…] }
+var inputGainCtrlCache = null;
+var INPUT_GAIN_PCT_CANDIDATES = [
+    'Capture PGA Volume',
+    'Capture PGA',
+    'PGA Volume',
+    'PGA',
+    'Capture',
+    'Mic',
+    'Input PGA',
+    'Input PGA Volume',
+    'Left Input PGA',
+    'Right Input PGA',
+    'Left Input PGA Volume',
+    'Right Input PGA Volume'
+];
+var INPUT_GAIN_BOOST_CANDIDATES = [
+    'Capture PGA Boost',
+    'PGA Boost',
+    'Mic Boost',
+    'Capture Boost'
+];
+
+// Apply `db` to the NAU8822 capture chain. First call discovers
+// which control names this driver build actually exposes (slow,
+// ~16 amixer calls); subsequent calls fire only the cached
+// winners (~1-3 calls, ~150 ms). Mic Boost is wired to the
+// slider's upper half so even if no PGA name lands we still
+// get a +20 dB step the user can feel.
+function applyInputGain(card, db) {
+    var trace = { db: null, calls: [], discovered: false };
+    if (!card) return trace;
+    if (db == null || isNaN(db)) db = inputGainDb;
+    if (db < INPUT_GAIN_MIN_DB) db = INPUT_GAIN_MIN_DB;
+    if (db > INPUT_GAIN_MAX_DB) db = INPUT_GAIN_MAX_DB;
+    inputGainDb = db;
+    trace.db    = db;
+
+    var pct = Math.round(
+        (db - INPUT_GAIN_MIN_DB) * 100 /
+        (INPUT_GAIN_MAX_DB - INPUT_GAIN_MIN_DB)
+    );
+    var boostOn  = db >= ((INPUT_GAIN_MIN_DB + INPUT_GAIN_MAX_DB) / 2);
+    var boostVal = boostOn ? 'on' : 'off';
+
+    function run(ctrl, value) {
+        var entry = { ctrl: ctrl, value: value, ok: false };
         try {
-            execSync('amixer -c ' + card + ' set ' + JSON.stringify(ctrl)
-                   + ' ' + JSON.stringify(val) + ' 2>/dev/null',
+            execSync('amixer -c ' + card + ' -- set '
+                   + JSON.stringify(ctrl) + ' ' + JSON.stringify(value)
+                   + ' 2>/dev/null',
                    { encoding: 'utf8', timeout: 1500 });
-        } catch (e) { /* control absent — try the next */ }
+            entry.ok = true;
+        } catch (e) {
+            entry.error = String(e.message || e).slice(0, 120);
+        }
+        trace.calls.push(entry);
+        return entry.ok;
     }
+
+    if (inputGainCtrlCache) {
+        var pctList   = inputGainCtrlCache.pctCtrls;
+        var boostList = inputGainCtrlCache.boostCtrls;
+        for (var p = 0; p < pctList.length;   p++) run(pctList[p],   pct + '%');
+        for (var b = 0; b < boostList.length; b++) run(boostList[b], boostVal);
+        return trace;
+    }
+
+    // Cold path: fire every candidate once, cache the winners.
+    trace.discovered = true;
+    var pctOk = [], boostOk = [];
+    for (var i = 0; i < INPUT_GAIN_PCT_CANDIDATES.length; i++) {
+        if (run(INPUT_GAIN_PCT_CANDIDATES[i], pct + '%')) {
+            pctOk.push(INPUT_GAIN_PCT_CANDIDATES[i]);
+        }
+    }
+    for (var j = 0; j < INPUT_GAIN_BOOST_CANDIDATES.length; j++) {
+        if (run(INPUT_GAIN_BOOST_CANDIDATES[j], boostVal)) {
+            boostOk.push(INPUT_GAIN_BOOST_CANDIDATES[j]);
+        }
+    }
+    inputGainCtrlCache = { pctCtrls: pctOk, boostCtrls: boostOk };
+    return trace;
 }
 
-function startRecording() {
+// Per-format encoder pipeline metadata. Null `binary` = sox
+// raw → Node WAV header (legacy). For MP3 / OGG we pipe sox's
+// WAV stdout into the encoder via stdin; the encoder owns the
+// file write end-to-end. Args use WAV-on-stdin so the encoder
+// auto-detects rate/channels/bitdepth, dodging per-build
+// CLI flag drift.
+var RECORD_FORMATS = {
+    wav: { ext: 'wav', binary: null, pkg: null },
+    mp3: {
+        ext: 'mp3',
+        binary: 'lame',
+        pkg:    'lame',
+        buildArgs: function(filePath) {
+            // lame autodetects WAV from stdin (no -r/-s needed).
+            // -V 4 ≈ ~165 kbps VBR mono — voice transparency
+            // with room to spare.
+            return ['--quiet', '-V', '4', '-', filePath];
+        }
+    },
+    ogg: {
+        ext: 'ogg',
+        binary: 'oggenc',
+        pkg:    'vorbis-tools',
+        buildArgs: function(filePath) {
+            // oggenc autodetects WAV from stdin. -q 4 ≈
+            // ~128 kbps target — same band as the lame default.
+            return ['-Q', '-q', '4', '-o', filePath, '-'];
+        }
+    }
+};
+var recordEncoderChild     = null;
+var recordEncoderAvailable = {};
+
+function probeEncoder(binary) {
+    if (!binary) return true;
+    if (recordEncoderAvailable.hasOwnProperty(binary)) {
+        return recordEncoderAvailable[binary];
+    }
+    var ok = false;
+    try {
+        execSync('which ' + binary, { timeout: 2000 });
+        ok = true;
+    } catch (e) { /* not installed */ }
+    recordEncoderAvailable[binary] = ok;
+    return ok;
+}
+
+function startRecording(format, name) {
     if (recordChild) {
         return { success: false, error: 'Already recording' };
+    }
+    var fmtId = (format || 'wav').toLowerCase();
+    var fmt   = RECORD_FORMATS[fmtId];
+    if (!fmt) {
+        return { success: false, error: 'Unsupported format: ' + format };
+    }
+    if (fmt.binary && !probeEncoder(fmt.binary)) {
+        return {
+            success: false,
+            error: fmt.binary + ' not installed',
+            missingFormat:  fmtId,
+            missingPackage: fmt.pkg
+        };
     }
     var card = getNau8822Card();
     if (!card) {
@@ -1312,17 +1513,18 @@ function startRecording() {
     // No inverse on the playback side; full-duplex hasn't been
     // exercised on this build so the safer bet is one-at-a-time.
     stopSound();
+    // Same problem on the capture side: the mic-level monitor
+    // holds hw:1,0 exclusively (ALSA hw: devices are single-
+    // reader), so sox's open would fail silently and we'd get
+    // a 44-byte header-only WAV. Release it at the LOW level
+    // so the client-intent flag stays true — the finalize
+    // callbacks bring the monitor back up once sox hands the
+    // codec back.
+    stopMicLevelMonitorLowLevel();
 
-    var filename = buildRecordingFilename();
+    var filename = buildRecordingFilename(fmt.ext, name);
     var filePath = path.join(RECORDINGS_DIR, filename);
-    // Bump the hardware mic / capture gain BEFORE we open the
-    // capture stream. NAU8822 expose a couple of common
-    // controls; we try each defensively (errors swallowed)
-    // because the exact set varies by ALSA version. This is
-    // the cleanest dB the chain has — boosting in hardware
-    // gives a much better SNR than amplifying a quiet sample
-    // in software.
-    bumpRecordingMicGain(card);
+    applyInputGain(card, inputGainDb);
 
     var device   = 'hw:' + card + ',0';
     // sox writes RAW S16LE samples to stdout; we read them
@@ -1348,87 +1550,210 @@ function startRecording() {
     //                   than before since the hardware does
     //                   the heavy lifting now.
     var RECORD_GAIN_DB = 6;
-    var args = ['-q', '-t', 'alsa', device,
-                '-r', '48000', '-c', '1', '-b', '16',
-                '-t', 'raw', '-e', 'signed-integer', '-L', '-',
-                'highpass', '80',
-                'gain', String(RECORD_GAIN_DB)];
     var spawn = require('child_process').spawn;
-    var fileStream = null;
-    try {
-        // Open the WAV file with placeholder header. We patch
-        // the RIFF + data sizes on stop. 48 kHz / mono / 16-bit
-        // matches the sox arg block above — keep these in
-        // sync if either side changes.
-        fileStream = fs.createWriteStream(filePath);
-        fileStream.write(buildWavHeader(0, 48000, 1, 16));
-    } catch (e) {
-        return { success: false, error: String(e.message || e) };
+
+    // ── WAV legacy path ─────────────────────────────────────────
+    // sox emits raw mono S16LE on stdout, Node writes the WAV
+    // header + data and patches the size fields on stop.
+    if (fmtId === 'wav') {
+        var soxArgsRaw = ['-q', '-t', 'alsa', device,
+                          '-r', '48000', '-c', '1', '-b', '16',
+                          '-t', 'raw', '-e', 'signed-integer', '-L', '-',
+                          'highpass', '80',
+                          'gain', String(RECORD_GAIN_DB)];
+        var fileStream = null;
+        try {
+            fileStream = fs.createWriteStream(filePath);
+            fileStream.write(buildWavHeader(0, 48000, 1, 16));
+        } catch (e) {
+            return { success: false, error: String(e.message || e) };
+        }
+        try {
+            recordChild = spawn('sox', soxArgsRaw, { stdio: ['ignore', 'pipe', 'pipe'] });
+        } catch (e) {
+            try { fileStream.end(); } catch (e2) {}
+            recordChild = null;
+            return { success: false, error: String(e.message || e) };
+        }
+        recordWavWriter = fileStream;
+        recordWavBytes  = 0;
+        recordState     = { file: filename, startedAt: Date.now(), format: 'wav' };
+
+        var wavSoxErr = '';
+        if (recordChild.stderr) {
+            recordChild.stderr.on('data', function(chunk) {
+                wavSoxErr = (wavSoxErr + chunk.toString()).slice(-4096);
+            });
+        }
+        recordChild.stdout.on('data', function(chunk) {
+            try {
+                if (recordWavWriter) recordWavWriter.write(chunk);
+            } catch (e) { /* writer closed mid-flight */ }
+            recordWavBytes += chunk.length;
+            updateLevelFromChunk(chunk);
+            updateMicLevelFromRecordingChunk(chunk);
+        });
+
+        var wavFinalized = false;
+        var wavFilePath  = filePath;
+        function wavFinalize() {
+            if (wavFinalized) return;
+            wavFinalized = true;
+            var path0  = wavFilePath;
+            var bytes0 = recordWavBytes;
+            if (recordWavWriter) {
+                try {
+                    recordWavWriter.end(function() {
+                        patchWavHeader(path0, bytes0);
+                    });
+                } catch (e) {
+                    patchWavHeader(path0, bytes0);
+                }
+            }
+            if (bytes0 === 0) {
+                console.warn('[record] empty WAV output',
+                    JSON.stringify({
+                        file:   path0,
+                        soxErr: wavSoxErr.trim().slice(-512)
+                    }));
+            }
+            recordChild     = null;
+            recordState     = null;
+            recordWavWriter = null;
+            recordWavBytes  = 0;
+            stopLevelPoll();
+            if (micMonitorRequested) {
+                startMicLevelMonitorLowLevel();
+            }
+        }
+        recordChild.on('exit',  wavFinalize);
+        recordChild.on('error', wavFinalize);
+        return { success: true, file: filename, format: 'wav' };
     }
+
+    // ── MP3 / OGG piped path ────────────────────────────────────
+    // sox writes a WAV stream to stdout; we pipe it into the
+    // encoder's stdin. The encoder owns the file write end to
+    // end (proper container header + footer). Both children
+    // are tracked so stopRecording can finalize cleanly.
+    var soxArgsWav = ['-q', '-t', 'alsa', device,
+                      '-r', '48000', '-c', '1', '-b', '16',
+                      '-t', 'wav', '-',
+                      'highpass', '80',
+                      'gain', String(RECORD_GAIN_DB)];
     try {
-        recordChild = spawn('sox', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        recordChild = spawn('sox', soxArgsWav, { stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (e) {
-        try { fileStream.end(); } catch (e2) {}
         recordChild = null;
         return { success: false, error: String(e.message || e) };
     }
-    recordWavWriter = fileStream;
-    recordWavBytes  = 0;
-    recordState     = { file: filename, startedAt: Date.now() };
+    try {
+        recordEncoderChild = spawn(fmt.binary, fmt.buildArgs(filePath),
+                                   { stdio: ['pipe', 'ignore', 'pipe'] });
+    } catch (e) {
+        try { recordChild.kill('SIGKILL'); } catch (e2) {}
+        recordChild        = null;
+        recordEncoderChild = null;
+        return { success: false, error: String(e.message || e) };
+    }
+    recordChild.stdout.pipe(recordEncoderChild.stdin);
+    recordEncoderChild.stdin.on('error', function() { /* swallow EPIPE */ });
 
+    // stderr capture for diagnostics on both sides of the pipe.
+    var soxErr = '';
+    if (recordChild.stderr) {
+        recordChild.stderr.on('data', function(chunk) {
+            soxErr = (soxErr + chunk.toString()).slice(-4096);
+        });
+    }
+    var encErr = '';
+    if (recordEncoderChild.stderr) {
+        recordEncoderChild.stderr.on('data', function(chunk) {
+            encErr = (encErr + chunk.toString()).slice(-4096);
+        });
+    }
+
+    // Tally piped bytes + drive the on-screen meter bars. sox
+    // emits a WAV stream (44-byte RIFF prefix, then raw PCM),
+    // so we skip the header before feeding the helper.
+    var pipedBytes      = 0;
+    var meterHeaderSeen = 0;
     recordChild.stdout.on('data', function(chunk) {
-        try {
-            if (recordWavWriter) recordWavWriter.write(chunk);
-        } catch (e) { /* writer closed mid-flight */ }
-        recordWavBytes += chunk.length;
-        // Compute the peak right here — no polling, no file
-        // I/O, the chunk is fresh from sox's pipe buffer.
-        updateLevelFromChunk(chunk);
+        pipedBytes += chunk.length;
+        if (meterHeaderSeen < 44) {
+            if (chunk.length + meterHeaderSeen <= 44) {
+                meterHeaderSeen += chunk.length;
+                return;
+            }
+            var skip = 44 - meterHeaderSeen;
+            meterHeaderSeen = 44;
+            updateMicLevelFromRecordingChunk(chunk.slice(skip));
+            return;
+        }
+        updateMicLevelFromRecordingChunk(chunk);
     });
 
-    var finalized = false;
-    function finalize() {
-        if (finalized) return;
-        finalized = true;
-        var path0 = filePath;
-        var bytes0 = recordWavBytes;
-        if (recordWavWriter) {
-            // End the stream, then patch the header sizes once
-            // the OS has flushed.
-            try {
-                recordWavWriter.end(function() {
-                    patchWavHeader(path0, bytes0);
-                });
-            } catch (e) {
-                patchWavHeader(path0, bytes0);
-            }
+    recordState = { file: filename, startedAt: Date.now(), format: fmtId };
+
+    var pipeFinalized = false;
+    var pipedFilePath = filePath;
+    function pipeFinalize() {
+        if (recordChild        && recordChild.exitCode        === null) return;
+        if (recordEncoderChild && recordEncoderChild.exitCode === null) return;
+        if (pipeFinalized) return;
+        pipeFinalized = true;
+        var outSize = 0;
+        try { outSize = fs.statSync(pipedFilePath).size; } catch (e) {}
+        if (pipedBytes === 0 || outSize === 0) {
+            console.warn('[record] empty pipeline output',
+                JSON.stringify({
+                    file:       pipedFilePath,
+                    piped:      pipedBytes,
+                    outputSize: outSize,
+                    soxErr:     soxErr.trim().slice(-512),
+                    encErr:     encErr.trim().slice(-512)
+                }));
         }
-        recordChild     = null;
-        recordState     = null;
-        recordWavWriter = null;
-        recordWavBytes  = 0;
+        recordChild        = null;
+        recordEncoderChild = null;
+        recordState        = null;
         stopLevelPoll();
+        if (micMonitorRequested) {
+            startMicLevelMonitorLowLevel();
+        }
     }
-    recordChild.on('exit',  finalize);
-    recordChild.on('error', finalize);
-    return { success: true, file: filename };
+    recordChild.on('exit',          pipeFinalize);
+    recordChild.on('error',         pipeFinalize);
+    recordEncoderChild.on('exit',   pipeFinalize);
+    recordEncoderChild.on('error',  pipeFinalize);
+
+    return { success: true, file: filename, format: fmtId };
 }
 
 function stopRecording() {
     if (!recordChild) {
-        // Idempotent — caller can `stop` blindly without
-        // checking state first (the unload path uses sendBeacon
-        // which has no response, so the "is it actually
-        // running?" check happens here).
         return { success: true, recording: false };
     }
     var file = recordState ? recordState.file : null;
     try {
-        // SIGINT lets sox flush its WAV header cleanly. SIGTERM
-        // also works but SIGINT is the documented "stop and
-        // finalize" signal for the tool.
+        // SIGINT lets sox flush its WAV header cleanly and
+        // closes its stdout so the encoder pipe (MP3 / OGG
+        // path) sees EOF and finalizes a valid container.
         recordChild.kill('SIGINT');
     } catch (e) { /* already gone */ }
+    // Safety net: force-kill the encoder if it doesn't exit
+    // within a few seconds of sox closing (flushing a small
+    // tail buffer is fast; longer means stuck).
+    if (recordEncoderChild) {
+        var encoderRef = recordEncoderChild;
+        setTimeout(function() {
+            try {
+                if (encoderRef && encoderRef.exitCode === null) {
+                    encoderRef.kill('SIGKILL');
+                }
+            } catch (e) { /* already gone */ }
+        }, 3000);
+    }
     return { success: true, recording: false, file: file };
 }
 
@@ -1436,7 +1761,7 @@ function deleteRecording(filename) {
     if (typeof filename !== 'string') {
         return { success: false, error: 'Missing filename' };
     }
-    if (/[\/\\]/.test(filename) || !/\.wav$/i.test(filename)) {
+    if (/[\/\\]/.test(filename) || !/\.(wav|mp3|ogg)$/i.test(filename)) {
         return { success: false, error: 'Invalid filename' };
     }
     var filePath = path.join(RECORDINGS_DIR, filename);
@@ -1600,91 +1925,6 @@ function getSoundOutputs() {
         result.current = def.id;
     }
     return result;
-}
-
-// ── High-level audio inputs ─────────────────────────────────────
-// Capture-side sibling of getSoundOutputs(). The NAU8822 codec
-// exposes two physical input paths through its input mux —
-// `Internal mic` (on-board PCB mic, routed via MicN/MicP) and
-// `Headset mic` (3.5 mm jack, routed via L2/R2). Both terminate
-// at the same ALSA capture device, so `arecord -l` alone can't
-// surface the split — we describe the codec paths directly and
-// deliberately omit a `device` field (it would be identical on
-// every entry, which makes the two real inputs look like
-// duplicates). No jack-detect control exists on this build, so
-// the Headset entry is always offered.
-//
-// `selectedInputId` tracks which path the codec mux was last
-// told to use so /api/sound/inputs reflects reality without
-// re-reading every numid on each poll. setSoundInput() is the
-// only writer.
-var selectedInputId = 'internal';
-
-// Per-input mixer recipe. `.on` is the set of simple-mixer
-// switches that need to be on for this path to feed the ADC;
-// `.off` is positively muted so a stale open route on the
-// OTHER path can't bleed signal in once the user switches.
-// Names are simple-mixer (no "Switch" suffix); the underlying
-// numids are 73/74 (Mic source enable) + 92/95 (L2/R2 line
-// inputs) + 93/94/96/97 (MicN/MicP mic-preamp routes).
-var INPUT_PATHS = {
-    internal: {
-        on:  ['Internal Microphone',
-              'Left Input Mixer MicN',  'Left Input Mixer MicP',
-              'Right Input Mixer MicN', 'Right Input Mixer MicP'],
-        off: ['Headset Microphone',
-              'Left Input Mixer L2',    'Right Input Mixer R2']
-    },
-    headset: {
-        on:  ['Headset Microphone',
-              'Left Input Mixer L2',    'Right Input Mixer R2'],
-        off: ['Internal Microphone',
-              'Left Input Mixer MicN',  'Left Input Mixer MicP',
-              'Right Input Mixer MicN', 'Right Input Mixer MicP']
-    }
-};
-
-function getSoundInputs() {
-    var card = getNau8822Card();
-    if (!card) {
-        return { inputs: [], error: 'NAU8822 not found' };
-    }
-    return {
-        inputs: [
-            { id: 'internal', label: 'Internal mic' },
-            { id: 'headset',  label: 'Headset mic' }
-        ],
-        current: selectedInputId
-    };
-}
-
-// Flip the NAU8822 input mux to the named path. Mirrors
-// _applyOutputState on the playback side: each amixer call is
-// best-effort (the control set varies slightly across driver
-// builds), and we update `selectedInputId` only after the
-// batch lands so a partial failure leaves the cached state
-// honest about what was attempted.
-function setSoundInput(id) {
-    var path = INPUT_PATHS[id];
-    if (!path) {
-        return { success: false, error: 'Unknown input id' };
-    }
-    var card = getNau8822Card();
-    if (!card) {
-        return { success: false, error: 'NAU8822 not found' };
-    }
-    function setCtrl(ctrl, state) {
-        try {
-            execSync('amixer -c ' + card + ' set '
-                   + JSON.stringify(ctrl) + ' ' + state
-                   + ' 2>/dev/null',
-                   { encoding: 'utf8', timeout: 1500 });
-        } catch (e) { /* control absent — skip */ }
-    }
-    for (var i = 0; i < path.on.length;  i++) setCtrl(path.on[i],  'on');
-    for (var j = 0; j < path.off.length; j++) setCtrl(path.off[j], 'off');
-    selectedInputId = id;
-    return { success: true, id: id };
 }
 
 // Apply an output's device + codec mixer state without re-
@@ -2634,16 +2874,158 @@ var server = http.createServer(function(req, res) {
         return;
     }
     if (req.url === '/api/record/start' && req.method === 'POST') {
-        var startResult = startRecording();
-        res.writeHead(startResult.success ? 200 : 500,
-                      { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(startResult));
+        // Body is optional — bare POSTs default to WAV with the
+        // legacy "rec-YYYYMMDD-HHMMSS" filename pattern.
+        readJsonBody(req, function(err, data) {
+            var fmt  = (data && data.format) ? String(data.format) : 'wav';
+            var name = data && data.name ? String(data.name) : null;
+            var startResult = startRecording(fmt, name);
+            // 409 when the dependency is missing — the client
+            // distinguishes that from a real 500 (codec gone /
+            // sox missing) to know whether to pop the install
+            // modal vs. surface a hard error.
+            var status = 200;
+            if (!startResult.success) {
+                status = startResult.missingPackage ? 409 : 500;
+            }
+            res.writeHead(status, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(startResult));
+        });
         return;
     }
     if (req.url === '/api/record/stop' && req.method === 'POST') {
         var stopResult = stopRecording();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(stopResult));
+        return;
+    }
+    // ── /api/record/formats ─────────────────────────────────────
+    // Lists every format with a live availability flag derived
+    // from `which <binary>`. The client populates the Format
+    // picker from this; selecting an unavailable format pops
+    // the install modal.
+    if (req.url === '/api/record/formats' && req.method === 'GET') {
+        var formatsOut = [];
+        var meta = [
+            { id: 'wav', label: 'WAV' },
+            { id: 'mp3', label: 'MP3' },
+            { id: 'ogg', label: 'OGG' }
+        ];
+        for (var fi = 0; fi < meta.length; fi++) {
+            var def = RECORD_FORMATS[meta[fi].id];
+            if (!def) continue;
+            var entry = {
+                id:        meta[fi].id,
+                label:     meta[fi].label,
+                ext:       def.ext,
+                available: !def.binary || probeEncoder(def.binary)
+            };
+            if (def.pkg) entry.package = def.pkg;
+            formatsOut.push(entry);
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ formats: formatsOut }));
+        return;
+    }
+    // ── /api/record/install ─────────────────────────────────────
+    // apt-get the encoder package — `lame` for MP3,
+    // `vorbis-tools` for OGG. Mirrors /api/radio/install.
+    if (req.url === '/api/record/install' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            var fmtId = (data && data.id) ? String(data.id).toLowerCase() : '';
+            var def   = RECORD_FORMATS[fmtId];
+            if (!def || !def.pkg) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    success: false,
+                    error:   'No installable package for format ' + fmtId
+                }));
+                return;
+            }
+            var instOk  = false;
+            var instOut = '';
+            try {
+                instOut = execSync(
+                    'DEBIAN_FRONTEND=noninteractive apt-get install -y ' +
+                    '--no-install-recommends ' + def.pkg + ' 2>&1',
+                    { encoding: 'utf8', timeout: 60000 });
+                instOk = true;
+            } catch (e) {
+                instOut = (e.stdout || '') + (e.stderr || '') + (e.message || '');
+            }
+            // Invalidate the encoder probe so the next formats
+            // poll picks up the new binary state.
+            if (def.binary) delete recordEncoderAvailable[def.binary];
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                success: instOk,
+                output:  instOut.slice(-1000)
+            }));
+        });
+        return;
+    }
+    // ── /api/sound/input/gain ───────────────────────────────────
+    // Single-knob input-gain endpoint for the Voice recorder.
+    //   GET  → { db, min, max }
+    //   POST → { db } applies the value; returns the clamped
+    //          db + a trace of every amixer call attempted
+    //          (which landed vs which failed).
+    if (req.url === '/api/sound/input/gain' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            db:  inputGainDb,
+            min: INPUT_GAIN_MIN_DB,
+            max: INPUT_GAIN_MAX_DB
+        }));
+        return;
+    }
+    if (req.url === '/api/sound/input/gain' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            var db = data ? Number(data.db) : NaN;
+            if (err || !isFinite(db)) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: 'Invalid request' }));
+                return;
+            }
+            var gainCard = getNau8822Card();
+            if (!gainCard) {
+                res.writeHead(404, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: 'NAU8822 not found' }));
+                return;
+            }
+            var trace = applyInputGain(gainCard, db);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                success: true,
+                db:      inputGainDb,
+                min:     INPUT_GAIN_MIN_DB,
+                max:     INPUT_GAIN_MAX_DB,
+                trace:   trace
+            }));
+        });
+        return;
+    }
+    // ── /api/sound/input/controls ───────────────────────────────
+    // Diagnostic-only: returns raw `amixer scontents` output for
+    // the NAU8822 card so we can see which controls actually
+    // exist on this driver build when the gain slider seems
+    // inert.
+    if (req.url === '/api/sound/input/controls' && req.method === 'GET') {
+        var ctlCard = getNau8822Card();
+        if (!ctlCard) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'NAU8822 not found' }));
+            return;
+        }
+        var ctlOut = '';
+        try {
+            ctlOut = execSync('amixer -c ' + ctlCard + ' scontents 2>&1',
+                              { encoding: 'utf8', timeout: 3000 });
+        } catch (e) {
+            ctlOut = String(e.message || e);
+        }
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end(ctlOut);
         return;
     }
     if (req.url === '/api/record/delete' && req.method === 'POST') {
@@ -2742,39 +3124,6 @@ var server = http.createServer(function(req, res) {
     if (req.url === '/api/sound/outputs' && req.method === 'GET') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(getSoundOutputs()));
-        return;
-    }
-    // ── /api/sound/inputs ───────────────────────────────────────
-    // High-level inputs for the Voice recorder app's picker —
-    // see getSoundInputs() for the rationale (Internal mic /
-    // Headset mic split happens inside the NAU8822 codec's input
-    // mux; both terminate at the same ALSA capture device).
-    // Returns { inputs: [], error: 'NAU8822 not found' } when
-    // the codec card isn't present so the picker can surface
-    // the actual reason instead of falling back to stale
-    // defaults.
-    if (req.url === '/api/sound/inputs' && req.method === 'GET') {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(getSoundInputs()));
-        return;
-    }
-    // ── /api/sound/input ────────────────────────────────────────
-    // Flip the NAU8822 input mux to the requested path
-    // ({"id":"internal"} or {"id":"headset"}). 400 on unknown id
-    // or when the codec card isn't present (setSoundInput
-    // surfaces the same `error` string getSoundInputs would).
-    if (req.url === '/api/sound/input' && req.method === 'POST') {
-        readJsonBody(req, function(err, data) {
-            if (err || !data || !data.id) {
-                res.writeHead(400, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ success: false, error: 'Invalid request' }));
-                return;
-            }
-            var inResult = setSoundInput(data.id);
-            res.writeHead(inResult.success ? 200 : 400,
-                          { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify(inResult));
-        });
         return;
     }
     if (req.url === '/api/sound/output' && req.method === 'POST') {
