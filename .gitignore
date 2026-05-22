@@ -15,3 +15,11 @@ sound/recordings/
 # is Claude Code's per-session permission allowlist — grows
 # with command history.
 fake-flipctl2/.claude/settings.local.json
+
+# Local developer debug config — boots straight into a single
+# scene on page load (see js/debug_config.js + the
+# DEBUG_SCENE_MAP block in main.js). Per-developer iteration
+# convenience; must not land in shared commits. The pre-commit
+# hook in .githooks/pre-commit refuses to commit when the file
+# is staged OR when it has `enabled: true` on disk.
+fake-flipctl2/js/debug_config.js
