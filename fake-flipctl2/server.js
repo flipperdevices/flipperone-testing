@@ -1179,7 +1179,7 @@ function playRadioStream(url) {
 // child's exit listener so a crash mid-recording can't desync
 // them — every observer (status endpoint, the next start) sees
 // "not recording" once the OS has actually torn the process down.
-var RECORDINGS_DIR = '/flipperone-testing/sound/recordings';
+var RECORDINGS_DIR = '/flipperone-testing/sound/voice_recordings';
 var recordChild    = null;            // sox ChildProcess while recording
 var recordState    = null;            // { file, startedAt: ms } while recording
 // Peak amplitude over the most recent sox output chunk,
@@ -1299,20 +1299,50 @@ function sanitizeRecordingName(name) {
     return s;
 }
 
+// Is `filename` already present in the recordings directory?
+// Wrapped so the collision walker below stays readable; uses
+// `accessSync` rather than `existsSync` because the latter is
+// deprecated in older Node versions on this image.
+function recordingExists(filename) {
+    try {
+        fs.accessSync(path.join(RECORDINGS_DIR, filename), fs.constants.F_OK);
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
 function buildRecordingFilename(ext, name) {
     var safeExt = ext || 'wav';
+    var base;
     if (name) {
         var clean = sanitizeRecordingName(name);
-        if (clean) return clean + '.' + safeExt;
+        if (clean) base = clean;
     }
-    // rec-YYYYMMDD-HHMMSS.<ext> — sortable, unique-per-second.
-    var d   = new Date();
-    var pad = function(n) { return n < 10 ? '0' + n : String(n); };
-    return 'rec-'
-         + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate())
-         + '-'
-         + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds())
-         + '.' + safeExt;
+    if (!base) {
+        // Server-side fallback when the client doesn't send a
+        // name. Still sortable + unique-per-second.
+        var d   = new Date();
+        var pad = function(n) { return n < 10 ? '0' + n : String(n); };
+        base = 'rec-'
+             + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate())
+             + '-'
+             + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
+    }
+    // Preferred form is the bare base name. If it's free, take
+    // it. Otherwise walk `-1`, `-2`, … and use the first free
+    // slot — filling gaps so the suffix stays small and matches
+    // how desktop file managers handle duplicates. Cap the walk
+    // at 10 000 attempts and fall back to a unix-timestamp
+    // suffix in the pathological case, so the API never spins
+    // forever on a fully-stuffed directory.
+    var candidate = base + '.' + safeExt;
+    if (!recordingExists(candidate)) return candidate;
+    for (var i = 1; i < 10000; i++) {
+        candidate = base + '-' + i + '.' + safeExt;
+        if (!recordingExists(candidate)) return candidate;
+    }
+    return base + '-' + Date.now() + '.' + safeExt;
 }
 
 function getRecordings() {
@@ -1377,6 +1407,80 @@ var INPUT_GAIN_BOOST_CANDIDATES = [
     'Mic Boost',
     'Capture Boost'
 ];
+
+// Input source selection. Per the board's device-tree routing
+// (`simple-audio-card,routing` on the NAU8822 node):
+//
+//   LMICP ← Internal Microphone
+//   LMICN ← Internal Microphone
+//   RMICP ← Headset Microphone
+//
+// so the built-in mic feeds the LEFT ADC channel (differential
+// across LMICP/LMICN) and the 3.5-mm jack mic feeds the RIGHT
+// ADC channel (single-ended on RMICP). The codec exposes those
+// pins to the ADC through the `Left Input Mixer` /
+// `Right Input Mixer` MicP / MicN switches — that's the real
+// gate. The top-level `Internal Microphone` / `Headset
+// Microphone` switches only toggle the upstream DAPM widgets,
+// not the channel mixer, which is why simply flipping them
+// leaves both mics hot on their respective ADC sides.
+//
+// Exclusive routing therefore has to operate at the input
+// mixer:
+//   builtin → Left Input Mixer MicP/MicN on,
+//             Right Input Mixer MicP/MicN off
+//   jack    → Left Input Mixer MicP/MicN off,
+//             Right Input Mixer MicP/MicN on
+// (the upstream Internal/Headset pin-switches are still toggled
+// alongside so DAPM powers down the unused mic-bias / preamp.)
+//
+// Recording capture additionally uses sox's `remix` effect to
+// take only the populated channel (channel 1 for builtin,
+// channel 2 for jack) so the WAV gets the chosen mic at full
+// scale instead of (signal + silence) / 2 ≈ -6 dB.
+var INPUT_SOURCES = {
+    builtin: {
+        internal: 'on',  headset: 'off',
+        leftMixer: 'on', rightMixer: 'off',
+        soxChannel: 1
+    },
+    jack: {
+        internal: 'off', headset: 'on',
+        leftMixer: 'off', rightMixer: 'on',
+        soxChannel: 2
+    }
+};
+var inputSource = 'builtin';
+
+function applyInputSource(card, source) {
+    var trace = { source: null, calls: [] };
+    if (!card) return trace;
+    var route = INPUT_SOURCES[source];
+    if (!route) return trace;
+    inputSource  = source;
+    trace.source = source;
+
+    function run(ctrl, value) {
+        var entry = { ctrl: ctrl, value: value, ok: false };
+        try {
+            execSync('amixer -c ' + card + ' -- set '
+                   + JSON.stringify(ctrl) + ' ' + JSON.stringify(value)
+                   + ' 2>/dev/null',
+                   { encoding: 'utf8', timeout: 1500 });
+            entry.ok = true;
+        } catch (e) {
+            entry.error = String(e.message || e).slice(0, 120);
+        }
+        trace.calls.push(entry);
+    }
+    run('Internal Microphone',     route.internal);
+    run('Headset Microphone',      route.headset);
+    run('Left Input Mixer MicP',   route.leftMixer);
+    run('Left Input Mixer MicN',   route.leftMixer);
+    run('Right Input Mixer MicP',  route.rightMixer);
+    run('Right Input Mixer MicN',  route.rightMixer);
+    return trace;
+}
 
 // Apply `db` to the NAU8822 capture chain. First call discovers
 // which control names this driver build actually exposes (slow,
@@ -1524,6 +1628,7 @@ function startRecording(format, name) {
 
     var filename = buildRecordingFilename(fmt.ext, name);
     var filePath = path.join(RECORDINGS_DIR, filename);
+    applyInputSource(card, inputSource);
     applyInputGain(card, inputGainDb);
 
     var device   = 'hw:' + card + ',0';
@@ -1543,6 +1648,14 @@ function startRecording(format, name) {
     // budget for voice memos.
     //
     // Effects chain (in order):
+    //   remix N       — keeps only the input channel that the
+    //                   selected mic feeds (1 = left = built-in
+    //                   mic, 2 = right = 3.5-mm jack). The
+    //                   `applyInputSource` mute above silences
+    //                   the other channel at the ADC, but sox's
+    //                   default stereo→mono downmix would still
+    //                   average the two and drop the signal
+    //                   ~6 dB. remix takes just the live channel.
     //   highpass 80   — rolls off sub-bass rumble + DC drift
     //                   that just amplify into noise on boost.
     //   gain N        — software make-up gain on top of the
@@ -1550,6 +1663,7 @@ function startRecording(format, name) {
     //                   than before since the hardware does
     //                   the heavy lifting now.
     var RECORD_GAIN_DB = 6;
+    var soxChannel     = (INPUT_SOURCES[inputSource] || INPUT_SOURCES.builtin).soxChannel;
     var spawn = require('child_process').spawn;
 
     // ── WAV legacy path ─────────────────────────────────────────
@@ -1559,6 +1673,7 @@ function startRecording(format, name) {
         var soxArgsRaw = ['-q', '-t', 'alsa', device,
                           '-r', '48000', '-c', '1', '-b', '16',
                           '-t', 'raw', '-e', 'signed-integer', '-L', '-',
+                          'remix', String(soxChannel),
                           'highpass', '80',
                           'gain', String(RECORD_GAIN_DB)];
         var fileStream = null;
@@ -1639,6 +1754,7 @@ function startRecording(format, name) {
     var soxArgsWav = ['-q', '-t', 'alsa', device,
                       '-r', '48000', '-c', '1', '-b', '16',
                       '-t', 'wav', '-',
+                      'remix', String(soxChannel),
                       'highpass', '80',
                       'gain', String(RECORD_GAIN_DB)];
     try {
@@ -2867,8 +2983,27 @@ var server = http.createServer(function(req, res) {
         var st = { recording: !!recordChild };
         if (recordState) {
             st.file      = recordState.file;
+            st.format    = recordState.format;
             st.elapsedMs = Date.now() - recordState.startedAt;
+            // Live file size — drives the client-side "how many
+            // bytes per second is THIS take actually writing" so
+            // the time-left estimate reflects the real codec
+            // bitrate (which can differ from the nominal: VBR
+            // encoders dip in silence, WAV stays flat).
+            try {
+                var sz = fs.statSync(path.join(RECORDINGS_DIR, recordState.file));
+                st.bytes = sz.size;
+            } catch (e) { /* file gone — leave bytes undefined */ }
         }
+        // Free bytes on the recordings filesystem. statfsSync is
+        // Node 18.15+; we're on 20, so it's safe. Bytes here so
+        // the client can do GB / MB formatting itself rather
+        // than us baking a precision choice in.
+        try {
+            var sf = fs.statfsSync(RECORDINGS_DIR);
+            st.freeBytes  = sf.bavail * sf.bsize;
+            st.totalBytes = sf.blocks * sf.bsize;
+        } catch (e) { /* leave undefined — client falls back */ }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(st));
         return;
@@ -3000,6 +3135,42 @@ var server = http.createServer(function(req, res) {
                 db:      inputGainDb,
                 min:     INPUT_GAIN_MIN_DB,
                 max:     INPUT_GAIN_MAX_DB,
+                trace:   trace
+            }));
+        });
+        return;
+    }
+    // ── /api/sound/input/source ─────────────────────────────────
+    // Pick which physical mic feeds the ADC.
+    //   GET  → { source }                  ('builtin' | 'jack')
+    //   POST → { source } sets it; returns the value and a trace
+    //          of every amixer call attempted. The two NAU8822
+    //          switches are toggled exclusively so only the
+    //          selected path is hot.
+    if (req.url === '/api/sound/input/source' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ source: inputSource }));
+        return;
+    }
+    if (req.url === '/api/sound/input/source' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            var src = data && data.source;
+            if (err || !INPUT_SOURCES[src]) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: 'Invalid source' }));
+                return;
+            }
+            var srcCard = getNau8822Card();
+            if (!srcCard) {
+                res.writeHead(404, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: 'NAU8822 not found' }));
+                return;
+            }
+            var trace = applyInputSource(srcCard, src);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                success: true,
+                source:  inputSource,
                 trace:   trace
             }));
         });

@@ -7,9 +7,10 @@ results/*
 # macOS
 .DS_Store
 
-# Voice recorder output — captured WAVs are per-device runtime
-# data, not source. The Node server creates this dir on demand.
-sound/recordings/
+# Voice recorder output — captured WAVs / MP3s / OGGs are per-
+# device runtime data, not source. The Node server creates this
+# dir on demand and writes every take into it.
+sound/voice_recordings/
 
 # fake-flipctl2 local-only files. `.claude/settings.local.json`
 # is Claude Code's per-session permission allowlist — grows

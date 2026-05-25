@@ -9,27 +9,95 @@
  */
 var VoiceRecorderScene = (function() {
     // Default filename pattern. Shown verbatim in the File name
-    // row — the `YYYYMMDD-HHMMSS` part is a literal placeholder,
-    // not a live clock — and only expanded into a concrete
-    // timestamp at Start press by `_expandTemplateName`.
-    var DEFAULT_NAME_TEMPLATE = 'F1-REC-YYYYMMDD-HHMMSS';
+    // row and in the editor — substitution only happens at Start
+    // press, and only inside the square brackets.
+    var DEFAULT_NAME_TEMPLATE = 'F1-REC-[YYYYMMDD-HHMMSS]';
 
-    // Substitute the `YYYYMMDD-HHMMSS` token in `s` with the
-    // current local-time stamp in that exact format. Anything
-    // outside the token is preserved, so "Meeting YYYYMMDD-HHMMSS"
-    // → "Meeting 20260522-161853".
+    // Recognised date-format tokens for `_expandTemplateName`.
+    // Longest first so the greedy walker prefers the more
+    // specific match: `YYYYMMDD` beats `YYYY`+`MM`+`DD`, `HHMM`
+    // beats `HH`+`MM`. `MM` is the one genuinely ambiguous token
+    // (month vs minute) — when it stands alone we resolve it to
+    // month, which is the more common naming use-case. To pick
+    // minutes specifically, use `HHMM` (hour+minute) or build
+    // the brackets like `[HH-MM]` only when you mean month after
+    // an hour (rare; in practice users write `[YYYYMMDD]` or
+    // `[HHMMSS]`, never `[HH-MM]`).
+    var TEMPLATE_TOKENS = [
+        'YYYYMMDD',  // full date  → e.g. 20260525
+        'HHMMSS',    // full time  → e.g. 161853
+        'HHMM',      // time, no seconds → e.g. 1618
+        'MMDD',      // month+day → e.g. 0525
+        'YYYY',      // year, 4 digits
+        'YY',        // year, 2 digits
+        'HH',        // hour, 24h
+        'MM',        // month (when standalone)
+        'DD',        // day-of-month
+        'SS'         // second
+    ];
+
+    // Compute the value for a single token at the given Date.
+    // Centralised so the walker can ask for any recognised
+    // token by string without each call repeating the padding /
+    // slicing logic.
+    function _tokenValue(tok, d) {
+        var pad = function(n) { return n < 10 ? '0' + n : String(n); };
+        var Y4  = String(d.getFullYear());
+        var Mo  = pad(d.getMonth() + 1);
+        var Da  = pad(d.getDate());
+        var Hr  = pad(d.getHours());
+        var Mi  = pad(d.getMinutes());
+        var Se  = pad(d.getSeconds());
+        switch (tok) {
+            case 'YYYYMMDD': return Y4 + Mo + Da;
+            case 'HHMMSS':   return Hr + Mi + Se;
+            case 'HHMM':     return Hr + Mi;
+            case 'MMDD':     return Mo + Da;
+            case 'YYYY':     return Y4;
+            case 'YY':       return Y4.slice(-2);
+            case 'HH':       return Hr;
+            case 'MM':       return Mo;
+            case 'DD':       return Da;
+            case 'SS':       return Se;
+            default:         return tok;
+        }
+    }
+
+    // Expand any `[...]` segments in `s` with date tokens
+    // substituted; everything outside the brackets stays as
+    // typed. The brackets themselves are stripped after
+    // substitution, so `F1-REC-[YYYYMMDD-HHMM]` becomes
+    // `F1-REC-20260525-1618` and `Meeting-SS` stays
+    // `Meeting-SS` (because the `SS` is outside any brackets,
+    // so we leave it alone). Inside the brackets we walk
+    // left-to-right matching the longest recognised token at
+    // each position; characters that aren't part of any token
+    // (dashes, underscores, letters that aren't format codes)
+    // pass through unchanged.
     function _expandTemplateName(s) {
         if (typeof s !== 'string') return s;
-        var d   = new Date();
-        var pad = function(n) { return n < 10 ? '0' + n : String(n); };
-        var stamp = d.getFullYear()
-                  + pad(d.getMonth() + 1)
-                  + pad(d.getDate())
-                  + '-'
-                  + pad(d.getHours())
-                  + pad(d.getMinutes())
-                  + pad(d.getSeconds());
-        return s.replace(/YYYYMMDD-HHMMSS/g, stamp);
+        var d = new Date();
+        return s.replace(/\[([^\]]*)\]/g, function(_match, inner) {
+            var out = '';
+            var i   = 0;
+            while (i < inner.length) {
+                var matched = false;
+                for (var j = 0; j < TEMPLATE_TOKENS.length; j++) {
+                    var tok = TEMPLATE_TOKENS[j];
+                    if (inner.substr(i, tok.length) === tok) {
+                        out += _tokenValue(tok, d);
+                        i   += tok.length;
+                        matched = true;
+                        break;
+                    }
+                }
+                if (!matched) {
+                    out += inner.charAt(i);
+                    i   += 1;
+                }
+            }
+            return out;
+        });
     }
 
     function VoiceRecorderScene(sceneManager) {
@@ -102,6 +170,15 @@ var VoiceRecorderScene = (function() {
             formatId:    null,
             onSuccess:   null
         };
+        // Generic info modal — single title line and an OK
+        // button. Used as a "we hear you, this is coming" stub
+        // for menu rows whose deeper UI isn't built yet (Folder
+        // → "File manager: TBA"). Opens with `_openInfoModal`,
+        // closes on OK or Back.
+        this._infoModal = {
+            open:  false,
+            title: ''
+        };
 
         // Input gain — plain ± row, no dropdown. Range and step
         // are conservative starter values; the actual codec
@@ -115,13 +192,13 @@ var VoiceRecorderScene = (function() {
         // do nothing on this row; the chevron on the selector
         // frame is the affordance signalling "press OK to edit".
         //
-        // Default is the literal template `F1-REC-YYYYMMDD-HHMMSS`;
-        // the placeholder is expanded at Start press by
-        // `_expandTemplateName`. `_fileNameAuto` flips false
-        // once the user saves an edited value — the editor
-        // then re-seeds with their literal text on next open.
-        this._fileName     = DEFAULT_NAME_TEMPLATE;
-        this._fileNameAuto = true;
+        // Default is the literal template `F1-REC-[YYYYMMDD-HHMMSS]`;
+        // the bracketed segment is the substitution zone, and
+        // `_expandTemplateName` only fills it in at Start press.
+        // The row, the editor and any save round-trip all carry
+        // the unexpanded template so the user can keep editing
+        // the pattern between takes.
+        this._fileName = DEFAULT_NAME_TEMPLATE;
         // Snapshot of the expanded name once a take starts —
         // rendered in the recording rectangle so the user sees
         // the actual filename being written. Cleared on Stop.
@@ -131,14 +208,7 @@ var VoiceRecorderScene = (function() {
         // structure mirrors File name (chevron selector frame,
         // OK is the future open trigger) so the eventual editor
         // can slot in without UI shuffling.
-        this._folderName = 'Recording';
-
-        // Timecode — display-only drill-in row, no behaviour
-        // wired yet. Same chevron-selector treatment as File
-        // name / Folder so it slots into the eventual editor
-        // path without a layout shuffle. "HH:MM:SS:FF" shape so
-        // the placeholder reads as a real timecode field.
-        this._timecode = '00:00:00:00';
+        this._folderName = 'voice_recordings';
 
         // Focused-row index for up / down navigation between
         // the menu lines below the meters.
@@ -147,7 +217,10 @@ var VoiceRecorderScene = (function() {
         //   2 → File name      (chevron drill-in row)
         //   3 → Folder         (chevron drill-in row, stub)
         //   4 → Format         (dropdown row, plain selector)
-        //   5 → Timecode       (chevron drill-in row, stub)
+        // The live HH:MM:SS:FF timecode that appears inside the
+        // recording rectangle while a take is in flight is a
+        // separate widget — it lives on the recording panel, not
+        // in this menu list.
         this._selectedRow = 0;
 
         // Dropdown overlay state — copied from Internet Radio:
@@ -244,10 +317,10 @@ var VoiceRecorderScene = (function() {
             });
         this._pauseBtn.x = 156;
 
-        // `true` while we're "recording" — collapses rows 2..5
-        // (File name / Folder / Format / Timecode) and reveals a
-        // placeholder ResponsiveFrame in their place. Toggled by
-        // the Start / Stop right button.
+        // `true` while we're "recording" — collapses rows 2..4
+        // (File name / Folder / Format) and reveals a placeholder
+        // ResponsiveFrame in their place. Toggled by the Start /
+        // Stop right button.
         this._recording = false;
 
         // Timecode anchor + tick. `_recordStartTime` is set on
@@ -255,6 +328,20 @@ var VoiceRecorderScene = (function() {
         // recording so the rendered HH:MM:SS:FF display tracks
         // wall-clock time. Stopping recording clears the tick;
         // the next Start re-anchors to the press moment.
+        // Snapshot of the latest /api/record/status fetch. The
+        // recording panel reads bytes / elapsedMs to derive a
+        // bytes-per-second rate, freeBytes for "Available", and
+        // (bytes/elapsedMs ÷ freeBytes) for time-left. Outside
+        // a take, `bytes` and `elapsedMs` stay 0 and we fall
+        // back to the format's nominal byte-rate table.
+        this._recordEstimate = {
+            freeBytes:  null,
+            totalBytes: null,
+            bytes:     0,
+            elapsedMs: 0,
+            format:    null
+        };
+
         this._recordStartTime = 0;
         this._recordTickTimer = null;
         // Pause sub-state of recording. `_paused` flips on each
@@ -375,7 +462,12 @@ var VoiceRecorderScene = (function() {
         this._startMicMonitor();
         this._openMicStream();
         this._fetchInputGain();
+        this._fetchInputSource();
         this._fetchRecordFormats();
+        // One-shot pull on enter so the recording panel shows
+        // a real Available figure as soon as the user starts
+        // a take, instead of dashes for the first poll cycle.
+        this._fetchRecordEstimate();
     };
 
     VoiceRecorderScene.prototype.exit = function() {
@@ -507,6 +599,55 @@ var VoiceRecorderScene = (function() {
             this._sendLinkLed(false);
             this._sendLedManual(false);
         }
+    };
+
+    // ── Input device source ─────────────────────────────────────
+    // The two NAU8822 mic switches default to both-on (so they
+    // mix into the same ADC). The picker maps each label to one
+    // of the server's two exclusive source modes; the server
+    // toggles `Internal Microphone` / `Headset Microphone`
+    // accordingly so only the chosen path is hot.
+    var INPUT_DEVICE_LABEL_TO_SOURCE = {
+        'Build-in mic': 'builtin',
+        '3.5 Audio':    'jack'
+    };
+    var INPUT_DEVICE_SOURCE_TO_LABEL = {
+        builtin: 'Build-in mic',
+        jack:    '3.5 Audio'
+    };
+    VoiceRecorderScene.prototype._fetchInputSource = function() {
+        var self = this;
+        try {
+            var xhr = new XMLHttpRequest();
+            xhr.open('GET', '/api/sound/input/source', true);
+            xhr.timeout = 1500;
+            xhr.onload = function() {
+                var data;
+                try { data = JSON.parse(xhr.responseText || '{}'); }
+                catch (e) { return; }
+                var label = INPUT_DEVICE_SOURCE_TO_LABEL[data.source];
+                if (label && self._pickers.inputDevice.options.indexOf(label) >= 0) {
+                    self._pickers.inputDevice.current = label;
+                    if (typeof window.requestRender === 'function') {
+                        window.requestRender();
+                    }
+                }
+            };
+            xhr.send();
+        } catch (e) { /* offline — keep default */ }
+    };
+    VoiceRecorderScene.prototype._postInputSource = function() {
+        var self   = this;
+        var label  = this._pickers.inputDevice.current;
+        var source = INPUT_DEVICE_LABEL_TO_SOURCE[label];
+        if (!source) return;
+        try {
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', '/api/sound/input/source', true);
+            xhr.setRequestHeader('Content-Type', 'application/json');
+            xhr.timeout = 1500;
+            xhr.send(JSON.stringify({ source: source }));
+        } catch (e) { /* offline — ignore */ }
     };
 
     // ── Input gain (slider) ─────────────────────────────────────
@@ -843,6 +984,61 @@ var VoiceRecorderScene = (function() {
         }
     };
 
+    // ── Info modal (single OK button) ──────────────────────────
+    // Lightweight cousin of the install modal: one title line,
+    // one OK button. Used for "TBA"-style stubs where the row
+    // exists in the menu but its deeper UI is still to come.
+    VoiceRecorderScene.prototype._openInfoModal = function(title) {
+        this._infoModal.open  = true;
+        this._infoModal.title = String(title || '');
+        if (typeof window.requestRender === 'function') {
+            window.requestRender();
+        }
+    };
+    VoiceRecorderScene.prototype._handleInfoModalInput = function(action) {
+        if (action === 'ok' || action === 'run'
+                || action === 'back' || action === 'esc') {
+            this._infoModal.open = false;
+            if (typeof window.requestRender === 'function') {
+                window.requestRender();
+            }
+        }
+    };
+    VoiceRecorderScene.prototype._renderInfoModal = function(canvas) {
+        var ctx = canvas.ctx;
+        var m   = this._infoModal;
+        var W = 150, H = 50;
+        var X = Math.floor((canvas.w - W) / 2);
+        var Y = Math.floor((canvas.h - H) / 2);
+        // Wash everything behind the modal.
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
+        ctx.fillRect(0, 0, canvas.w, canvas.h);
+        // Modal body — same fill / stroke / corner as the
+        // install modal so the two read as siblings.
+        new ResponsiveFrame({
+            x: X, y: Y, width: W, height: H,
+            anchorH: 'left', anchorV: 'top',
+            strokeColor: '#000', showStroke: true,
+            fillColor:   '#fff', showFill:   true,
+            cornerRadius: 4,
+            corners: { tl: true, tr: true, bl: true, br: true }
+        }).render(canvas);
+        var titleY = Y + 8;
+        var BTN_H  = 14;
+        var BTN_W  = W - 16;
+        var BTN_X  = X + Math.floor((W - BTN_W) / 2);
+        var btnY   = Y + H - BTN_H - 6;
+        // Title — same Born2bSportyV2 face the install modal
+        // uses for its top line, so the type weight matches.
+        var titleStr = m.title || '';
+        var tw       = Born2bSportyV2Medium.textWidth(titleStr);
+        Born2bSportyV2Medium.draw(ctx, titleStr,
+            X + Math.floor((W - tw) / 2), titleY, '#000');
+        // OK button — always focused since it's the only button.
+        this._drawStackedButton(canvas, BTN_X, btnY, BTN_W, BTN_H,
+            'OK', true);
+    };
+
     // ── Running timecode ─────────────────────────────────────────
     // The Start press fully anchors a fresh take (00:00:00:00);
     // Pause / Resume re-anchor without losing elapsed time. The
@@ -857,12 +1053,71 @@ var VoiceRecorderScene = (function() {
                 window.requestRender();
             }
         }, 33);
+        // Status poll for the Available / time-left numbers in
+        // the recording panel. Once a minute — at typical voice-
+        // memo bitrates the time-left changes by under a minute
+        // per minute, so any faster cadence just makes the
+        // bottom-right text flicker between near-identical
+        // estimates. The initial kick runs now so the panel
+        // shows real numbers from the first frame.
+        self._fetchRecordEstimate();
+        if (this._estimatePollTimer) clearInterval(this._estimatePollTimer);
+        this._estimatePollTimer = setInterval(function() {
+            self._fetchRecordEstimate();
+        }, 60000);
     };
     VoiceRecorderScene.prototype._stopRecordTick = function() {
         if (this._recordTickTimer) {
             clearInterval(this._recordTickTimer);
             this._recordTickTimer = null;
         }
+        if (this._estimatePollTimer) {
+            clearInterval(this._estimatePollTimer);
+            this._estimatePollTimer = null;
+        }
+    };
+
+    // Bytes-per-second the codec writes per format. Used as the
+    // fallback rate before we have enough elapsed time to
+    // observe one from the running take (and as the rate while
+    // we're not recording at all). Values are the nominal
+    // pipeline-out byte rates the server's RECORD_FORMATS
+    // settings produce.
+    //   wav — 48 kHz × 16 bit × 1 ch = 96 000 B/s
+    //   mp3 — lame -V 4 ≈ 165 kbps ≈ 20 625 B/s
+    //   ogg — oggenc -q 4 ≈ 128 kbps ≈ 16 000 B/s
+    var FORMAT_NOMINAL_BPS = {
+        wav: 96000,
+        mp3: 20625,
+        ogg: 16000
+    };
+
+    // Pull the latest /api/record/status and stash bytes,
+    // elapsedMs, freeBytes into `_recordEstimate`. Render uses
+    // these to compute the live "Available" / time-left
+    // values. Idempotent: starting / stopping the take just
+    // resets the cached counters.
+    VoiceRecorderScene.prototype._fetchRecordEstimate = function() {
+        var self = this;
+        try {
+            var xhr = new XMLHttpRequest();
+            xhr.open('GET', '/api/record/status', true);
+            xhr.timeout = 1500;
+            xhr.onload = function() {
+                var data;
+                try { data = JSON.parse(xhr.responseText || '{}'); }
+                catch (e) { return; }
+                if (typeof data.freeBytes  === 'number') self._recordEstimate.freeBytes  = data.freeBytes;
+                if (typeof data.totalBytes === 'number') self._recordEstimate.totalBytes = data.totalBytes;
+                if (typeof data.bytes      === 'number') self._recordEstimate.bytes      = data.bytes;
+                if (typeof data.elapsedMs  === 'number') self._recordEstimate.elapsedMs  = data.elapsedMs;
+                if (typeof data.format     === 'string') self._recordEstimate.format     = data.format;
+                if (typeof window.requestRender === 'function') {
+                    window.requestRender();
+                }
+            };
+            xhr.send();
+        } catch (e) { /* offline — keep last values */ }
     };
 
     // Pause / Resume toggle. While paused we freeze the
@@ -891,9 +1146,9 @@ var VoiceRecorderScene = (function() {
     };
 
     // Format an elapsed-ms count as HH:MM:SS:FF (FF = hundredths
-    // of a second, the convention the placeholder Timecode row
-    // used). Caps at 99:59:59:99 — well beyond any plausible
-    // voice-memo session.
+    // of a second) for the live timecode that paints inside the
+    // recording rectangle while a take is in flight. Caps at
+    // 99:59:59:99 — well beyond any plausible voice-memo session.
     function pad2(n) { return (n < 10 ? '0' + n : '' + n); }
     VoiceRecorderScene.prototype._formatTimecode = function(ms) {
         if (ms < 0) ms = 0;
@@ -915,10 +1170,9 @@ var VoiceRecorderScene = (function() {
     };
 
     // Row-index → picker-key lookup. Returns `null` for rows
-    // that don't carry a picker (Input gain, File name, Folder,
-    // Timecode). Keeping this in one place means every "is
-    // this a picker row?" check is identical across
-    // handleInput and render.
+    // that don't carry a picker (Input gain, File name, Folder).
+    // Keeping this in one place means every "is this a picker
+    // row?" check is identical across handleInput and render.
     VoiceRecorderScene.prototype._rowPickerKey = function(rowIdx) {
         if (rowIdx === 1) return 'inputDevice';
         if (rowIdx === 4) return 'format';
@@ -936,10 +1190,16 @@ var VoiceRecorderScene = (function() {
     };
 
     VoiceRecorderScene.prototype.handleInput = function(action) {
-        // ── Install modal owns input first ────────────────────
-        // It draws on top of every other element including the
+        // ── Modals own input first ───────────────────────────
+        // They draw on top of every other element including the
         // dropdown overlay, so input dispatch matches that
-        // layering — give the modal first refusal.
+        // layering — give the modal first refusal. Info modal
+        // takes precedence over install (only one is ever open
+        // at a time today, but if that ever changes the simpler
+        // modal yields the user out faster).
+        if (this._infoModal.open) {
+            return this._handleInfoModalInput(action);
+        }
         if (this._installModal.open) {
             return this._handleInstallModalInput(action);
         }
@@ -1005,7 +1265,11 @@ var VoiceRecorderScene = (function() {
                         picker.current = pickedLabel;
                     }
                 } else {
+                    var pickerChanged = picker.current !== pickedLabel;
                     picker.current = pickedLabel;
+                    if (pickerChanged && committedKey === 'inputDevice') {
+                        this._postInputSource();
+                    }
                 }
                 if (typeof window.requestRender === 'function') {
                     window.requestRender();
@@ -1069,7 +1333,7 @@ var VoiceRecorderScene = (function() {
         // While recording only Input gain (row 0) is visible,
         // so the focus stays pinned there.
         if (action === 'up' || action === 'down') {
-            var rowCount = this._recording ? 1 : 6;
+            var rowCount = this._recording ? 1 : 5;
             if (action === 'down') {
                 this._selectedRow = (this._selectedRow + 1) % rowCount;
             } else {
@@ -1104,6 +1368,14 @@ var VoiceRecorderScene = (function() {
                 }
             } else if (this._selectedRow === 2) {
                 this._openFileNameEditor();
+            } else if (this._selectedRow === 3) {
+                // Folder row's eventual job is "drill into a
+                // mini file manager so the user can pick the
+                // destination folder for new takes". Until that
+                // exists, OK pops a small stub modal so the
+                // press has acknowledged feedback instead of
+                // reading as a dead key.
+                this._openInfoModal('File manager: TBA');
             }
             return;
         }
@@ -1142,7 +1414,11 @@ var VoiceRecorderScene = (function() {
                         pLR.current = nextLabel;
                     }
                 } else {
+                    var lrChanged = pLR.current !== nextLabel;
                     pLR.current = nextLabel;
+                    if (lrChanged && pkLR === 'inputDevice') {
+                        this._postInputSource();
+                    }
                 }
             } else if (this._selectedRow === 0) {
                 var delta = (action === 'right')
@@ -1171,14 +1447,14 @@ var VoiceRecorderScene = (function() {
     VoiceRecorderScene.prototype._openFileNameEditor = function() {
         var self = this;
         if (typeof TextInputScreen === 'undefined' || !this.sceneManager) return;
-        // Seed with the EXPANDED template when the user hasn't
-        // touched the name — they need real digits to edit
-        // (e.g. drop the seconds). Once they save an edit,
-        // `_fileNameAuto` flips false and we re-seed with their
-        // literal text on next open.
-        var seed = this._fileNameAuto
-            ? _expandTemplateName(this._fileName)
-            : this._fileName;
+        // Always seed with the raw template — the user needs to
+        // see the bracketed substitution pattern (e.g. `[YYYYMMDD-
+        // HHMMSS]`) so they can edit it (drop SS, swap order,
+        // remove the brackets entirely if they want a literal
+        // name). Showing the expanded timestamp would force the
+        // user to re-type the placeholder from memory every time
+        // they wanted to tweak it.
+        var seed = this._fileName;
         var screen = new TextInputScreen({
             displayName: 'File name',
             title:       'File name',
@@ -1188,8 +1464,7 @@ var VoiceRecorderScene = (function() {
                 // string so the row never reads as blank.
                 var clean = (text == null ? '' : String(text)).replace(/^\s+|\s+$/g, '');
                 if (clean.length === 0) return;
-                self._fileName     = clean;
-                self._fileNameAuto = false;
+                self._fileName = clean;
                 if (typeof window.requestRender === 'function') {
                     window.requestRender();
                 }
@@ -1237,77 +1512,75 @@ var VoiceRecorderScene = (function() {
         Born2bSportyV2Medium.draw(ctx, this.displayName,
             TITLE_TEXT_X, UI.STATUS_BAR_H + TITLE_TEXT_DY, '#000');
 
-        // (5) Stereo mic-level meters. Two horizontal chambers
-        // stacked with a 1-px gap. Each chamber is the same
-        // 238 × 7 ResponsiveFrame (gray fill #D9D9D9, black
-        // stroke, 2-px corners). The current peak for each
-        // channel paints as a left-anchored black ResponsiveFrame
-        // on top — left corners always rounded so they meet the
-        // gray chamber's curve, right corners square unless the
-        // level is at 100 % so the moving edge reads as the
-        // current value. Same pattern MenuDropdownLine uses for
-        // its slider chip.
-        var METER_X       = 13;
-        var METER_W       = 238;
-        var METER_H       = 7;
-        var METER_R       = 2;
-        var METER_GAP     = 1;
-        var METER_GRAY    = '#D9D9D9';
-        var METER_BLACK   = '#000000';
-        var METER_TOP_Y   = 31;
-        var METER_BOT_Y   = METER_TOP_Y + METER_H + METER_GAP;
-
-        // L / R channel labels. Right-aligned 2 px before each
-        // meter's left edge so the gap between glyph and chamber
-        // stays consistent regardless of the glyph's natural
-        // width. Vertically nudged so the cap line sits centred
-        // on the 7-px chamber (HaxrcorpFont16's visible cap
-        // starts ~row 2 / spans ~9 rows; -1 lands the centre at
-        // y + ~3).
-        function drawChannelLabel(ch, meterY) {
-            var w = HaxrcorpFont16.textWidth(ch);
-            HaxrcorpFont16.draw(ctx, ch,
-                METER_X - 2 - w, meterY - 1, '#000');
-        }
-        drawChannelLabel('L', METER_TOP_Y);
-        drawChannelLabel('R', METER_BOT_Y);
-
-        function drawMeter(y, levelPct) {
-            // Gray chamber — no stroke, just the rounded fill.
+        // (5) Input level — single non-focusable readout for the
+        // currently selected mic source. The codec captures both
+        // ADC channels, but each is wired to a different physical
+        // mic (built-in → left, 3.5-mm jack → right per the
+        // device-tree routing), so the chosen source has its
+        // signal on exactly one channel. We pick that channel
+        // and paint a thin progress bar that lines up with the
+        // chip column of the menu rows below (same width / x
+        // anchor / rounded corners), but only 7 px tall — same
+        // height as the original stereo meters used. No L / R
+        // labels — the level is implicitly the active mic.
+        var INPUT_LEVEL_Y     = 31;
+        var INPUT_LEVEL_BAR_W = MenuDropdownLine.CHIP_WIDTH;       // 180
+        var INPUT_LEVEL_BAR_H = 7;                                  // restored meter height
+        var INPUT_LEVEL_BAR_R = 2;                                  // matches original meter radius
+        var INPUT_LEVEL_BAR_X = canvas.w - 5 - INPUT_LEVEL_BAR_W;   // 5 = MenuDropdownLine right pad
+        // Sit the bar 2 px above where a centred chip would land
+        // — its top edge then aligns roughly with the title
+        // text's cap line, which reads tighter than the centred
+        // placement and gives the row a bit more breathing room
+        // at the bottom before the next row starts.
+        var INPUT_LEVEL_BAR_Y = INPUT_LEVEL_Y
+                              + Math.floor((MenuDropdownLine.CHIP_HEIGHT - INPUT_LEVEL_BAR_H) / 2);
+        var activeLvl  = (this._pickers.inputDevice.current === '3.5 Audio')
+                            ? this._micRight
+                            : this._micLeft;
+        var lvlClamped = Math.max(0, Math.min(100, activeLvl));
+        // Title — sat 2 px higher than a MenuDropdownLine title
+        // would, so its cap line aligns with the bar's top edge
+        // rather than its midline. The Input-level row isn't a
+        // selectable picker, so it doesn't need the same
+        // baseline as the rows below it.
+        HaxrcorpFont16.draw(ctx, 'Input level',
+            6, INPUT_LEVEL_Y, '#000');
+        // Transparent base with a black outline. At level 0 the
+        // bar reads as an empty rounded rectangle; as the peak
+        // fill grows from the left it overwrites the outline on
+        // the filled portion, leaving the outline visible only
+        // around the remaining empty area.
+        new ResponsiveFrame({
+            x: INPUT_LEVEL_BAR_X,     y: INPUT_LEVEL_BAR_Y,
+            width: INPUT_LEVEL_BAR_W, height: INPUT_LEVEL_BAR_H,
+            anchorH: 'left',          anchorV: 'top',
+            showFill:     false,
+            showStroke:   true,
+            strokeColor:  '#000',
+            cornerRadius: INPUT_LEVEL_BAR_R
+        }).render(canvas);
+        // Black peak fill — proportional to the active channel's
+        // 0..100 level. Pure level-meter behaviour: at level 0
+        // the bar is fully gray (no min-fill nub), so silence
+        // reads as silence.
+        if (lvlClamped > 0) {
+            var fillW  = Math.round(INPUT_LEVEL_BAR_W * lvlClamped / 100);
+            var isFull = fillW >= INPUT_LEVEL_BAR_W;
             new ResponsiveFrame({
-                x: METER_X,        y: y,
-                width: METER_W,    height: METER_H,
-                anchorH: 'left',   anchorV: 'top',
-                fillColor:    METER_GRAY,
-                showFill:     true,
+                x: INPUT_LEVEL_BAR_X,     y: INPUT_LEVEL_BAR_Y,
+                width: fillW,             height: INPUT_LEVEL_BAR_H,
+                anchorH: 'left',          anchorV: 'top',
                 showStroke:   false,
-                cornerRadius: METER_R
-            }).render(canvas);
-            // Black peak fill — width proportional to level.
-            // Clamp to 0..100 so a bad poll can't draw past the
-            // chamber's right edge.
-            var lvl = Math.max(0, Math.min(100, levelPct));
-            if (lvl <= 0) return;
-            var fillW   = Math.round(METER_W * lvl / 100);
-            var isFull  = fillW >= METER_W;
-            new ResponsiveFrame({
-                x: METER_X,        y: y,
-                width: fillW,      height: METER_H,
-                anchorH: 'left',   anchorV: 'top',
-                fillColor:    METER_BLACK,
-                strokeColor:  METER_BLACK,
+                fillColor:    '#000',
                 showFill:     true,
-                showStroke:   false,
-                cornerRadius: METER_R,
+                cornerRadius: INPUT_LEVEL_BAR_R,
                 corners: {
-                    tl: true,      bl: true,
-                    tr: isFull,    br: isFull
+                    tl: true,             bl: true,
+                    tr: isFull,           br: isFull
                 }
             }).render(canvas);
         }
-
-        drawMeter(METER_TOP_Y, this._micLeft);
-        drawMeter(METER_BOT_Y, this._micRight);
 
         // (6) Input-device picker row. MenuDropdownLine renders
         // the title flush against the left edge and the value
@@ -1319,17 +1592,21 @@ var VoiceRecorderScene = (function() {
         // Rows now stack flush against each other — the gap was
         // 1 px previously. 0 keeps the column tighter so all 5
         // rows fit comfortably under the meters.
-        var ROW_GAP    = 0;
-        var gainRowY   = METER_BOT_Y + METER_H + 2;
+        var ROW_GAP    = 2;
+        // 3-px breathing gap between the Input level bar's
+        // bottom edge and the first focusable menu row. Expressed
+        // relative to the bar's geometry (not the chip slot) so
+        // the gap stays a true 3 px regardless of the bar
+        // height we end up picking.
+        var gainRowY   = INPUT_LEVEL_BAR_Y + INPUT_LEVEL_BAR_H + 3;
         var deviceRowY = gainRowY   + MenuDropdownLine.HEIGHT + ROW_GAP;
         var fileRowY   = deviceRowY + MenuDropdownLine.HEIGHT + ROW_GAP;
         var folderRowY = fileRowY   + MenuDropdownLine.HEIGHT + ROW_GAP;
-        var formatRowY   = folderRowY + MenuDropdownLine.HEIGHT + ROW_GAP;
-        var timecodeRowY = formatRowY + MenuDropdownLine.HEIGHT + ROW_GAP;
+        var formatRowY = folderRowY + MenuDropdownLine.HEIGHT + ROW_GAP;
         // Table that maps row index to its y anchor so the
         // selector / dropdown overlay can look up the row
         // position without re-doing the math.
-        var rowYs = [gainRowY, deviceRowY, fileRowY, folderRowY, formatRowY, timecodeRowY];
+        var rowYs = [gainRowY, deviceRowY, fileRowY, folderRowY, formatRowY];
 
         // Input gain row (row 0, topmost) — inline ± value,
         // no dropdown. Always visible, including while
@@ -1341,7 +1618,7 @@ var VoiceRecorderScene = (function() {
             selected: !this._dropdownOpen && this._selectedRow === 0
         }).render(canvas);
 
-        // Rows 1..5 are only present out of recording mode.
+        // Rows 1..4 are only present out of recording mode.
         // While `_recording` is true a single placeholder frame
         // takes their slot (drawn further down).
         if (!this._recording) {
@@ -1393,15 +1670,6 @@ var VoiceRecorderScene = (function() {
                 value:    this._pickers.format.current,
                 selected: !this._dropdownOpen && this._selectedRow === 4
             }).render(canvas);
-
-            // Timecode row — display-only drill-in. Same
-            // chevron-selector treatment as File name / Folder.
-            new MenuDropdownLine({
-                y:        timecodeRowY,
-                title:    'Timecode',
-                value:    this._timecode,
-                selected: false
-            }).render(canvas);
         } else {
             // Recording rectangle — light-gray rounded panel
             // that replaces the bottom menu rows while a
@@ -1412,7 +1680,7 @@ var VoiceRecorderScene = (function() {
             // ~2 px above the bottom-button row so the panel
             // and the Start / Stop button don't kiss.
             var REC_RECT_X = 3;
-            var REC_RECT_Y = 68;
+            var REC_RECT_Y = 65;
             var REC_RECT_W = canvas.w - 6;
             var REC_RECT_H = 60;
             new ResponsiveFrame({
@@ -1429,14 +1697,23 @@ var VoiceRecorderScene = (function() {
             // top edge — labels the current take so the user
             // sees what file is being written while the rows
             // that normally hold this info are hidden.
-            // Render the EXPANDED name (`_recordingDisplayName`,
-            // snapped on Start) not the template stored in
-            // `_fileName`. Falling back to `_fileName` is just
-            // defensive — `_recordingDisplayName` is always set
-            // by the Start path before the rectangle paints.
+            // Render the name the server actually chose
+            // (`_serverFile`, returned by /api/record/start) so
+            // the panel reflects any `-1`, `-2`, … collision
+            // suffix the server appended. The extension is
+            // stripped because the bottom-left of the panel
+            // already shows the format. While the start response
+            // is still in flight `_serverFile` is null, so we
+            // fall through to the locally-expanded display name
+            // — small lag, then the suffixed form appears.
             var FN_TEXT_X = REC_RECT_X + 7;
             var FN_TEXT_Y = REC_RECT_Y + 1;
-            var fnText    = this._recordingDisplayName || this._fileName;
+            var fnText;
+            if (this._serverFile) {
+                fnText = this._serverFile.replace(/\.(wav|mp3|ogg)$/i, '');
+            } else {
+                fnText = this._recordingDisplayName || this._fileName;
+            }
             Born2bSportyV2Medium.draw(canvas.ctx, fnText,
                 FN_TEXT_X, FN_TEXT_Y, '#FFFFFF');
             // Horizontal white hairline 6 px below the visible
@@ -1513,16 +1790,12 @@ var VoiceRecorderScene = (function() {
             // Right-aligned stack of three labels along the
             // recording rectangle's right edge, 5 px in from
             // the right and stacked from bottom up:
-            //   1. "1h 30m"     — at BOTTOM_TEXT_Y (shared
-            //                      baseline with Format /
-            //                      Folder on the left).
-            //   2. "8.3 GB"     — 4-px gap above (1).
-            //   3. "Available:" — 4-px gap above (2).
-            // All three are static placeholders for now;
-            // eventually they'll show remaining take length,
-            // free disk space, and the "Available:" label.
+            //   1. time-left — at BOTTOM_TEXT_Y (shared baseline
+            //                  with Format / Folder on the left).
+            //   2. free GB  — 2-px gap above (1).
+            //   3. "Available:" label — 2-px gap above (2).
             // Spacing maths use HaxrcorpFont16's 11-row bitmap
-            // height and a 4-row inter-line gap.
+            // height and a 2-row inter-line gap.
             var RIGHT_PAD     = 5;
             var LINE_H        = 11;
             var LINE_GAP      = 2;
@@ -1532,20 +1805,69 @@ var VoiceRecorderScene = (function() {
                 HaxrcorpFont16.draw(ctx, text, rightTextX - w, y, '#FFFFFF');
             }
 
+            // Pick a bytes-per-second rate: prefer the
+            // observed rate from the running take (size /
+            // elapsed) once we have at least 2 s of elapsed
+            // time, otherwise fall back to the format's nominal
+            // byte rate. The 2-s gate keeps the first poll from
+            // producing a wildly-inflated number off a single
+            // small chunk.
+            var est       = this._recordEstimate;
+            var fmtMeta   = this._formatMeta[this._pickers.format.current] || {};
+            var fmtId     = est.format || fmtMeta.id || 'wav';
+            var nominal   = FORMAT_NOMINAL_BPS[fmtId] || FORMAT_NOMINAL_BPS.wav;
+            var observed  = (est.bytes > 0 && est.elapsedMs >= 2000)
+                          ? (est.bytes * 1000 / est.elapsedMs)
+                          : 0;
+            var bytesPerSec = observed > 0 ? observed : nominal;
+
+            // Format helpers — kept inline so they don't leak
+            // into the scene's prototype just for two call sites.
+            function fmtBytes(b) {
+                if (b == null) return '—';
+                if (b >= 1024 * 1024 * 1024) {
+                    return (b / 1024 / 1024 / 1024).toFixed(1) + ' GB';
+                }
+                if (b >= 1024 * 1024) {
+                    return Math.round(b / 1024 / 1024) + ' MB';
+                }
+                return Math.round(b / 1024) + ' KB';
+            }
+            function fmtDuration(s) {
+                if (!isFinite(s) || s < 0) return '—';
+                if (s >= 3600) {
+                    var h = Math.floor(s / 3600);
+                    var m = Math.floor((s % 3600) / 60);
+                    return h + 'h ' + m + 'm';
+                }
+                if (s >= 60) {
+                    var mm = Math.floor(s / 60);
+                    var ss = Math.floor(s % 60);
+                    return mm + 'm ' + ss + 's';
+                }
+                return Math.floor(s) + 's';
+            }
+
+            var freeBytesV  = (est.freeBytes != null) ? est.freeBytes : null;
+            var freeText    = fmtBytes(freeBytesV);
+            var timeLeftText = (freeBytesV != null && bytesPerSec > 0)
+                ? fmtDuration(freeBytesV / bytesPerSec)
+                : '—';
+
             var bottomLineY = BOTTOM_TEXT_Y;
-            var midLineY    = bottomLineY - LINE_GAP - LINE_H;   // 99
-            var topLineY    = midLineY    - LINE_GAP - LINE_H;   // 84
-            drawRightAligned(canvas.ctx, '1h 30m',     bottomLineY);
-            drawRightAligned(canvas.ctx, '8.3 GB',     midLineY);
+            var midLineY    = bottomLineY - LINE_GAP - LINE_H;
+            var topLineY    = midLineY    - LINE_GAP - LINE_H;
+            drawRightAligned(canvas.ctx, timeLeftText, bottomLineY);
+            drawRightAligned(canvas.ctx, freeText,     midLineY);
             drawRightAligned(canvas.ctx, 'Available:', topLineY);
         }
 
         // Page-level selector outline anchored to the focused
-        // row. File name / Folder / Timecode rows use the
-        // chevron-bearing variant; the picker / value rows use
-        // the plain outline. Suppressed entirely while the
-        // dropdown overlay is open so the inner-selector inside
-        // it is the only "this is focused" cue on screen.
+        // row. File name / Folder rows use the chevron-bearing
+        // variant; the picker / value rows use the plain
+        // outline. Suppressed entirely while the dropdown
+        // overlay is open so the inner-selector inside it is
+        // the only "this is focused" cue on screen.
         if (!this._dropdownOpen) {
             var selY  = rowYs[this._selectedRow];
             var frame = (this._selectedRow === 2
@@ -1628,6 +1950,14 @@ var VoiceRecorderScene = (function() {
         if (this._installModal.open) {
             this._renderInstallModal(canvas);
         }
+        // Info modal — same "above everything" layering as the
+        // install modal. Painted after it so if both ever ended
+        // up open the info acknowledgement sits on top (the
+        // gate at the top of handleInput also routes input to
+        // info first, keeping the two ends consistent).
+        if (this._infoModal.open) {
+            this._renderInfoModal(canvas);
+        }
     };
 
     // Port of Internet Radio's `_renderDropdown`. Same visual
@@ -1649,6 +1979,22 @@ var VoiceRecorderScene = (function() {
         // body height = N items + (N-1) dividers + 1 px top + 1 px bottom
         var H      = ITEM_H * n + DIV_H * (n - 1) + 2;
 
+        // Direction. By default the overlay grows downward from
+        // the chip's top — same visual "the chip expanded
+        // downward" trick Internet Radio uses. When the row sits
+        // near the bottom of the screen (Format row, in this
+        // app), there isn't room: the last items would render
+        // off-screen. In that case we flip: anchor the body's
+        // BOTTOM to the chip's bottom and grow upward. The
+        // title still lives at the row's natural y, so the
+        // dropdown stays visually tethered to its row either
+        // way.
+        var BOTTOM_MARGIN = 2;
+        var dropUp = (chipY + H > canvas.h - BOTTOM_MARGIN);
+        var bodyY  = dropUp
+            ? (chipY + MenuDropdownLine.CHIP_HEIGHT - H)
+            : chipY;
+
         // (1) Wash everything else out — same alpha the verbose
         // wifi modals and Internet Radio's dropdown use.
         ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
@@ -1660,7 +2006,9 @@ var VoiceRecorderScene = (function() {
         // from the same lookup `handleInput` uses so we never
         // drift out of sync. Coords mirror MenuDropdownLine's
         // title position (TITLE_X = 6, draw y = chipY since
-        // chipY already equals row.y + TOP_PAD).
+        // chipY already equals row.y + TOP_PAD). Note the title
+        // y stays at chipY even when the body flips upward —
+        // anchors the dropdown to the originating row.
         var openRowIdx = -1;
         for (var ti = 0; ti < 5; ti++) {
             if (this._rowPickerKey(ti) === this._dropdownKey) {
@@ -1674,9 +2022,10 @@ var VoiceRecorderScene = (function() {
         }
 
         // (3) Body. Same fill colour as the closed chip so the
-        // dropdown reads as the chip growing downward.
+        // dropdown reads as the chip growing into the list —
+        // downward in the default case, upward when we flipped.
         new ResponsiveFrame({
-            x: chipX, y: chipY,
+            x: chipX, y: bodyY,
             width: W, height: H,
             anchorH: 'left', anchorV: 'top',
             showStroke: false,
@@ -1687,11 +2036,13 @@ var VoiceRecorderScene = (function() {
 
         // (4) Items + dividers. Items are centred HaxrcorpFont16;
         // each item block is ITEM_H tall with a 1-px divider
-        // after it (except the last). Top stroke = row 0; first
-        // item sits at row 1.
-        var selectedItemY = chipY + 1;
+        // after it (except the last). Top stroke = body row 0;
+        // first item sits at body row 1. Item order (top = first
+        // option) is preserved regardless of direction so the
+        // visual mapping `index 0 = top item` stays stable.
+        var selectedItemY = bodyY + 1;
         for (var i = 0; i < n; i++) {
-            var itemY = chipY + 1 + i * (ITEM_H + DIV_H);
+            var itemY = bodyY + 1 + i * (ITEM_H + DIV_H);
             var label = String(options[i]);
             var labelW = HaxrcorpFont16.textWidth(label);
             HaxrcorpFont16.draw(ctx, label,

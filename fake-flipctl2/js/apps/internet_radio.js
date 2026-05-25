@@ -846,7 +846,7 @@ var InternetRadioScene = (function() {
         // divider line, with its own anchor at
         // dividerY + 1 + DIVIDER_PAD_AFTER (3 px breathing
         // gap), and stacks at the same pitch from there.
-        var ROW_GAP             = 1;
+        var ROW_GAP             = 2;
         var bodyTop             = TITLE_Y + TITLE_H;
         var rowPitch            = MenuDropdownLine.HEIGHT + ROW_GAP;
         var DIVIDER_PAD_X       = 5;
@@ -887,15 +887,13 @@ var InternetRadioScene = (function() {
             canvas.w - DIVIDER_PAD_X * 2,
             '#CCCCCC');
 
-        // Selector outline — 16 px tall, dropped 1 px below the
-        // row's top y so it visually centres on the chip /
-        // label baseline rather than riding flush with the
-        // anchor. Suppressed while the dropdown is open — the
+        // Selector outline — 16 px tall, flush with the row's
+        // top y. Suppressed while the dropdown is open — the
         // dropdown is the user's only focus then; doubling up
         // with the page-level outline reads as "two things
         // selected at once".
         if (!this._dropdownOpen) {
-            this._selectorFrame.setPosition(SELECTOR_X, selectedY + 1);
+            this._selectorFrame.setPosition(SELECTOR_X, selectedY);
             this._selectorFrame.setSize(SELECTOR_W, SELECTOR_H);
             this._selectorFrame.render(canvas);
         }
