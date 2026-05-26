@@ -482,6 +482,23 @@ var Icons = (function() {
         ]
     };
 
+    // records_status_bar icon (auto-generated from PNG)
+    var records_status_bar = {
+        w: 7,
+        h: 7,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0xff,            0xf0,            0x00,            0x03,            0xff,            0xc0,  // row 0
+            0xfc,            0x00,            0x00,            0x00,            0x0f,            0xc0,  // row 1
+            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,  // row 2
+            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,  // row 3
+            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,  // row 4
+            0xfc,            0x00,            0x00,            0x00,            0x0f,            0xc0,  // row 5
+            0xff,            0xf0,            0x00,            0x03,            0xff,            0xc0   // row 6
+        ]
+    };
+
     // arrow_down icon (auto-generated from PNG)
     var arrow_down = {
         w: 5,
@@ -999,6 +1016,7 @@ var Icons = (function() {
         arrow_up: arrow_up,
         arrow_down: arrow_down,
         charging_status_bar: charging_status_bar,
+        records_status_bar: records_status_bar,
         ethernet_statusbar: ethernet_statusbar,
         wifi_0: wifi_0,
         wifi_25: wifi_25,

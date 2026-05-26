@@ -9,6 +9,7 @@ var crypto = require('crypto');
 var util = require('util');
 var execSync = require('child_process').execSync;
 var exec = require('child_process').exec;
+var spawn = require('child_process').spawn;
 var execAsync = util.promisify(exec);
 
 // Async exec helper that swallows errors. Returns { stdout, stderr } on
@@ -855,21 +856,58 @@ function playSoundFile(filename) {
     return { success: true, file: filename };
 }
 
+// Promise that resolves when the last-killed `audioChild` has
+// actually exited (and therefore released its ALSA handle).
+// `playRecording` waits on this before spawning a new sox so
+// the new process doesn't race the old one for the codec and
+// die with EBUSY. Resolves immediately when nothing was killed.
+var _audioChildExit = Promise.resolve();
+
+// Build a promise that resolves once `child` has emitted `exit`
+// or `error`. Includes a 500-ms safety-net timeout in case
+// neither event fires (shouldn't happen, but the consequence
+// of waiting forever is a hung playback).
+function _trackChildExit(child) {
+    return new Promise(function(resolve) {
+        var done = false;
+        function finish() { if (done) return; done = true; resolve(); }
+        child.once('exit',  finish);
+        child.once('error', finish);
+        setTimeout(finish, 500);
+    });
+}
+
+// Kill the current audioChild (if any) and update `_audioChildExit`
+// so the next spawn knows when it's safe to claim the codec.
+// If there's no audioChild, leave `_audioChildExit` alone — a
+// previous caller (pausePlayback) may have set it to a real
+// exit promise that the next playRecording still needs to wait
+// on. Resetting to Promise.resolve() here would let the next
+// spawn race the dying child.
+function _killAudioChild() {
+    if (!audioChild) return;
+    var oldChild = audioChild;
+    audioChild = null;
+    _audioChildExit = _trackChildExit(oldChild);
+    // SIGKILL, not SIGTERM — graceful shutdown lets sox flush
+    // ALSA for tens of ms, during which the next spawn races
+    // and hits "Device or resource busy". SIGKILL has the
+    // kernel reap the process; ALSA's release happens
+    // synchronously inside the kernel's cleanup, so the
+    // `exit`-event resolve is a true "codec is free" signal.
+    try { oldChild.kill('SIGKILL'); } catch (e) { /* already dead */ }
+}
+
 function stopSound() {
     // Break the walkie-talkie respawn loop, if one is running.
-    // The looping spawner only re-fires while `walkieActive` is
-    // true, so flipping it here ensures any in-flight SIGKILL
-    // doesn't immediately get followed by a fresh sox process.
     walkieActive = false;
-    if (audioChild) {
-        // SIGKILL, not SIGTERM — we want the ALSA device free
-        // before the next caller (typically playRadioStream)
-        // tries to open it. SIGTERM lets mpg123 do graceful
-        // shutdown, which leaves the device busy for tens of
-        // ms; the next mpg123 hits "Device or resource busy"
-        // and exits, so the old stream keeps playing.
-        try { audioChild.kill('SIGKILL'); } catch (e) {}
-        audioChild = null;
+    _killAudioChild();
+    // Clear the recorder's playback state too — /api/sound/stop
+    // is the canonical "stop everything" call, so the player
+    // overlay's status should reflect a fully-stopped state on
+    // its next poll.
+    if (typeof audioPlay !== 'undefined') {
+        audioPlay = null;
     }
 }
 
@@ -1181,6 +1219,7 @@ function playRadioStream(url) {
 // "not recording" once the OS has actually torn the process down.
 var RECORDINGS_DIR = '/flipperone-testing/sound/voice_recordings';
 var recordChild    = null;            // sox ChildProcess while recording
+var recordPaused   = false;           // true while SIGSTOPped via /api/record/pause
 var recordState    = null;            // { file, startedAt: ms } while recording
 // Peak amplitude over the most recent sox output chunk,
 // normalised to 0..1. Updated synchronously by the sox-stdout
@@ -1345,6 +1384,29 @@ function buildRecordingFilename(ext, name) {
     return base + '-' + Date.now() + '.' + safeExt;
 }
 
+// Cache of audio-file durations so listing the folder doesn't
+// shell out to soxi on every poll. Key is `name|mtime|size` so
+// a file edited in place (e.g. truncated, overwritten) is
+// recognised as new and re-probed automatically.
+var durationCacheMs = Object.create(null);
+
+function probeDurationMs(filePath) {
+    // soxi -D returns the duration in seconds as a float. We
+    // multiply to ms and round. A failed probe (corrupt file,
+    // unsupported codec) just yields null — the client falls
+    // back to a dash.
+    try {
+        var out = execSync('soxi -D ' + JSON.stringify(filePath)
+                         + ' 2>/dev/null',
+                         { encoding: 'utf8', timeout: 2000 });
+        var secs = parseFloat(out);
+        if (!isFinite(secs) || secs <= 0) return null;
+        return Math.round(secs * 1000);
+    } catch (e) {
+        return null;
+    }
+}
+
 function getRecordings() {
     var files = [];
     try {
@@ -1352,11 +1414,19 @@ function getRecordings() {
         for (var i = 0; i < entries.length; i++) {
             if (!/\.(wav|mp3|ogg)$/i.test(entries[i])) continue;
             try {
-                var st = fs.statSync(path.join(RECORDINGS_DIR, entries[i]));
+                var full = path.join(RECORDINGS_DIR, entries[i]);
+                var st   = fs.statSync(full);
+                var key  = entries[i] + '|' + st.mtimeMs + '|' + st.size;
+                var dur  = durationCacheMs[key];
+                if (dur === undefined) {
+                    dur = probeDurationMs(full);
+                    durationCacheMs[key] = dur;
+                }
                 files.push({
-                    name:  entries[i],
-                    size:  st.size,
-                    mtime: st.mtimeMs
+                    name:       entries[i],
+                    size:       st.size,
+                    mtime:      st.mtimeMs,
+                    durationMs: dur
                 });
             } catch (e) { /* skip unreadable */ }
         }
@@ -1701,10 +1771,23 @@ function startRecording(format, name) {
             });
         }
         recordChild.stdout.on('data', function(chunk) {
-            try {
-                if (recordWavWriter) recordWavWriter.write(chunk);
-            } catch (e) { /* writer closed mid-flight */ }
-            recordWavBytes += chunk.length;
+            // Drop file writes while paused — sox keeps running
+            // (so the input-level meter, which reads from this
+            // same stream, keeps updating), but the chunk
+            // doesn't land in the WAV. That gives the user
+            // both:
+            //   1. A live meter while paused (the codec is still
+            //      capturing; they can confirm the mic is hot).
+            //   2. A gap-free output file — the seconds spent
+            //      paused don't end up in the recording.
+            // The level updates still fire so the meter reads
+            // current mic activity.
+            if (!recordPaused) {
+                try {
+                    if (recordWavWriter) recordWavWriter.write(chunk);
+                } catch (e) { /* writer closed mid-flight */ }
+                recordWavBytes += chunk.length;
+            }
             updateLevelFromChunk(chunk);
             updateMicLevelFromRecordingChunk(chunk);
         });
@@ -1734,6 +1817,7 @@ function startRecording(format, name) {
             }
             recordChild     = null;
             recordState     = null;
+            recordPaused    = false;
             recordWavWriter = null;
             recordWavBytes  = 0;
             stopLevelPoll();
@@ -1833,6 +1917,7 @@ function startRecording(format, name) {
         recordChild        = null;
         recordEncoderChild = null;
         recordState        = null;
+        recordPaused       = false;
         stopLevelPoll();
         if (micMonitorRequested) {
             startMicLevelMonitorLowLevel();
@@ -1889,7 +1974,40 @@ function deleteRecording(filename) {
     }
 }
 
-function playRecording(filename) {
+// Playback state for the voice-recorder player UI. Tracks
+// which file is loaded, where we are in it, and whether the
+// child is currently producing audio. Position is calculated
+// on demand from `startedAt + startOffsetMs` while playing,
+// or from `pausedAtMs` while paused — sox doesn't surface a
+// live cursor so the elapsed-time math is the source of truth.
+var audioPlay = null;
+//   { file, durationMs, startedAt, startOffsetMs,
+//     playing, paused, pausedAtMs, child }
+
+// Compute the current playback position in ms. Returns 0 when
+// no playback is loaded. When playback has stopped, the
+// returned value depends on WHY it stopped: a natural
+// end-of-file completion lands at durationMs (so the progress
+// bar shows full); a failed spawn or early exit lands at the
+// start offset (so the bar doesn't lie about where playback
+// "got to"). The `completed` flag is set by the exec callback
+// once it can tell whether the run went the distance.
+function playbackPositionMs() {
+    if (!audioPlay) return 0;
+    if (audioPlay.paused) return audioPlay.pausedAtMs || 0;
+    if (!audioPlay.playing) {
+        return audioPlay.completed
+            ? (audioPlay.durationMs || 0)
+            : (audioPlay.startOffsetMs || 0);
+    }
+    var pos = audioPlay.startOffsetMs + (Date.now() - audioPlay.startedAt);
+    if (audioPlay.durationMs > 0 && pos > audioPlay.durationMs) {
+        pos = audioPlay.durationMs;
+    }
+    return pos;
+}
+
+function playRecording(filename, positionMs) {
     // Mirror playSoundFile but sourced from RECORDINGS_DIR. We
     // share the global audioChild so /api/sound/play and
     // /api/record/play can't end up dueling over the codec —
@@ -1902,16 +2020,170 @@ function playRecording(filename) {
     if (!fs.existsSync(filePath)) {
         return { success: false, error: 'File not found' };
     }
+    // stopSound first — it may kill an active audioChild and
+    // update _audioChildExit. THEN capture the exit promise:
+    // whichever child was killed most recently (either by us
+    // just now, or by pausePlayback before resumePlayback
+    // called us) is the one we have to wait on before spawning
+    // new sox.
     stopSound();
-    // See playSoundFile() for the `channels 2` rationale — the
-    // NAU8822's I2S frame is stereo, mono playback drains 4×
-    // too fast and pitches up to chipmunk.
-    var cmd = 'play ' + JSON.stringify(filePath) + ' channels 2';
-    if (selectedAlsaDevice) cmd = 'AUDIODEV=' + selectedAlsaDevice + ' ' + cmd;
-    audioChild = exec(cmd, { timeout: 60000 }, function() {
-        audioChild = null;
+    var prevExit = _audioChildExit;
+    var startMs = Math.max(0, Number(positionMs) || 0);
+    // Build the sox argv. We use spawn() not exec() so SIGKILL
+    // goes DIRECTLY to the sox process — exec()'s `/bin/sh -c`
+    // wrapper would leave sox as an orphan child of init when
+    // the shell is killed, so the audio would keep playing
+    // even after pause. argv:
+    //   /usr/bin/play <file> channels 2 [trim <sec>]
+    // `channels 2` upsamples mono to stereo so the NAU8822's
+    // I2S frame doesn't drain 4× too fast (chipmunk effect).
+    // `trim <sec>` is sox's seek primitive — used to resume
+    // from a paused position or to land a ±N s seek.
+    var soxArgs = [filePath, 'channels', '2'];
+    if (startMs > 0) {
+        soxArgs.push('trim', (startMs / 1000).toFixed(3));
+    }
+    // Pin AUDIODEV so sox doesn't try to use ALSA's "default"
+    // (pipewire, only visible to the desktop user — this
+    // server runs as root). Passed via env to spawn() instead
+    // of being prepended to a shell string.
+    var audioDev = selectedAlsaDevice;
+    if (!audioDev) {
+        var card = getNau8822Card();
+        if (card != null) audioDev = 'plughw:' + card + ',0';
+    }
+    var soxEnv = Object.assign({}, process.env);
+    if (audioDev) soxEnv.AUDIODEV = audioDev;
+    var dur = probeDurationMs(filePath) || 0;
+    // Set audioPlay state synchronously so /status reflects
+    // "playing" from the moment this function returns. The
+    // actual sox spawn is deferred until the previous child
+    // has fully exited (to avoid ALSA EBUSY races), but the
+    // user-visible state shouldn't blink through a "nothing
+    // is loaded" frame.
+    var pendingState = {
+        file:          filename,
+        durationMs:    dur,
+        startedAt:     Date.now(),
+        startOffsetMs: startMs,
+        playing:       true,
+        paused:        false,
+        pausedAtMs:    0,
+        completed:     false,
+        child:         null
+    };
+    audioPlay = pendingState;
+    // Async: once the previous child has actually exited (and
+    // released ALSA), spawn the new sox. Skip the spawn if
+    // someone replaced or cleared audioPlay in the meantime
+    // (e.g. user hit Stop before sox could start).
+    prevExit.then(function() {
+        if (audioPlay !== pendingState) return;
+        var child;
+        try {
+            child = spawn('play', soxArgs, {
+                env:   soxEnv,
+                stdio: ['ignore', 'ignore', 'pipe']
+            });
+        } catch (e) { return; }
+        // 60 s safety timeout — replaces the timeout option
+        // that exec() carried. Cleared on natural exit.
+        var hardTimeout = setTimeout(function() {
+            try { child.kill('SIGKILL'); } catch (e) {}
+        }, 60000);
+        child.once('exit', function(code) {
+            clearTimeout(hardTimeout);
+            // `completed` distinguishes a healthy playthrough
+            // from a failed spawn: the position reporter uses
+            // it to pick between "park at the end" and "park
+            // at the start offset".
+            if (audioChild === child) audioChild = null;
+            if (audioPlay && audioPlay.child === child) {
+                var elapsed  = Date.now() - audioPlay.startedAt;
+                var expected = (audioPlay.durationMs || 0)
+                             - (audioPlay.startOffsetMs || 0);
+                audioPlay.completed = code === 0 && expected > 0
+                    && (elapsed + 500) >= expected;
+                audioPlay.child   = null;
+                audioPlay.playing = false;
+            }
+        });
+        child.once('error', function() { clearTimeout(hardTimeout); });
+        audioChild           = child;
+        pendingState.child   = child;
+        // Re-anchor startedAt at the actual spawn time so the
+        // reported position doesn't drift forward during the
+        // tiny window between API return and spawn firing.
+        pendingState.startedAt = Date.now();
     });
-    return { success: true, file: filename };
+    return {
+        success:    true,
+        file:       filename,
+        positionMs: startMs,
+        durationMs: dur
+    };
+}
+
+function pausePlayback() {
+    if (!audioPlay || !audioPlay.playing) {
+        return { success: false, error: 'Not playing' };
+    }
+    var pos = playbackPositionMs();
+    audioPlay.pausedAtMs = pos;
+    audioPlay.paused     = true;
+    audioPlay.playing    = false;
+    // _killAudioChild captures the exit promise into
+    // _audioChildExit, which the next playRecording (i.e.
+    // resume) waits on before spawning new sox.
+    _killAudioChild();
+    audioPlay.child = null;
+    return { success: true, positionMs: Math.round(pos) };
+}
+
+function resumePlayback() {
+    if (!audioPlay || !audioPlay.paused) {
+        return { success: false, error: 'Not paused' };
+    }
+    return playRecording(audioPlay.file, audioPlay.pausedAtMs || 0);
+}
+
+function seekPlayback(deltaMs) {
+    if (!audioPlay) {
+        return { success: false, error: 'Nothing loaded' };
+    }
+    var current = playbackPositionMs();
+    var target  = current + (Number(deltaMs) || 0);
+    if (target < 0) target = 0;
+    if (audioPlay.durationMs > 0 && target > audioPlay.durationMs) {
+        target = audioPlay.durationMs;
+    }
+    // Was paused: stay paused at new position (sox restart on
+    // resume picks it up via trim).
+    if (audioPlay.paused) {
+        audioPlay.pausedAtMs = target;
+        return { success: true, positionMs: Math.round(target), paused: true };
+    }
+    // Was playing: restart sox at the new position.
+    return playRecording(audioPlay.file, target);
+}
+
+function getPlaybackStatus() {
+    if (!audioPlay) {
+        return {
+            file:       null,
+            playing:    false,
+            paused:     false,
+            positionMs: 0,
+            durationMs: 0
+        };
+    }
+    return {
+        file:       audioPlay.file,
+        playing:    !!audioPlay.playing,
+        paused:     !!audioPlay.paused,
+        positionMs: Math.round(playbackPositionMs()),
+        durationMs: audioPlay.durationMs
+    };
 }
 
 var selectedAlsaDevice = null; // e.g. "hw:3,0" — persists for this server session
@@ -2976,11 +3248,14 @@ var server = http.createServer(function(req, res) {
     }
     if (req.url === '/api/record/list' && req.method === 'GET') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ files: getRecordings() }));
+        res.end(JSON.stringify({
+            files:      getRecordings(),
+            folderPath: RECORDINGS_DIR
+        }));
         return;
     }
     if (req.url === '/api/record/status' && req.method === 'GET') {
-        var st = { recording: !!recordChild };
+        var st = { recording: !!recordChild, paused: recordPaused };
         if (recordState) {
             st.file      = recordState.file;
             st.format    = recordState.format;
@@ -3032,6 +3307,72 @@ var server = http.createServer(function(req, res) {
         var stopResult = stopRecording();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(stopResult));
+        return;
+    }
+    // ── /api/record/pause ───────────────────────────────────────
+    // Two pause paths depending on the recording format:
+    //
+    //   WAV  — sox keeps running; the stdout handler stops
+    //          writing chunks to the file while recordPaused
+    //          is true. The input-level meter (which reads
+    //          peak from the same chunks) keeps updating, so
+    //          the user sees the mic is still live while
+    //          paused.
+    //   MP3 / OGG — sox writes through a piped encoder, so
+    //          dropping writes mid-stream isn't trivial.
+    //          Fall back to SIGSTOPping both processes; the
+    //          kernel pauses them, ALSA capture overflows and
+    //          drops samples, so the pause-window audio
+    //          doesn't end up in the file. The meter freezes
+    //          in this mode (no chunks flowing).
+    if (req.url === '/api/record/pause' && req.method === 'POST') {
+        if (!recordChild) {
+            res.writeHead(409, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, error: 'Not recording' }));
+            return;
+        }
+        if (recordPaused) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true, paused: true, already: true }));
+            return;
+        }
+        var pauseFmt = recordState && recordState.format;
+        if (pauseFmt !== 'wav') {
+            try { recordChild.kill('SIGSTOP'); } catch (e) {}
+            if (recordEncoderChild) {
+                try { recordEncoderChild.kill('SIGSTOP'); } catch (e) {}
+            }
+        }
+        recordPaused = true;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, paused: true }));
+        return;
+    }
+    // ── /api/record/resume ──────────────────────────────────────
+    // Mirror of pause. For WAV: just flip the flag and the
+    // stdout handler starts writing again. For MP3 / OGG:
+    // SIGCONT both processes so they resume reading from ALSA.
+    if (req.url === '/api/record/resume' && req.method === 'POST') {
+        if (!recordChild) {
+            res.writeHead(409, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, error: 'Not recording' }));
+            return;
+        }
+        if (!recordPaused) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true, paused: false, already: true }));
+            return;
+        }
+        var resumeFmt = recordState && recordState.format;
+        if (resumeFmt !== 'wav') {
+            try { recordChild.kill('SIGCONT'); } catch (e) {}
+            if (recordEncoderChild) {
+                try { recordEncoderChild.kill('SIGCONT'); } catch (e) {}
+            }
+        }
+        recordPaused = false;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, paused: false }));
         return;
     }
     // ── /api/record/formats ─────────────────────────────────────
@@ -3148,8 +3489,16 @@ var server = http.createServer(function(req, res) {
     //          switches are toggled exclusively so only the
     //          selected path is hot.
     if (req.url === '/api/sound/input/source' && req.method === 'GET') {
+        // `cardPresent` lets the client lock the input-device
+        // picker when the NAU8822 isn't enumerable — without
+        // the codec there's nothing to switch between, so the
+        // row should read as "Not found" and stop accepting
+        // cycle / pick input.
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ source: inputSource }));
+        res.end(JSON.stringify({
+            source:      inputSource,
+            cardPresent: !!getNau8822Card()
+        }));
         return;
     }
     if (req.url === '/api/sound/input/source' && req.method === 'POST') {
@@ -3199,6 +3548,91 @@ var server = http.createServer(function(req, res) {
         res.end(ctlOut);
         return;
     }
+    // ── /api/record/rename ──────────────────────────────────────
+    // POST { from, to } — rename `from` → `to.<originalExt>` in
+    // RECORDINGS_DIR. `to` is sanitized via the same filter
+    // start uses; the original extension is preserved (the
+    // recording's bytes don't change just because the user
+    // wants a new label). Collisions get the same `-1`, `-2`,
+    // … suffix walker that buildRecordingFilename uses so the
+    // request can't accidentally overwrite another take.
+    if (req.url === '/api/record/rename' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            if (err || !data || !data.from || !data.to) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: 'Invalid request' }));
+                return;
+            }
+            var from = String(data.from);
+            // Guard against path-traversal in the source name.
+            if (/[\/\\]/.test(from) || from.indexOf('..') !== -1) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: 'Invalid source' }));
+                return;
+            }
+            var fromPath = path.join(RECORDINGS_DIR, from);
+            if (!recordingExists(from)) {
+                res.writeHead(404, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: 'File not found' }));
+                return;
+            }
+            // Don't rename a take that's currently being written
+            // — sox still has the file open and an in-flight
+            // rename would orphan the writer.
+            if (recordState && recordState.file === from) {
+                res.writeHead(409, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: 'Recording in progress' }));
+                return;
+            }
+            var cleanTo = sanitizeRecordingName(String(data.to));
+            if (!cleanTo) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: 'Empty name' }));
+                return;
+            }
+            // Build the exact target name and refuse to rename
+            // if anything else is already using it. Renames are
+            // an explicit user action — silently appending a
+            // `-1` would hide the collision from the user.
+            // (The CREATE path in startRecording still auto-
+            // suffixes; only rename is strict.)
+            var extMatch  = from.match(/\.(wav|mp3|ogg)$/i);
+            var ext       = extMatch ? extMatch[1].toLowerCase() : 'wav';
+            var targetName = cleanTo + '.' + ext;
+            if (targetName === from) {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: true, file: from, unchanged: true }));
+                return;
+            }
+            if (recordingExists(targetName)) {
+                res.writeHead(409, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    success: false,
+                    error:   'duplicate',
+                    file:    targetName
+                }));
+                return;
+            }
+            var toPath = path.join(RECORDINGS_DIR, targetName);
+            try {
+                fs.renameSync(fromPath, toPath);
+            } catch (e) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    success: false,
+                    error: String(e.message || e).slice(0, 200)
+                }));
+                return;
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                success: true,
+                from:    from,
+                file:    targetName
+            }));
+        });
+        return;
+    }
     if (req.url === '/api/record/delete' && req.method === 'POST') {
         readJsonBody(req, function(err, data) {
             if (err || !data || !data.file) {
@@ -3220,10 +3654,60 @@ var server = http.createServer(function(req, res) {
                 res.end(JSON.stringify({ success: false, error: 'Invalid request' }));
                 return;
             }
-            var playResult = playRecording(data.file);
+            // Optional `positionMs` lets the client start
+            // playback at an offset (used after a seek; also
+            // useful for "resume from where it was" flows).
+            var positionMs = (typeof data.positionMs === 'number')
+                ? data.positionMs : 0;
+            var playResult = playRecording(data.file, positionMs);
             res.writeHead(playResult.success ? 200 : 400,
                           { 'Content-Type': 'application/json' });
             res.end(JSON.stringify(playResult));
+        });
+        return;
+    }
+    // ── /api/record/play/status ─────────────────────────────────
+    // Polled by the player overlay to drive the progress bar
+    // and toggle button labels. Returns the live position in
+    // ms (computed on demand from startedAt + elapsed) so the
+    // client never has to track playback timing itself.
+    if (req.url === '/api/record/play/status' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(getPlaybackStatus()));
+        return;
+    }
+    // ── /api/record/play/pause ──────────────────────────────────
+    // Stops the sox child and remembers the current position so
+    // /resume can pick it up via the same `trim` machinery.
+    if (req.url === '/api/record/play/pause' && req.method === 'POST') {
+        var pauseResult = pausePlayback();
+        res.writeHead(pauseResult.success ? 200 : 400,
+                      { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(pauseResult));
+        return;
+    }
+    // ── /api/record/play/resume ─────────────────────────────────
+    // Re-spawns sox at the previously-paused position. No body.
+    if (req.url === '/api/record/play/resume' && req.method === 'POST') {
+        var resumeResult = resumePlayback();
+        res.writeHead(resumeResult.success ? 200 : 400,
+                      { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(resumeResult));
+        return;
+    }
+    // ── /api/record/play/seek ───────────────────────────────────
+    // POST { deltaMs } — relative seek (negative goes back).
+    // If playing, sox is re-spawned at the new position; if
+    // paused, the saved position shifts but playback stays
+    // off until /resume.
+    if (req.url === '/api/record/play/seek' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            var delta = data && typeof data.deltaMs === 'number'
+                ? data.deltaMs : 0;
+            var seekResult = seekPlayback(delta);
+            res.writeHead(seekResult.success ? 200 : 400,
+                          { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(seekResult));
         });
         return;
     }

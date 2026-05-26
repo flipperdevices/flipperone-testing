@@ -88,6 +88,11 @@ var TextInputScreen = (function() {
         // of the seed so typing appends naturally.
         var opts = this._opts || {};
         this.inputText  = (typeof opts.initialText === 'string') ? opts.initialText : '';
+        // Snapshot the original value so back / cancel can tell
+        // whether anything actually changed. Skipping the
+        // "Discard changes?" prompt on an unchanged field
+        // avoids prompting the user about discarding nothing.
+        this._initialText = this.inputText;
         this._inputCursor = this.inputText.length;
         // Title rendered centered above the input field. Driven
         // by the `title` option so consumers can swap the
@@ -102,6 +107,12 @@ var TextInputScreen = (function() {
         // handleInput so the scene stack can pop / push.
         this._onSave    = (typeof opts.onSave    === 'function') ? opts.onSave    : null;
         this._onDiscard = (typeof opts.onDiscard === 'function') ? opts.onDiscard : null;
+        // Optional live validator. Called on every render with
+        // the current input text; returning a non-empty string
+        // displays it as a warning beneath the input field. Use
+        // this to surface duplicate-name / format / length
+        // issues before the user commits via Done.
+        this._validate  = (typeof opts.validate  === 'function') ? opts.validate  : null;
         // Discard-confirmation modal. Opens on Back when the
         // input field has unsaved text. `buttonIndex` 0 = Keep
         // (default, dismiss the modal and stay in the keyboard
@@ -834,20 +845,23 @@ var TextInputScreen = (function() {
 
         // Any exit attempt — Cancel button ('esc' from z) or
         // Back arrow ('back' from Backspace / Escape) — opens
-        // the discard prompt when there's unsaved text in the
-        // field. Empty fields skip the prompt: 'esc' falls
-        // through to the Cancel bottom-button below; 'back'
-        // commits the discard directly.
-        if ((action === 'esc' || action === 'back')
-                && typeof this.inputText === 'string'
-                && this.inputText.length > 0) {
+        // the discard prompt only when the user has actually
+        // changed something. If the current text is identical
+        // to whatever the field was seeded with on enter,
+        // exiting can't lose any work, so we skip straight to
+        // the discard path: 'esc' falls through to the Cancel
+        // bottom-button below; 'back' commits the discard
+        // directly.
+        var hasChanges = typeof this.inputText === 'string'
+                       && this.inputText !== this._initialText;
+        if ((action === 'esc' || action === 'back') && hasChanges) {
             this._discardModal.open = true;
             this._discardModal.buttonIndex = 0;
             if (window.requestRender) window.requestRender();
             return;
         }
         if (action === 'back') {
-            // Empty-text Back: nothing to discard, just leave.
+            // Unchanged Back: nothing to discard, just leave.
             return this._commitDiscard();
         }
 
@@ -856,6 +870,11 @@ var TextInputScreen = (function() {
         // the press feedback reads cleanly.
         var btn = this._btnActionMap[action];
         if (btn) {
+            // Disabled buttons swallow the press entirely — no
+            // flash, no onPress, no consequence. Used by Done
+            // while validate() returns a warning so the user
+            // can't sneak an invalid value through.
+            if (btn.disabled) return;
             btn.press();
             if (btn.onPress) btn.onPress();
             if (window.requestRender) window.requestRender();
@@ -1088,6 +1107,27 @@ var TextInputScreen = (function() {
                 + HaxrcorpFont16.textWidth(this.inputText.slice(seg.left, this._inputCursor))
                 + 1;
             canvas.drawCursor(cursorX, textY, 1, 11, '#000');
+        }
+
+        // Live validation message — drawn 3 px below the input
+        // frame, centred horizontally. The validator decides on
+        // every render whether the current text deserves a
+        // warning (e.g. duplicate filename). Returning an empty
+        // string or null suppresses the row entirely.
+        var warning = this._validate ? this._validate(this.inputText) : null;
+        if (warning) {
+            var ww = HaxrcorpFont16.textWidth(warning);
+            HaxrcorpFont16.draw(ctx, warning,
+                Math.round((canvas.w - ww) / 2),
+                inputY + inputH + 3, '#000');
+        }
+        // Disable Done when the validator is unhappy — the
+        // disabled chrome (light-gray fill, dim text) tells the
+        // user the commit won't go through. handleInput also
+        // gates 'run' on the same check so the press itself
+        // can't sneak past.
+        if (this._doneBtn) {
+            this._doneBtn.disabled = !!warning;
         }
 
         // Keyboard renders the chrome + cells, then via the

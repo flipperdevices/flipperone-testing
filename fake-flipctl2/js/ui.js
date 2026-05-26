@@ -360,6 +360,28 @@ var UI = (function() {
             leftX += Icons.usb_ethetrnet_status_bar.w + 2;
         }
 
+        // Recording indicator — appended to the left status cluster
+        // ONLY while a voice-recorder take is rolling in the
+        // background (the recorder isn't the foreground scene). When
+        // the recorder is on top you can already see the take, so we
+        // suppress it there via window._voiceRecorderForeground. Both
+        // flags are owned by the recorder scene. The 7px dot sits at
+        // `top`, vertically aligned with the 7px wifi / ethernet icons.
+        // It pulses: a sine breathes its alpha so a steady recording
+        // reads as "live". We drive the animation the same way scene
+        // animations do — requestRender() from within the paint keeps
+        // the loop repainting; once recording stops the icon (and this
+        // call) drop out, so the pulse stops on its own.
+        if (window._voiceRecorderRecording
+                && !window._voiceRecorderForeground
+                && Icons.records_status_bar) {
+            var pulse = 0.5 + 0.5 * Math.sin(Date.now() / 250);  // 0..1, ~1.6s cycle
+            var recAlpha = 0.35 + 0.65 * pulse;                  // never fully gone
+            canvas.drawSprite(Icons.records_status_bar, leftX, top, fg, recAlpha);
+            leftX += Icons.records_status_bar.w + 2;
+            if (typeof window.requestRender === 'function') window.requestRender();
+        }
+
         // Battery sprite (16x9) + percentage, right-aligned.
         var pctStr = batteryLevel >= 0 ? batteryLevel + '%' : '--%';
         var batteryW = StatusBarBattery.sprite.w;

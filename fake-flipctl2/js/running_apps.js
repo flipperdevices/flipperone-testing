@@ -92,6 +92,7 @@ var RunningApps = (function() {
         }
     }
 
+
     function close(name) {
         for (var i = apps.length - 1; i >= 0; i--) {
             if (apps[i].name === name) {

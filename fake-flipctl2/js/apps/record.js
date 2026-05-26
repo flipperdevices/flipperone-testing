@@ -8,6 +8,16 @@
  * exits on Back so navigation works while we wire the new UI.
  */
 var VoiceRecorderScene = (function() {
+    // Cross-instance recording snapshot. When the user
+    // backgrounds a take, exit() stashes the live recording
+    // state here; the next instance reads it SYNCHRONOUSLY in
+    // enter() so the recording panel paints immediately instead
+    // of flashing the idle settings list for the ~1 s it takes
+    // /api/record/status to answer. The async status fetch then
+    // reconciles (and clears this if the server says the take
+    // ended). Null when no take is in flight.
+    var _recorderBgState = null;
+
     // Default filename pattern. Shown verbatim in the File name
     // row and in the editor — substitution only happens at Start
     // press, and only inside the square brackets.
@@ -117,6 +127,14 @@ var VoiceRecorderScene = (function() {
         this._micLeft   = 0;
         this._micRight  = 0;
         this._micEventSource = null;
+
+        // NAU8822 presence. Optimistic default true so the
+        // input picker doesn't read as "Not found" for a frame
+        // before the first /api/sound/input/source fetch lands.
+        // Flips false (and stays there) when the server reports
+        // the codec is absent — render then paints "Not found"
+        // and the input-device row stops accepting input.
+        this._codecPresent = true;
 
         // Input-device picker. Mirrors the dropdown-row shape
         // Internet Radio uses for its Audio device row: a
@@ -291,7 +309,19 @@ var VoiceRecorderScene = (function() {
         // visible OUT of recording mode — Pause takes over the
         // middle slot 3 while recording instead.
         this._filesBtn = new UI.MiddleButton('Files', 1, 48, 2, 'edit',
-            function() { /* not wired yet */ });
+            function() {
+                // Push the recordings-folder browser. The folder
+                // name shown in its header is the same string the
+                // Folder row in this scene displays — that way
+                // the user sees the same label in both places.
+                if (!self.sceneManager
+                        || typeof VoiceRecorderFilesScene === 'undefined') {
+                    return;
+                }
+                var browser = new VoiceRecorderFilesScene(
+                    self.sceneManager, self._folderName);
+                self.sceneManager.push(browser);
+            });
 
         // "Pause" middle button — only rendered / wired while
         // `_recording` is true; takes over from Files in the
@@ -433,6 +463,11 @@ var VoiceRecorderScene = (function() {
 
     VoiceRecorderScene.prototype.enter = function() {
         var self = this;
+        // Recorder is now the foreground scene — the shared status
+        // bar suppresses its recording icon while we're on top (you
+        // can already see the take here). Cleared in exit() so the
+        // icon reappears once a backgrounded take keeps rolling.
+        window._voiceRecorderForeground = true;
         // Register with the global recents stack so the App
         // Switcher picks Voice Recorder up on the next Tab.
         if (typeof RunningApps !== 'undefined') {
@@ -447,6 +482,13 @@ var VoiceRecorderScene = (function() {
                     self._sendLinkLed(false);
                     self._sendLedManual(false);
                     self._stopRecordTick();
+                    // Switcher-kill ends the take for good — drop
+                    // the stashed bg state so a later re-open
+                    // starts clean idle instead of flashing the
+                    // dead take, and clear the status-bar flag
+                    // (this path bypasses _applyRecordingLed).
+                    _recorderBgState = null;
+                    window._voiceRecorderRecording = false;
                     // Stop server-side recording too — it's
                     // idempotent on the server so safe even if
                     // we weren't actually recording.
@@ -459,6 +501,13 @@ var VoiceRecorderScene = (function() {
         // inside the arecord chunk handler so the Node event
         // loop isn't doing 20 req/sec of HTTP overhead while
         // the user sits on this page.
+        // Re-entry from the App Switcher: if a take was rolling
+        // when we last left, restore the recording UI
+        // SYNCHRONOUSLY from the stashed state so this paint
+        // already shows the recording panel — no flash of the
+        // idle settings list while the async status fetch is in
+        // flight.
+        this._applyBgStateSync();
         this._startMicMonitor();
         this._openMicStream();
         this._fetchInputGain();
@@ -468,9 +517,137 @@ var VoiceRecorderScene = (function() {
         // a real Available figure as soon as the user starts
         // a take, instead of dashes for the first poll cycle.
         this._fetchRecordEstimate();
+        // Reconcile against the server: confirms the optimistic
+        // restore (refreshing elapsed / file) or clears it back
+        // to idle if the take actually ended while we were away.
+        this._restoreRecordingState();
+    };
+
+    // Synchronously seed recording UI state from the stashed
+    // `_recorderBgState`. No-op when nothing was rolling.
+    VoiceRecorderScene.prototype._applyBgStateSync = function() {
+        var s = _recorderBgState;
+        if (!s || !s.recording) return;
+        this._recording            = true;
+        this._paused               = !!s.paused;
+        this._recordStartTime      = s.recordStartTime;
+        this._pausedElapsed        = s.pausedElapsed;
+        this._serverFile           = s.serverFile;
+        this._recordingDisplayName = s.recordingDisplayName;
+        if (s.formatLabel
+                && this._pickers.format.options.indexOf(s.formatLabel) >= 0) {
+            this._pickers.format.current = s.formatLabel;
+        }
+        if (!this._paused) this._startRecordTick();
+        this._applyRecordingLed();
+    };
+
+    // Query /api/record/status on enter and, if a recording is
+    // already in progress (backgrounded), restore the scene's
+    // recording state — timecode anchor, paused flag, filename,
+    // format picker, LED, and the running tick.
+    VoiceRecorderScene.prototype._restoreRecordingState = function() {
+        var self = this;
+        try {
+            var xhr = new XMLHttpRequest();
+            xhr.open('GET', '/api/record/status', true);
+            xhr.timeout = 1500;
+            xhr.onload = function() {
+                var data;
+                try { data = JSON.parse(xhr.responseText || '{}'); }
+                catch (e) { return; }
+                if (!data.recording) {
+                    // The take ended while we were away (or there
+                    // never was one). Undo any optimistic restore
+                    // from _applyBgStateSync and drop back to idle.
+                    if (self._recording) {
+                        self._recording            = false;
+                        self._paused               = false;
+                        self._recordingDisplayName = null;
+                        self._serverFile           = null;
+                        self._stopRecordTick();
+                        self._applyRecordingLed();
+                        if (typeof window.requestRender === 'function') {
+                            window.requestRender();
+                        }
+                    }
+                    _recorderBgState = null;
+                    return;
+                }
+                self._recording = true;
+                self._paused    = !!data.paused;
+                var elapsed = (typeof data.elapsedMs === 'number') ? data.elapsedMs : 0;
+                // Anchor both the running clock and the paused
+                // snapshot so the timecode reads correctly in
+                // either state and resume math stays consistent.
+                self._recordStartTime = Date.now() - elapsed;
+                self._pausedElapsed   = elapsed;
+                self._serverFile = data.file || null;
+                self._recordingDisplayName = data.file
+                    ? data.file.replace(/\.(wav|mp3|ogg)$/i, '')
+                    : null;
+                // Restore the Format picker to the take's format.
+                if (data.format) {
+                    for (var label in self._formatMeta) {
+                        if (self._formatMeta[label]
+                                && self._formatMeta[label].id === data.format) {
+                            self._pickers.format.current = label;
+                            break;
+                        }
+                    }
+                }
+                // Resume the render tick + estimate poll only
+                // when actively recording; the LED reconciles
+                // both flags.
+                if (!self._paused) self._startRecordTick();
+                self._applyRecordingLed();
+                if (typeof window.requestRender === 'function') {
+                    window.requestRender();
+                }
+            };
+            xhr.send();
+        } catch (e) { /* offline — start fresh idle */ }
     };
 
     VoiceRecorderScene.prototype.exit = function() {
+        // Leaving the foreground — if a take is still rolling it's
+        // now a background recording, so let the shared status bar
+        // start showing the recording icon in whatever scene is on
+        // top now.
+        window._voiceRecorderForeground = false;
+        // Snapshot the current frame for the App Switcher card —
+        // a static image of what the user last saw, captured at
+        // the moment of transition. Guarded by `_lastRenderedScene`
+        // so we grab the recorder's pixels, not the switcher's.
+        if (typeof RunningApps !== 'undefined'
+                && typeof RunningApps.setSnapshot === 'function') {
+            var canvasEl = document.getElementById('screen');
+            if (canvasEl && window._lastRenderedScene === this) {
+                try {
+                    var snap = document.createElement('canvas');
+                    snap.width  = canvasEl.width;
+                    snap.height = canvasEl.height;
+                    snap.getContext('2d').drawImage(canvasEl, 0, 0);
+                    RunningApps.setSnapshot(this.displayName, snap);
+                } catch (e) { /* canvas tainted / offscreen — skip */ }
+            }
+        }
+        // Stash recording state so the NEXT instance can paint
+        // the recording panel synchronously on enter (no idle
+        // flash). Cleared when no take is in flight.
+        if (this._recording) {
+            _recorderBgState = {
+                recording:            true,
+                paused:               this._paused,
+                recordStartTime:      this._recordStartTime,
+                pausedElapsed:        this._pausedElapsed,
+                serverFile:           this._serverFile,
+                recordingDisplayName: this._recordingDisplayName,
+                formatLabel:          this._pickers.format.current
+            };
+        } else {
+            _recorderBgState = null;
+        }
         this._closeMicStream();
         this._stopMicMonitor();
         this._micLeft = 0;
@@ -478,18 +655,18 @@ var VoiceRecorderScene = (function() {
         // Tear down the running timecode tick so it doesn't
         // keep firing requestRender after the scene leaves.
         this._stopRecordTick();
-        // Drop the LED back to auto on exit so the red
-        // recording cue never strays past the scene's lifetime,
-        // even if the user backs out without hitting Stop
-        // first.
-        this._sendLinkLed(false);
-        this._sendLedManual(false);
-        // Mid-take exit: close the sox capture pipeline
-        // server-side. Idempotent so this is safe even when
-        // the user wasn't actually recording.
-        if (this._recording) this._postStopRecord();
-        this._recording            = false;
-        this._recordingDisplayName = null;
+        // Background persistence: a recording in progress is NOT
+        // stopped on exit — it keeps running server-side, like
+        // Internet Radio's stream. The red LED stays lit so the
+        // hardware cue tells the user a take is still rolling
+        // while they're off in another app. Only the
+        // switcher-kill path (the onClose callback in enter())
+        // actually halts the take. When NOT recording, drop the
+        // LED back to auto as before.
+        if (!this._recording) {
+            this._sendLinkLed(false);
+            this._sendLedManual(false);
+        }
         // Install-modal spinner timer (started in _runInstall).
         if (this._installAnimTimer) {
             clearInterval(this._installAnimTimer);
@@ -599,6 +776,18 @@ var VoiceRecorderScene = (function() {
             this._sendLinkLed(false);
             this._sendLedManual(false);
         }
+        // Surface a global "actively recording" flag for the shared
+        // status bar (UI.drawStatusBar reads it to show the records
+        // icon in every scene). Mirrors the LED condition exactly —
+        // on only while recording AND not paused — so a backgrounded
+        // pause hides the pulsing dot just like it drops the red LED
+        // (the take is held, not rolling). This is the single hook
+        // every state transition flows through (start/stop, pause/
+        // resume, bg-restore, status reconcile), so the flag stays
+        // in sync without sprinkling assignments everywhere. The
+        // switcher-kill path clears it explicitly since it bypasses
+        // this method.
+        window._voiceRecorderRecording = !!(this._recording && !this._paused);
     };
 
     // ── Input device source ─────────────────────────────────────
@@ -625,12 +814,15 @@ var VoiceRecorderScene = (function() {
                 var data;
                 try { data = JSON.parse(xhr.responseText || '{}'); }
                 catch (e) { return; }
+                if (typeof data.cardPresent === 'boolean') {
+                    self._codecPresent = data.cardPresent;
+                }
                 var label = INPUT_DEVICE_SOURCE_TO_LABEL[data.source];
                 if (label && self._pickers.inputDevice.options.indexOf(label) >= 0) {
                     self._pickers.inputDevice.current = label;
-                    if (typeof window.requestRender === 'function') {
-                        window.requestRender();
-                    }
+                }
+                if (typeof window.requestRender === 'function') {
+                    window.requestRender();
                 }
             };
             xhr.send();
@@ -1134,15 +1326,42 @@ var VoiceRecorderScene = (function() {
             this._recordStartTime = Date.now() - this._pausedElapsed;
             this._paused = false;
             this._startRecordTick();
+            this._postRecordResume();
         } else {
             // Pause.
             this._pausedElapsed = Date.now() - this._recordStartTime;
             this._paused = true;
             this._stopRecordTick();
+            this._postRecordPause();
         }
         // Link LED follows recording state minus pause —
         // _applyRecordingLed reads both flags and reconciles.
         this._applyRecordingLed();
+    };
+
+    // Fire-and-forget POST helpers — the server SIGSTOPs sox
+    // (+ encoder) on pause and SIGCONTs on resume so audio
+    // captured during the pause window doesn't end up in the
+    // file. The UI clock is already frozen by the time we POST,
+    // so a slight network delay just means the file truncation
+    // and the displayed timecode line up after a beat.
+    VoiceRecorderScene.prototype._postRecordPause = function() {
+        try {
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', '/api/record/pause', true);
+            xhr.setRequestHeader('Content-Type', 'application/json');
+            xhr.timeout = 1500;
+            xhr.send('{}');
+        } catch (e) { /* offline — UI still pauses locally */ }
+    };
+    VoiceRecorderScene.prototype._postRecordResume = function() {
+        try {
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', '/api/record/resume', true);
+            xhr.setRequestHeader('Content-Type', 'application/json');
+            xhr.timeout = 1500;
+            xhr.send('{}');
+        } catch (e) { /* offline — UI still resumes locally */ }
     };
 
     // Format an elapsed-ms count as HH:MM:SS:FF (FF = hundredths
@@ -1358,6 +1577,14 @@ var VoiceRecorderScene = (function() {
         if (action === 'ok') {
             var pkOk = this._rowPickerKey(this._selectedRow);
             if (pkOk) {
+                // Input-device picker is inert when the NAU8822
+                // codec is missing — without the card there's
+                // no source to switch between, and opening the
+                // dropdown would just present options that
+                // can't be applied.
+                if (pkOk === 'inputDevice' && !this._codecPresent) {
+                    return;
+                }
                 var pOk      = this._pickers[pkOk];
                 var idxStart = pOk.options.indexOf(pOk.current);
                 this._dropdownIndex = idxStart >= 0 ? idxStart : 0;
@@ -1389,6 +1616,13 @@ var VoiceRecorderScene = (function() {
         if (action === 'left' || action === 'right') {
             var pkLR = this._rowPickerKey(this._selectedRow);
             if (pkLR) {
+                // Input-device picker is inert without the
+                // NAU8822 codec — left / right is a no-op so
+                // the row stays at "Not found" instead of
+                // cycling phantom options.
+                if (pkLR === 'inputDevice' && !this._codecPresent) {
+                    return;
+                }
                 var pLR = this._pickers[pkLR];
                 if (!pLR || pLR.options.length <= 1) return;
                 var idx = pLR.options.indexOf(pLR.current);
@@ -1622,17 +1856,26 @@ var VoiceRecorderScene = (function() {
         // While `_recording` is true a single placeholder frame
         // takes their slot (drawn further down).
         if (!this._recording) {
-            // Input device row (row 1) — dropdown picker.
+            // Input device row (row 1) — dropdown picker. When
+            // the NAU8822 codec isn't enumerable on the host we
+            // swap the value to "Not found" and suppress the
+            // `selected` flag so the cycling arrows don't paint
+            // (there's nothing to cycle between).
             new MenuDropdownLine({
                 y:        deviceRowY,
                 title:    'Input device',
-                value:    this._pickers.inputDevice.current,
+                value:    this._codecPresent
+                    ? this._pickers.inputDevice.current
+                    : 'Not found',
                 // Show the `< value >` arrows only when this
                 // row is both focused AND the dropdown isn't
-                // open — same dual condition Internet Radio
-                // uses so the arrows never compete with the
-                // open overlay for focus.
-                selected: !this._dropdownOpen && this._selectedRow === 1
+                // open AND the codec exists — same dual
+                // condition Internet Radio uses, extended with
+                // the codec-present gate so a missing card
+                // reads as inert.
+                selected: !this._dropdownOpen
+                       && this._selectedRow === 1
+                       && this._codecPresent
             }).render(canvas);
 
             // File name row — drill-in to TextInputScreen on OK.
@@ -1746,7 +1989,19 @@ var VoiceRecorderScene = (function() {
                 ? Icons.recording_pause
                 : (typeof Icons !== 'undefined' ? Icons.record_circle : null);
             if (lampIcon) {
-                canvas.drawSprite(lampIcon, lampX, lampY, '#FFFFFF');
+                if (!this._paused) {
+                    // Breathe the record circle while actively
+                    // recording — same pulse as the background
+                    // status-bar indicator (~1.6s sine, alpha
+                    // 0.35..1.0). The 33ms record tick already
+                    // drives repaints, so it animates smoothly.
+                    // Paused shows the pause icon static (below).
+                    var lampPulse = 0.5 + 0.5 * Math.sin(Date.now() / 250);
+                    var lampAlpha = 0.35 + 0.65 * lampPulse;
+                    canvas.drawSprite(lampIcon, lampX, lampY, '#FFFFFF', lampAlpha);
+                } else {
+                    canvas.drawSprite(lampIcon, lampX, lampY, '#FFFFFF');
+                }
             }
 
             // Running timecode — HH:MM:SS:FF. When paused the
@@ -1886,23 +2141,22 @@ var VoiceRecorderScene = (function() {
         //
         // Layout by mode (5 slots, left → right):
         //   idle      : Home  | Files | …     | …       | Start
-        //   recording : Home  | …     | …     | Pause   | Stop
-        //   paused    : Home  | …     | …     | Resume  | …
+        //   recording : Home  | Files | …     | Pause   | Stop
+        //   paused    : Home  | Files | …     | Resume  | …
         //
         // The right-button label flips between Start and Stop
         // each render; the middle slot's button flips between
-        // Pause and Resume the same way.
+        // Pause and Resume the same way. Files stays in slot 1
+        // across every state so the file browser is reachable
+        // even mid-take.
         if (this._startBtn) {
             this._startBtn.text = this._recording ? 'Stop' : 'Start';
         }
         if (this._pauseBtn) {
             this._pauseBtn.text = this._paused ? 'Resume' : 'Pause';
         }
-        if (this._homeBtn) this._homeBtn.render(canvas);
-        // Files appears only when idle (out of recording).
-        if (!this._recording && this._filesBtn) {
-            this._filesBtn.render(canvas);
-        }
+        if (this._homeBtn)  this._homeBtn.render(canvas);
+        if (this._filesBtn) this._filesBtn.render(canvas);
         // Pause / Continue appears while recording (both
         // running and paused — label flip handles the state).
         if (this._recording && this._pauseBtn) {

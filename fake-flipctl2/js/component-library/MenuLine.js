@@ -41,6 +41,17 @@ var MenuLine = (function() {
         // falsy to suppress the status.
         this.statusProvider = options.statusProvider || null;
         this.state         = options.state || STATE_DEFAULT;
+        // Optional per-instance override for the vertical nudge
+        // applied to the ACTIVE (selected / pressed) label so it
+        // optically aligns with the BusyFont9 default underneath.
+        // Stock value is +1 to compensate for Born2bSporty's
+        // high cap line — consumers whose selector frame sits
+        // higher (e.g. file-list scenes that use the smaller
+        // y-offset of -1) can pass 0 to keep the label tight to
+        // the cap.
+        this.activeLabelYNudge = (typeof options.activeLabelYNudge === 'number')
+            ? options.activeLabelYNudge
+            : 1;
     }
 
     function spriteFrameHeight(sprite) {
@@ -144,7 +155,7 @@ var MenuLine = (function() {
         var font       = active ? Born2bSportyV2Medium : BusyFont9;
         var statusFont = BusyFont9;
         var textY = y + TEXT_DRAW_Y;
-        var labelY = active ? textY + 1 : textY;
+        var labelY = active ? (textY + this.activeLabelYNudge) : textY;
         font.draw(canvas.ctx, this.text, textLeft, labelY, textColor);
 
         var status = this.statusProvider ? this.statusProvider() : this.status;

@@ -1326,14 +1326,17 @@ var FlipCanvas = (function() {
     // Draws a large sprite with support for grayscale (from sprites.js)
     // Binary sprite: {w: width, h: height, d: [hex values]}
     // Grayscale sprite: {w: width, h: height, bitsPerPixel: 6, grayscale: true, d: [...]}
-    FlipCanvas.prototype.drawSprite = function(sprite, x, y, color) {
+    // `alphaScale` (optional, default 1) uniformly fades the whole
+    // sprite — used for effects like the status-bar recording pulse.
+    // Only honoured by the grayscale path (the only place that needs it).
+    FlipCanvas.prototype.drawSprite = function(sprite, x, y, color, alphaScale) {
         if (!sprite || !sprite.d) return;
 
         var ctx = this.ctx;
 
         if (sprite.grayscale && sprite.bitsPerPixel === 6) {
             // 6-bit grayscale sprite (64 levels)
-            this._drawGrayscaleSprite(sprite, x, y, color);
+            this._drawGrayscaleSprite(sprite, x, y, color, 0, alphaScale);
         } else {
             // Binary (1-bit) sprite
             this._drawBinarySprite(sprite, x, y, color);
@@ -1436,9 +1439,10 @@ var FlipCanvas = (function() {
         }
     };
 
-    FlipCanvas.prototype._drawGrayscaleSprite = function(sprite, x, y, color, dataOffset) {
+    FlipCanvas.prototype._drawGrayscaleSprite = function(sprite, x, y, color, dataOffset, alphaScale) {
         var ctx = this.ctx;
         color = color || '#000';
+        if (typeof alphaScale !== 'number') alphaScale = 1;
 
         // Unpack 6-bit grayscale values (4 pixels per 3 bytes)
         var bytesPerRow = Math.ceil((sprite.w * 6) / 8);
@@ -1469,7 +1473,7 @@ var FlipCanvas = (function() {
                     var grayValue = pixels[i];
                     // grayValue: 0=black, 63=white
                     // opacity: 0=white (transparent), 1=black (opaque)
-                    var opacity = (63 - grayValue) / 63;
+                    var opacity = ((63 - grayValue) / 63) * alphaScale;
 
                     if (opacity > 0.01) {  // Skip nearly transparent pixels
                         ctx.globalAlpha = opacity;

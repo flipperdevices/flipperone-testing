@@ -916,12 +916,12 @@ var AppSwitcherScene = (function() {
         }
         for (var i = 0; i < apps.length; i++) {
             cards.push({
-                name:      apps[i].name,
-                imagePath: apps[i].imagePath,
-                image:     apps[i].image,
-                icon:      apps[i].icon,
-                factoryFn: apps[i].factoryFn || null,
-                animFrom:  null
+                name:       apps[i].name,
+                imagePath:  apps[i].imagePath,
+                image:      apps[i].image,
+                icon:       apps[i].icon,
+                factoryFn:  apps[i].factoryFn || null,
+                animFrom:   null
             });
         }
         // Multi-app intro animation, single phase. Applies for any
