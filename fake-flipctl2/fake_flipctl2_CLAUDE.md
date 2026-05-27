@@ -259,6 +259,11 @@ Note: systemd units are **not** in this repo. They live in the sibling `/flipper
   3. **Ethernet icon** (`Icons.ethernet_statusbar`, 13×7) — only when at
      least one ethernet interface reports a `connected` state (and not
      `disconnected`).
+  4. **Recording dot** (`Icons.records_status_bar`, 7×7 solid disc) — only
+     while a voice-recorder take is rolling **in the background**, i.e.
+     `window._voiceRecorderRecording && !window._voiceRecorderForeground`.
+     Pulses via `drawSprite`'s `alphaScale` and self-drives repaints with
+     `requestRender()`. See Voice recorder § Status-bar indicator.
 - **Right side**: Battery percentage + battery sprite. Charging bolt
   overlays the battery sprite when `batteryCharging === true`.
 - **No time/date** is rendered in this variant.
@@ -801,7 +806,7 @@ canvas.drawIcon(iconData, x, y, color)          // 14×14 bitmap icon
 canvas.drawCursor(x, y, w, h, color)            // Text cursor indicator
 
 // Sprite variants
-canvas.drawSprite(sprite, x, y, color)                    // Full sprite (binary or 6-bit grayscale, alpha-blended)
+canvas.drawSprite(sprite, x, y, color[, alphaScale])      // Full sprite (binary or 6-bit grayscale, alpha-blended)
 canvas.drawSpriteFrame(sprite, x, y, frameIndex, color)   // One frame of a vertical strip (sprite has `frames` count)
 canvas.drawSpriteLiteral(sprite, x, y)                    // Three-tone overlay: paint each pixel at its own grayscale value; gray=63 = transparent sentinel
 
@@ -814,7 +819,9 @@ BusyFont9.draw(canvas.ctx, text, x, y, color)
 - `drawSprite` — standard foreground-on-background rendering. Uses
   `opacity = (63 - grayValue) / 63`, so dark source pixels become
   opaque in the chosen `color`. Good for single-tone icons that should
-  adopt the scene's ink colour.
+  adopt the scene's ink colour. Optional `alphaScale` (default 1)
+  uniformly fades the whole sprite — grayscale path only; used for the
+  status-bar recording pulse (see Voice recorder § Status-bar indicator).
 - `drawSpriteFrame` — same rendering as `drawSprite`, but crops to one
   frame of a vertically-stacked strip (see [Animated Icons](#animated-icons)).
 - `drawSpriteLiteral` — preserves the original pixel values. Dark
@@ -2363,14 +2370,27 @@ patterns it builds on, see `fake_flipctl2_CLAUDE.md` in the same directory.
 ## At a glance
 
 - **Capture tool:** `sox` (not `arecord` — see "Why sox" below)
-- **Recording format:** 16 kHz / mono / S16_LE WAV
+- **Recording format:** user-selectable **WAV / MP3 / OGG** (Format picker); all
+  capture at 16 kHz / mono / S16_LE — MP3/OGG pipe sox into `lame` / `oggenc`
 - **Capture device:** `plughw:N,0` where N is the NAU8822 card (auto-detected)
-- **Storage:** `/flipperone-testing/sound/recordings/` (created on server start)
-- **Filename:** `rec-YYYYMMDD-HHMMSS.wav` (sortable, unique per second)
-- **Recording lifetime:** server-side child process tied to the `RecordingScene`
-  on the client — `enter()` starts, `exit()` always stops, `pagehide` /
-  `beforeunload` also stops via `navigator.sendBeacon` so a browser close
-  or server-driven reload (`/api/version` poll) can't leak a recording
+- **Storage:** `/flipperone-testing/sound/voice_recordings/` (created on server
+  start; git-ignored via `sound/voice_recordings/`)
+- **Filename:** template-driven, default `F1-REC-[YYYYMMDD-HHMMSS]` — date/time
+  tokens are substituted **only inside `[...]`**, and colliding names get a `-N`
+  suffix (see "Filename templates & collision indexing" below)
+- **Recording lifetime:** server-side child process, now **decoupled from the
+  scene**. A take started via `/api/record/start` keeps running when the recorder
+  is backgrounded (like Internet Radio); `exit()` no longer stops it. Only an
+  in-app **Stop** or an **App Switcher kill** (the `RunningApps` onClose hook →
+  `_postStopRecord`) ends it. See "Backgrounding & the App Switcher" below
+
+> **⚠ v1 vs current:** the **Server** and **Client** subsections immediately
+> below describe the original v1 (two scenes, `recordings/` dir, `rec-*.wav`,
+> WAV-only, scene-tied lifetime). They are kept for the sox/arecord rationale,
+> but the **"Post-v1 implementation"** subsections further down are authoritative
+> where they differ (storage dir, filenames, endpoint list, single-scene model,
+> selectable formats, pause/resume, backgrounding, Files browser, player,
+> status-bar indicator).
 
 ## Files touched
 
@@ -2398,7 +2418,7 @@ listener so a crash mid-recording can't desync them.
 
 | Function | Purpose |
 |----------|---------|
-| `buildRecordingFilename()` | Returns `rec-YYYYMMDD-HHMMSS.wav` from local time |
+| `buildRecordingFilename()` | (current) expands the client's name template + format ext, then walks `-N` via `recordingExists()` until free — see Post-v1 § Filename templates |
 | `getRecordings()` | Reads `RECORDINGS_DIR`, filters to `.wav`, returns `[{name, size, mtime}]` sorted newest-first |
 | `startRecording()` | Spawns sox; stops any active playback first via `stopSound()` |
 | `stopRecording()` | `SIGINT` to the sox child (clean WAV header). Idempotent — returns `{success: true, recording: false}` even if nothing was running |
@@ -2587,28 +2607,237 @@ Added under the **Testing** submenu, next to **Sound**:
 'Voice recorder': function() { return new VoiceRecorderScene(sm); },  // ← new
 ```
 
+# Voice recorder — Post-v1 implementation (authoritative)
+
+Everything below reflects the **current** code and supersedes the v1 text above
+where they differ. Files now in play:
+
+- `js/apps/record.js` — the single `VoiceRecorderScene` (settings list **and** the
+  in-place recording panel; the separate v1 `RecordingScene` is gone). It is an
+  app: `this._isApp = true` and it registers with `RunningApps` in `enter()`.
+- `js/apps/voice_recorder_files.js` — the **Files browser** scene plus the
+  built-in audio **player** overlay (loaded right after `record.js` in
+  `index.html`).
+- `server.js` — `RECORDINGS_DIR = '/flipperone-testing/sound/voice_recordings'`
+  plus recording / playback / mic-level / input-routing endpoints.
+
+## Filename templates & collision indexing
+
+- Default template `F1-REC-[YYYYMMDD-HHMMSS]` (`DEFAULT_NAME_TEMPLATE`).
+- Tokens are substituted **only inside square brackets** — literal text outside
+  `[...]` is left untouched, so `F1-REC-` stays as typed. Opening the name field
+  shows the raw pattern (`[YYYYMMDD-HHMMSS]`), not a pre-filled date.
+- `_expandTemplateName` walks `TEMPLATE_TOKENS` **longest-first** so `HHMMSS`
+  beats `HH`+`MM`+`SS`: `YYYYMMDD, HHMMSS, HHMM, MMDD, YYYY, YY, HH, MM, DD, SS`.
+  Delete `SS` from the bracket to get a no-seconds timestamp, etc.
+- Collisions: the server's `buildRecordingFilename()` walks `-1, -2, …` via
+  `recordingExists()` until the name is free, so repeatedly starting with a fixed
+  name yields `…-1`, `…-2`.
+
+## Recording formats (WAV / MP3 / OGG)
+
+- Format picker options `['WAV','MP3','OGG']` (default `WAV`); `_formatMeta` maps
+  each label → `{ id, ext, … }`, populated from `/api/record/formats`.
+- WAV = sox writing the file directly. MP3/OGG pipe sox's raw output into `lame` /
+  `oggenc`. `/api/record/formats` reports which encoders are installed; a missing
+  one drives the install modal (`/api/record/install`).
+- The Format dropdown opens **upward** (its row sits near the bottom edge).
+
+## Input device routing (built-in mic vs 3.5 mm jack)
+
+- The NAU8822 exposes two mic paths; the Input-device picker is **exclusive**:
+  *Build-in mic* vs *3.5 Audio*. `INPUT_DEVICE_LABEL_TO_SOURCE` maps labels →
+  server `builtin` / `jack` modes. The server (`applyInputSource`) flips the
+  Internal/Headset Microphone switches + the Left/Right Input Mixer MicP/MicN so
+  only the chosen path is hot.
+- Hardware wiring: built-in mic → **left** ADC channel, jack → **right**
+  (device-tree routing), so each source carries signal on exactly one channel —
+  hence the single-channel meter per source.
+- Codec absent → `/api/sound/input/source` returns `cardPresent:false`; the picker
+  shows **"Not found"**, suppresses arrows, and gates OK / left-right
+  (`_codecPresent`).
+
+## Input-level meter (SSE)
+
+- A single 7 px **Input level** bar (transparent rect + black stroke) aligned to
+  the menu-row chip column; no L/R labels — it shows the active source's channel.
+- Fed by an `EventSource` on `/api/mic/level/stream`; the server pushes frames
+  from inside the arecord chunk handler (replaced the old ~50 ms XHR poll).
+  `EventSource` auto-reconnects on transport blips.
+- The meter **stays live while paused** (see Pause/resume).
+
+## Recording panel — free space & time-left
+
+- The panel shows free disk GB + an estimated time-left, refreshed **once a
+  minute** (faster just flickers between near-identical estimates); a one-shot
+  fetch on enter/start fills real numbers on the first frame.
+- `/api/record/status` returns `freeBytes` / `totalBytes`; the client turns the
+  selected format's bitrate into the time-left figure.
+
+## Pause / resume (real audio)
+
+- Pause actually halts capture (not UI-only). `_togglePause` →
+  `/api/record/{pause,resume}`.
+- **WAV**: the server keeps sox draining ALSA but **drops file writes** while
+  paused (`if (!recordPaused) { write + count bytes }`). Deliberate: sox keeps
+  reading the capture stream so the **mic-level meter keeps updating** while
+  paused — only the bytes-to-disk stop.
+- **MP3/OGG**: `SIGSTOP` / `SIGCONT` the sox + encoder processes.
+- The red LED and the status-bar dot both follow `_recording && !_paused` (see
+  `_applyRecordingLed`); the in-panel lamp swaps to the static `recording_pause`
+  icon while held.
+
+## Backgrounding & the App Switcher
+
+- `_isApp = true` + `RunningApps.open(...)` in `enter()` → Tab shows it as a card.
+  Pressing **Back** no longer stops the take: `exit()` leaves the server child
+  running (background recording, like Internet Radio) and keeps the red LED lit.
+- `exit()` captures a **static snapshot** of the last frame into the card
+  (`RunningApps.setSnapshot`, guarded by `window._lastRenderedScene === this`).
+  (A live/running-numbers card preview was built then **reverted** — the card is a
+  static snapshot taken only at the transition.)
+- The **only** stops for a take: in-app **Stop**, or an App Switcher **kill** —
+  the `RunningApps.open` onClose hook calls `_postStopRecord()` and clears
+  `_recorderBgState`.
+
+## Re-entry without the idle flash
+
+- Symptom: a fresh scene instance started idle and only showed the recording panel
+  after the async `/api/record/status` round-trip (~1.5 s) — a visible "reset to
+  start" flash.
+- Fix: module-level `_recorderBgState` survives between instances. `exit()` stashes
+  `{recording, paused, recordStartTime, pausedElapsed, serverFile,
+  recordingDisplayName, formatLabel}`; `enter()` calls `_applyBgStateSync()`
+  **synchronously** (before mic setup) so the first paint already shows the panel.
+  `_restoreRecordingState()` then reconciles against the server — refreshing
+  elapsed/file, or rolling back to idle (and nulling `_recorderBgState`) if the
+  take ended while away.
+
+## Files browser (`js/apps/voice_recorder_files.js`)
+
+- Opened from the recorder's **Files** button. Lists recordings with **durations**
+  (`fmtDuration` → `M:SS` / `H:MM:SS`); the server probes duration via `soxi -D`
+  (cached in `durationCacheMs`) so MP3 lengths work too.
+- **Breadcrumb**: full `folderPath` (from `/api/record/list`), left-truncated with
+  `…`, no `>` prefix.
+- **Scrollbar**: `UI.Scrollbar` (`update(total,visible,idx)` + `render(...)`),
+  `VISIBLE_COUNT = 4`.
+- Bottom **button strip**: Home (esc) / Record (edit → pop back to recorder) /
+  Edit (del) / Play (run); OK on a track opens the player.
+- **Edit modal**: rows **Rename / Delete / Sort** (center-aligned). Sort is a
+  `MenuDropdownLine` chip opening a gray popover (`SORT_OPTIONS`
+  `name-asc/desc`, `duration-desc/asc` → labels `A-Z / Z-A / Longest / Shortest`).
+  `_applySort` keeps the **selected file** selected. Re-pressing Edit while the
+  modal is open closes it.
+- **Rename**: opens `TextInputScreen` seeded with the current name; a `validate`
+  callback shows a live "Name already exists" warning and disables **Done** on a
+  duplicate. Keyboard skips the "Discard changes?" modal when text is unchanged.
+  Server: `/api/record/rename`.
+- **Delete**: Discard-style confirmation modal — "Delete" + filename on the next
+  line, **Cancel / Delete** buttons with **Cancel** auto-selected. Server:
+  `/api/record/delete`.
+
+## Built-in audio player (overlay)
+
+- Rendered **on top of** the Files list (not its own scene): a 228 × 48 panel at
+  x = 4, y = 41, centered progress bar, bottom row
+  `current-time / [< -10s] / play-pause / [+10s >] / total`.
+- **Real playback.** The server spawns `play` (sox) via `spawn('play', argv,
+  {env})` — **not** `exec` — with `AUDIODEV=plughw:<card>,0`. The Node server runs
+  as **root**, where ALSA `default` = pipewire is user-only and fails with "no
+  default audio device"; and `exec` runs via `/bin/sh -c` so SIGKILL would hit the
+  shell, not sox.
+- Pause/resume/seek use a **wait-for-exit** pattern (`_audioChildExit` promise
+  captured after `stopSound`) to dodge ALSA `EBUSY`; `_killAudioChild` SIGKILLs
+  and awaits exit before respawning at the new offset.
+- Volume widget (16 px rounded rect, vertical fill) on the right; up/down →
+  `/api/sound/volume` (control `Speaker`). Seek brackets are gray, flash `-Ns/+Ns`
+  on press, and **long-press accelerates** the step (+10 up to 60 every 500 ms via
+  `window.input.isHeld`).
+- Track end keeps the player open (OK replays); left soft-key = **Close**.
+- Server playback state: `audioPlay = {file, durationMs, startedAt, startOffsetMs,
+  playing, paused, pausedAtMs, completed, child}`. `playbackPositionMs()` uses a
+  `completed` flag (true only on a clean end-of-track exit) so the bar snaps to
+  full on natural end but not on a kill.
+
+## Status-bar recording indicator + pulse
+
+- Icon `Icons.records_status_bar` — a **7 × 7 solid grayscale disc** (corners
+  transparent so it reads round; interior filled fully opaque).
+- Drawn in `UI.drawStatusBar` (`js/ui.js`), appended to the **left** status
+  cluster after the wifi/ethernet icons, at `top` so it lines up with those 7 px
+  icons.
+- **Two flags, both owned by the recorder scene:**
+  - `window._voiceRecorderRecording` — set in `_applyRecordingLed()` to
+    `_recording && !_paused` (mirrors the LED: **hidden while paused**).
+  - `window._voiceRecorderForeground` — `true` in `enter()`, `false` in `exit()`.
+  - Dot shows only when `recording && !foreground` → **only while a take runs in
+    the background** (in the recorder you already see the take, so it's suppressed
+    there).
+- **Pulse**: `alpha = 0.35 + 0.65·(0.5 + 0.5·sin(now/250))` (~1.6 s breathe, never
+  fully gone). Applied via a new `alphaScale` arg on `FlipCanvas.drawSprite` /
+  `_drawGrayscaleSprite` (`opacity *= alphaScale`; grayscale path only,
+  backward-compatible). The animation is **self-perpetuating** — `drawStatusBar`
+  calls `window.requestRender()` whenever it paints the dot (the codebase's
+  "scene schedules its own next frame" pattern), so it animates in any scene and
+  stops on its own when the dot drops out.
+- The **same** pulse formula drives the in-panel `record_circle` lamp while
+  actively recording (in `record.js` render); the 33 ms record tick supplies the
+  repaints there.
+
+## Server endpoints (current — supersedes the v1 table)
+
+**Recording**
+| Endpoint | Method | Notes |
+|---|---|---|
+| `/api/record/list` | GET | `{ files:[{name,size,mtime,durationMs}], folderPath }` |
+| `/api/record/status` | GET | `{ recording, paused, file, format, elapsedMs, bytes, freeBytes, totalBytes }` |
+| `/api/record/start` | POST | builds a collision-free filename from template + format |
+| `/api/record/stop` | POST | idempotent |
+| `/api/record/pause` · `/api/record/resume` | POST | WAV drop-writes / MP3-OGG SIGSTOP-CONT |
+| `/api/record/formats` | GET | installed encoders → picker options |
+| `/api/record/install` | POST | encoder install (drives the modal) |
+| `/api/record/rename` · `/api/record/delete` | POST | file ops |
+| `/api/record/level` | GET | one-shot mic level |
+
+**Playback**
+| Endpoint | Method | Notes |
+|---|---|---|
+| `/api/record/play` | POST `{file, positionMs?}` | spawn `play` with `AUDIODEV` |
+| `/api/record/play/status` | GET | `{playing, paused, positionMs, durationMs, completed}` |
+| `/api/record/play/pause` · `/…/resume` · `/…/seek` | POST | wait-for-exit respawn |
+
+**Mic level + input routing**
+| Endpoint | Method | Notes |
+|---|---|---|
+| `/api/mic/level/start` · `/…/stop` | POST | start/stop the arecord monitor |
+| `/api/mic/level/stream` | GET (SSE) | pushes level frames |
+| `/api/sound/input/source` | GET / POST | `{source, cardPresent}` / set `builtin`\|`jack` |
+| `/api/sound/input/gain` | GET / POST | input gain |
+| `/api/sound/input/controls` | GET | raw amixer controls (diagnostics) |
+
 ## Known constraints / future work
 
-- **No live VU meter / waveform.** v1 ships with elapsed-time only. Adding a
-  meter would mean either (a) sox writing levels to stderr and parsing them, or
-  (b) a sidecar process that taps the same ALSA capture stream (which would
-  contend with the recording itself). The cleanest path is probably an SSE
-  endpoint backed by sox's `stats` effect on a tee — deferred.
-- **No rename / metadata.** Filenames are timestamps. If the user wants
-  human-readable labels, that needs the virtual keyboard flow plus a sidecar
-  metadata file (or rename the WAV). Not built.
-- **No length cap.** A recording will run until stopped. The eMMC has a few
-  GB free; a runaway recording at 32 KB/s would take ~9 hours to fill 1 GB.
-  A `--max-length` flag could be added if this becomes a real risk.
-- **Codec contention with playback.** Server-side, `startRecording()` calls
-  `stopSound()` first. There's no inverse — starting playback while recording
-  doesn't stop the recording. The hardware probably handles full-duplex but it
-  hasn't been exercised; the safer assumption is that one of the two will fail.
-- **Recording is not visible in the App Switcher.** `RecordingScene` doesn't
-  register with `RunningApps`, so Tab opens the switcher with whatever was on
-  top before the user navigated into Voice recorder. Recording continues
-  while the switcher is open (the scene is still on the stack); only popping
-  past it stops the capture.
+Resolved since v1: live level meter (input-level bar via SSE), rename (keyboard
++ `/api/record/rename`), and App Switcher visibility (the recorder is now an app
+and backgrounds a running take). Still open:
+
+- **No length cap.** A recording runs until stopped. eMMC has a few GB free; a
+  runaway take at 32 KB/s (WAV) takes ~9 hours to fill 1 GB. A `--max-length`
+  could be added if it becomes a real risk.
+- **No tag/metadata sidecar.** Filenames are now freely editable, but there's no
+  separate metadata store (artist/notes/etc.).
+- **Codec contention with capture.** `startRecording()` calls `stopSound()`
+  first; there's no inverse — starting playback while recording doesn't stop the
+  take. Full-duplex on this codec is untested; assume one side may fail.
+- **Status-bar dot can go stale.** The dot tracks `window._voiceRecorderRecording`,
+  which only updates from the recorder scene. If a backgrounded take ends
+  server-side (e.g. disk full) while you're in another app, the dot keeps pulsing
+  until you re-enter the recorder and `_restoreRecordingState()` reconciles —
+  same staleness window as the hardware LED.
+- **DJI / TRS stereo-from-jack (deferred).** Open hardware question: feeding
+  independent L/R from a TRS (not TRRS) source — the left channel came through
+  very quiet while right was fine. User deferred investigating; no code change yet.
 
 ## End-to-end test recipe
 
@@ -2618,9 +2847,9 @@ curl -X POST http://localhost:8899/api/record/start
 # ... speak into the mic ...
 curl -X POST http://localhost:8899/api/record/stop
 
-# Inspect the file
-LATEST=$(ls -t /flipperone-testing/sound/recordings/ | head -1)
-soxi /flipperone-testing/sound/recordings/$LATEST
+# Inspect the file (default dir is now voice_recordings/)
+LATEST=$(ls -t /flipperone-testing/sound/voice_recordings/ | head -1)
+soxi /flipperone-testing/sound/voice_recordings/$LATEST
 # Expect: 16000 Hz, mono, S16_LE, duration ≈ wallclock between start and stop
 
 # Play it back
