@@ -818,6 +818,123 @@ function getSoundFiles() {
     return files;
 }
 
+// Resolve a connector's preferred mode as "WxH NNHz". Resolution comes
+// from sysfs `modes` (first line = preferred); the refresh rate is
+// parsed from the EDID's preferred timing via edid-decode. Cached per
+// connector so edid-decode only runs when the resolution changes, not
+// on every status poll. Falls back to resolution-only if edid-decode
+// is unavailable.
+var hdmiModeCache = {};   // connName -> { res, mode }
+function getHdmiMode(connName, res) {
+    if (!res) return null;
+    var c = hdmiModeCache[connName];
+    if (c && c.res === res) return c.mode;
+    var mode = res;
+    try {
+        var out = execSync('edid-decode /sys/class/drm/' + connName + '/edid 2>/dev/null',
+            { encoding: 'utf8', timeout: 4000 });
+        var m = out.match(new RegExp(res + '\\s+([\\d.]+)\\s*Hz'));
+        if (m) mode = res + ' ' + Math.round(parseFloat(m[1])) + 'Hz';
+    } catch (e) {}
+    hdmiModeCache[connName] = { res: res, mode: mode };
+    return mode;
+}
+
+// DRM HDMI connector status from sysfs. Usually a single
+// card2-HDMI-A-1, but we scan every HDMI-A-N so a multi-output board
+// still reports correctly. `connected` is true if any HDMI connector
+// reads "connected". Note: a TV in standby may keep HPD asserted
+// (stays "connected") or drop it (flips to "disconnected") — this
+// reflects HPD only, not the TV's actual power state.
+function getHdmiStatus() {
+    var DRM_DIR = '/sys/class/drm';
+    var connectors = [];
+    var connected = false;
+    var resolution = null;
+    try {
+        var entries = fs.readdirSync(DRM_DIR);
+        for (var i = 0; i < entries.length; i++) {
+            if (!/-HDMI-A-\d+$/.test(entries[i])) continue;
+            var base = DRM_DIR + '/' + entries[i];
+            var status = 'unknown';
+            try { status = fs.readFileSync(base + '/status', 'utf8').trim(); } catch (e) {}
+            // This connector's `status` can stick at "unknown" after a
+            // hot-plug — it isn't the active display, so the kernel
+            // doesn't poll it. EDID presence is the reliable attach
+            // signal (it clears to 0 bytes on unplug), so treat
+            // EDID-present (and not explicitly "disconnected") as connected.
+            var edidBytes = 0;
+            try { edidBytes = fs.readFileSync(base + '/edid').length; } catch (e) {}
+            var isConn = (status === 'connected') || (status !== 'disconnected' && edidBytes > 0);
+            var res = null;
+            if (isConn) {
+                connected = true;
+                var res0 = null;
+                try {
+                    // First line of `modes` is the preferred/native mode.
+                    var modes = fs.readFileSync(base + '/modes', 'utf8').trim();
+                    if (modes) res0 = modes.split('\n')[0].trim() || null;
+                } catch (e) {}
+                res = getHdmiMode(entries[i], res0);   // adds " NNHz" when available
+                if (!resolution && res) resolution = res;
+            }
+            connectors.push({ name: entries[i], status: status, connected: isConn, resolution: res });
+        }
+    } catch (e) {}
+    return { connected: connected, resolution: resolution, connectors: connectors };
+}
+
+// TV Media Box runtime dependencies → the package that provides each.
+// cec-ctl: CEC control (v4l-utils); edid-decode: refresh-rate parsing.
+var TVMB_DEPS = [
+    { bin: 'cec-ctl',     pkg: 'v4l-utils' },
+    { bin: 'edid-decode', pkg: 'edid-decode' }
+];
+function missingDeps() {
+    var missing = [];
+    TVMB_DEPS.forEach(function(d) {
+        try { execSync('which ' + d.bin, { timeout: 2000 }); }
+        catch (e) { if (missing.indexOf(d.pkg) === -1) missing.push(d.pkg); }
+    });
+    return missing;
+}
+
+// Current HDMI-CEC adapter state, parsed from `cec-ctl`'s settings
+// dump. `installed`/`cecDevice` gate the dependency modal; `enabled`
+// is true once the adapter has claimed a CEC logical address (i.e.
+// it's configured as a playback device and live on the bus — which
+// also requires HDMI to be connected). All probes are best-effort.
+function getCecState() {
+    var state = { installed: false, cecDevice: false, enabled: false, physicalAddress: null, missing: [], depsOk: false };
+    state.missing = missingDeps();
+    state.depsOk  = state.missing.length === 0;
+    try { execSync('which cec-ctl', { timeout: 2000 }); state.installed = true; } catch (e) {}
+    try { state.cecDevice = fs.existsSync('/dev/cec0'); } catch (e) {}
+    if (state.installed && state.cecDevice) {
+        try {
+            var out = execSync('cec-ctl -d /dev/cec0', { encoding: 'utf8', timeout: 3000 });
+            var mask = out.match(/Logical Address Mask\s*:\s*(0x[0-9a-fA-F]+)/);
+            if (mask && parseInt(mask[1], 16) !== 0) state.enabled = true;
+            var pa = out.match(/Physical Address\s*:\s*([0-9a-fA-F.]+)/);
+            if (pa) state.physicalAddress = pa[1];
+        } catch (e) {}
+    }
+    return state;
+}
+
+// Query the TV's CEC power state (TV = logical address 0). Returns
+// 'on' | 'standby' | 'to-on' | 'to-standby', or null when the TV
+// doesn't reply (off / no CEC / not enabled).
+function getTvPower() {
+    try {
+        var out = execSync('cec-ctl -d /dev/cec0 --to 0 --give-device-power-status 2>&1',
+            { encoding: 'utf8', timeout: 4000 });
+        var m = out.match(/pwr-state:\s*([a-z-]+)/i);
+        if (m) return m[1];
+    } catch (e) {}
+    return null;
+}
+
 function playSoundFile(filename) {
     // Sanitize: only allow filenames, no path separators
     if (/[\/\\]/.test(filename)) return { success: false, error: 'Invalid filename' };
@@ -3219,6 +3336,127 @@ var server = http.createServer(function(req, res) {
     if (req.url === '/api/disk') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(diskCache));
+        return;
+    }
+    if (req.url === '/api/hdmi') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(getHdmiStatus()));
+        return;
+    }
+    // ── /api/cec/status ──────────────────────────────────────────
+    // Reports whether the cec-ctl CLI (v4l-utils) needed to query the
+    // TV over HDMI-CEC is installed, plus whether a CEC device node is
+    // present. TV Media Box polls this on enter() and gates an install
+    // modal behind a missing binary (mirrors /api/radio/status).
+    if (req.url === '/api/cec/status' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(getCecState()));
+        return;
+    }
+    // ── /api/cec/enable ──────────────────────────────────────────
+    // Configure the adapter as a CEC Playback device (claims a logical
+    // address) — equivalent to `cec-ctl -d /dev/cec0 --playback`. Runs
+    // as root, no sudo. Idempotent: re-running just re-claims. Returns
+    // the resulting `enabled` so the client can confirm immediately.
+    if (req.url === '/api/cec/enable' && req.method === 'POST') {
+        var enOk = false, enOut = '';
+        try {
+            enOut = execSync('cec-ctl -d /dev/cec0 --playback 2>&1', { encoding: 'utf8', timeout: 5000 });
+            enOk = true;
+        } catch (e) {
+            enOut = (e.stdout || '') + (e.stderr || '') + (e.message || '');
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: enOk, enabled: getCecState().enabled, output: enOut.slice(-500) }));
+        return;
+    }
+    // ── /api/cec/start-tv ────────────────────────────────────────
+    // Wake the TV and switch it to our input over CEC:
+    //   1. --to 0 --image-view-on   (TV is logical address 0 by CEC
+    //                                 standard; this powers it on)
+    //   2. --active-source phys-addr=<our PA>   (TV switches to our
+    //                                 HDMI input). Our physical address
+    //                                 is read LIVE from the adapter, not
+    //                                 hardcoded — it changes with the
+    //                                 HDMI port we're plugged into.
+    if (req.url === '/api/cec/start-tv' && req.method === 'POST') {
+        var st = getCecState();
+        if (!st.enabled) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, error: 'CEC not enabled' }));
+            return;
+        }
+        var tvOk = false, tvOut = '';
+        try {
+            tvOut += execSync('cec-ctl -d /dev/cec0 --to 0 --image-view-on 2>&1',
+                { encoding: 'utf8', timeout: 5000 });
+            var pa = st.physicalAddress;
+            if (pa && /^[0-9a-fA-F.]+$/.test(pa) && pa !== 'f.f.f.f') {
+                tvOut += execSync('cec-ctl -d /dev/cec0 --active-source phys-addr=' + pa + ' 2>&1',
+                    { encoding: 'utf8', timeout: 5000 });
+            }
+            tvOk = true;
+        } catch (e) {
+            tvOut += (e.stdout || '') + (e.stderr || '') + (e.message || '');
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: tvOk, physicalAddress: st.physicalAddress, output: tvOut.slice(-500) }));
+        return;
+    }
+    // ── /api/cec/tv-off ──────────────────────────────────────────
+    // Put the TV into standby via CEC: --to 0 --standby (0x36).
+    if (req.url === '/api/cec/tv-off' && req.method === 'POST') {
+        var ost = getCecState();
+        if (!ost.enabled) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, error: 'CEC not enabled' }));
+            return;
+        }
+        var offOk = false, offOut = '';
+        try {
+            offOut = execSync('cec-ctl -d /dev/cec0 --to 0 --standby 2>&1',
+                { encoding: 'utf8', timeout: 5000 });
+            offOk = true;
+        } catch (e) {
+            offOut = (e.stdout || '') + (e.stderr || '') + (e.message || '');
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: offOk, output: offOut.slice(-500) }));
+        return;
+    }
+    // ── /api/cec/tv-power ────────────────────────────────────────
+    // Live TV power state over CEC: { power: 'on'|'standby'|'to-on'|
+    // 'to-standby'|null }. Used to verify the TV woke after Start TV.
+    if (req.url === '/api/cec/tv-power' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ power: getTvPower() }));
+        return;
+    }
+    // ── /api/cec/install ─────────────────────────────────────────
+    // Installs v4l-utils (provides cec-ctl) via apt-get. Same shape as
+    // /api/radio/install: root server, noninteractive, lean, last 1000
+    // chars of output returned so the client can surface failures.
+    if (req.url === '/api/cec/install' && req.method === 'POST') {
+        var pkgs = missingDeps();
+        var cecOk = false;
+        var cecOut = '';
+        if (pkgs.length === 0) {
+            cecOk = true;
+            cecOut = 'already installed';
+        } else {
+            try {
+                // All missing deps in a single apt-get transaction.
+                cecOut = execSync(
+                    'DEBIAN_FRONTEND=noninteractive apt-get install -y ' +
+                    '--no-install-recommends ' + pkgs.join(' ') + ' 2>&1',
+                    { encoding: 'utf8', timeout: 90000 });
+                cecOk = true;
+            } catch (e) {
+                cecOut = (e.stdout || '') + (e.stderr || '') + (e.message || '');
+            }
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: cecOk, output: cecOut.slice(-1000) }));
         return;
     }
     if (req.url === '/api/sound/files') {

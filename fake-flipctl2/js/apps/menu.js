@@ -282,9 +282,13 @@ var MenuScene = (function() {
                                  icon:         null,
                                  iconAnimated: (typeof AnimatedIcons !== 'undefined')
                                      ? AnimatedIcons.walkie_talkie
-                                     : null }
+                                     : null },
+            'TV Media Box':    { factory:      function(sm) { return new TVMediaBoxScene(sm); },
+                                 icon:         (typeof Icons !== 'undefined')
+                                     ? Icons.tv_media_box : null,
+                                 iconAnimated: null }
         };
-        var order = ['Internet radio', 'Voice recorder', 'Walkie Talkie'];
+        var order = ['Internet radio', 'Voice recorder', 'Walkie Talkie', 'TV Media Box'];
 
         var factories = {};
         order.forEach(function(name) {
