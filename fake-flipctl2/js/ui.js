@@ -462,8 +462,15 @@ var UI = (function() {
         };
     }
 
+    // Hard cap on app-defined bottom-bar button width: one 48px slot.
+    // Clamped in the constructors so both the stored width and the
+    // self-positioning (RightButton anchors at screenW - w) use the
+    // capped value.
+    var MAX_BTN_W = 48;
+
     // index — slot position (0..N-1), gap — px between buttons
     function MiddleButton(text, index, w, gap, action, onPress) {
+        if (w > MAX_BTN_W) w = MAX_BTN_W;
         this.text    = text;
         this.x       = index * (w + gap);
         this.w       = w;
@@ -476,6 +483,7 @@ var UI = (function() {
 
     // Left button — always flush with left screen edge (x = 0)
     function LeftButton(text, w, action, onPress) {
+        if (w > MAX_BTN_W) w = MAX_BTN_W;
         this.text    = text;
         this.x       = 0;
         this.w       = w;
@@ -488,6 +496,7 @@ var UI = (function() {
 
     // Right button — always flush with right screen edge (x = screenW - w)
     function RightButton(text, w, action, onPress, screenW) {
+        if (w > MAX_BTN_W) w = MAX_BTN_W;
         this.text    = text;
         this.x       = (screenW || 256) - w;
         this.w       = w;

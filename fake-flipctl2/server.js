@@ -899,6 +899,66 @@ function missingDeps() {
     return missing;
 }
 
+// Preset launcher — child process currently rendering to HDMI
+// (kodi-standalone, weston, etc.). Single slot: launching a new
+// preset SIGTERMs the old one first. We spawn under `su - user`
+// because Kodi refuses to run as root, and weston is happier as
+// a non-root user too.
+var tvmbPresetChild = null;
+var tvmbPresetName  = null;   // 'Kodi TV' | 'Linux Desktop' | null
+// Preset name → shell command. Each command is invoked via
+// `sh -c` so we can pipe through `su` and pick up the user's
+// XDG/runtime dirs.
+var TVMB_PRESET_CMD = {
+    // Kodi as a Wayland client inside the running KDE session. The
+    // `su - login` does NOT inherit XDG_RUNTIME_DIR here, so we set it
+    // explicitly — without it libwayland can't find the socket and
+    // Kodi falls back to GBM, which collides with KWin on the HDMI
+    // and renders nothing. WAYLAND_DISPLAY picks the session's socket.
+    'Kodi TV':       "su - user -c 'XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 kodi'",
+    'Linux Desktop': "su - user -c 'weston'"
+    // 'AirPlay' deferred — needs a video-capable RPiPlay/uxplay
+    // build and TBD audio routing.
+};
+function stopPreset() {
+    if (tvmbPresetChild) {
+        try { tvmbPresetChild.kill('SIGTERM'); } catch (e) {}
+        tvmbPresetChild = null;
+        tvmbPresetName  = null;
+    }
+    // The tracked handle can't reach Kodi once `su - login` detaches it
+    // into its own session, so reap by process NAME with killall. The
+    // names match comm exactly — `kodi` (the launcher) and `kodi.bin`
+    // (the binary) — never a bystander that merely mentions "kodi" in
+    // its arguments (an editor, a `grep kodi`). SIGTERM (killall's
+    // default) lets Kodi shut down cleanly and leaves no core dump, so
+    // /usr/bin/kodi's crash-restart loop won't respawn it.
+    try { execSync('killall kodi.bin kodi', { timeout: 2000 }); } catch (e) {}
+}
+function startPreset(presetName) {
+    var cmd = TVMB_PRESET_CMD[presetName];
+    if (!cmd) return { success: false, error: 'Unknown / unsupported preset: ' + presetName };
+    stopPreset();
+    try {
+        var child = spawn('sh', ['-c', cmd], { detached: true, stdio: 'ignore' });
+        child.unref();
+        // If the child dies on its own (crash, missing binary,
+        // user-side weston exits), clear our slot so a subsequent
+        // Start request spawns fresh instead of being a silent no-op.
+        child.on('exit', function() {
+            if (tvmbPresetChild === child) {
+                tvmbPresetChild = null;
+                tvmbPresetName  = null;
+            }
+        });
+        tvmbPresetChild = child;
+        tvmbPresetName  = presetName;
+        return { success: true, preset: presetName };
+    } catch (e) {
+        return { success: false, error: (e.message || String(e)) };
+    }
+}
+
 // Current HDMI-CEC adapter state, parsed from `cec-ctl`'s settings
 // dump. `installed`/`cecDevice` gate the dependency modal; `enabled`
 // is true once the adapter has claimed a CEC logical address (i.e.
@@ -930,6 +990,31 @@ function getTvPower() {
         var out = execSync('cec-ctl -d /dev/cec0 --to 0 --give-device-power-status 2>&1',
             { encoding: 'utf8', timeout: 4000 });
         var m = out.match(/pwr-state:\s*([a-z-]+)/i);
+        if (m) return m[1];
+    } catch (e) {}
+    return null;
+}
+
+// "Is the TV on the CEC bus" probe. Reuses getTvPower's
+// give-device-power-status query — only a real CEC device writes
+// "pwr-state: …" to stdout, so a non-null return is a reliable
+// "TV is on the bus" signal. PC monitors / non-CEC screens
+// produce no such field.
+function isTvPresent() {
+    return getTvPower() !== null;
+}
+
+// Ask the CEC bus which device is currently the active source —
+// the one whose HDMI input the TV is actually displaying. Returns
+// the physical address ('1.0.0.0', '2.0.0.0', …) the active source
+// broadcasts back. null if the TV doesn't reply (e.g. it's on its
+// own tuner / smart-TV apps, or we already ARE the active source
+// and no other device claims it).
+function getActiveSource() {
+    try {
+        var out = execSync('cec-ctl -d /dev/cec0 --request-active-source 2>&1',
+            { encoding: 'utf8', timeout: 3000 });
+        var m = out.match(/phys-addr:\s*([0-9a-fA-F.]+)/);
         if (m) return m[1];
     } catch (e) {}
     return null;
@@ -3432,6 +3517,33 @@ var server = http.createServer(function(req, res) {
         res.end(JSON.stringify({ power: getTvPower() }));
         return;
     }
+    // ── /api/cec/active-source ───────────────────────────────────
+    // Returns the TV's currently displayed source and our adapter's
+    // physical address, plus a convenience boolean for whether we
+    // are the active one. Used by the client to prompt the user
+    // when the TV is showing something other than us.
+    if (req.url === '/api/cec/active-source' && req.method === 'GET') {
+        var asState = getCecState();
+        var tvPa    = getActiveSource();
+        var ourPa   = asState.physicalAddress;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            tvPhysicalAddress:  tvPa,
+            ourPhysicalAddress: ourPa,
+            isUs: !!(tvPa && ourPa && tvPa === ourPa)
+        }));
+        return;
+    }
+    // ── /api/cec/tv-present ──────────────────────────────────────
+    // Cheap CEC bus ping → { present: bool }. ACK from logical
+    // address 0 ⇒ TV is on the bus and supports CEC. Client polls
+    // this during connect-time detection; once positive, support
+    // is sticky for the HDMI session (no more probes needed).
+    if (req.url === '/api/cec/tv-present' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ present: isTvPresent() }));
+        return;
+    }
     // ── /api/cec/install ─────────────────────────────────────────
     // Installs v4l-utils (provides cec-ctl) via apt-get. Same shape as
     // /api/radio/install: root server, noninteractive, lean, last 1000
@@ -3457,6 +3569,57 @@ var server = http.createServer(function(req, res) {
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: cecOk, output: cecOut.slice(-1000) }));
+        return;
+    }
+    // ── /api/tvmb/start ──────────────────────────────────────────
+    // Spawn the binary for the requested preset (Kodi / weston / …)
+    // and route its output to HDMI. Replaces any preset already
+    // running. Returns { success, preset } on launch, or
+    // { success: false, error } when the preset is unknown or the
+    // spawn itself fails synchronously (e.g. /bin/sh missing).
+    // A binary that's installed-but-missing-runtime-deps will spawn
+    // OK here and die in the child; the exit handler clears state.
+    if (req.url === '/api/tvmb/start' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            var preset = data && data.preset;
+            var result = startPreset(preset);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(result));
+        });
+        return;
+    }
+    // ── /api/tvmb/stop ───────────────────────────────────────────
+    // SIGTERM whatever preset child we're currently tracking.
+    // Idempotent — returns success even if nothing was running.
+    if (req.url === '/api/tvmb/stop' && req.method === 'POST') {
+        stopPreset();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+        return;
+    }
+    // ── /api/tvmb/status ─────────────────────────────────────────
+    // { running, preset } — tells the client which preset (if any)
+    // is currently spawned. Survives across HTTP requests because
+    // the child handle lives in module scope.
+    if (req.url === '/api/tvmb/status' && req.method === 'GET') {
+        // kodiRunning is a *truthful* probe via `pgrep -a kodi`. The
+        // tracked-child handle (tvmbPresetChild) misses Kodi instances
+        // that get orphaned/reparented, so we ask the OS directly.
+        // pgrep exits 0 when >=1 match, 1 when none (throws). The `-a`
+        // only changes stdout formatting; we rely solely on exit code.
+        var kodiRunning = false;
+        try {
+            execSync('pgrep -a kodi', { timeout: 2000 });
+            kodiRunning = true;
+        } catch (e) {
+            kodiRunning = false;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            running:     !!tvmbPresetChild,
+            preset:      tvmbPresetName,
+            kodiRunning: kodiRunning
+        }));
         return;
     }
     if (req.url === '/api/sound/files') {
