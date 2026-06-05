@@ -206,6 +206,7 @@ var MenuScene = (function() {
             'Screen Keyboard',
             'Network LEDs',
             'Sound',
+            'UIinput forwarding',
             'Figma live preview',
             'GPIO',
             'Switch to fake-flipctl'
@@ -217,6 +218,7 @@ var MenuScene = (function() {
             'Screen Keyboard': function() { return new KeyboardTestScene(); },
             'Network LEDs': function() { return new NetworkLedsScene(sm); },
             'Sound': function() { return new SoundMenuScene(sm); },
+            'UIinput forwarding': function() { return new UIInputForwardingScene(sm); },
             'Figma live preview': function() { return new FigmaLivePreviewScene(sm); },
             'Switch to fake-flipctl': function() {
                 fetch('/api/switch/flipctl', { method: 'POST' });

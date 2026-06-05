@@ -1338,6 +1338,58 @@ function stopMicLevelMonitor() {
     return stopMicLevelMonitorLowLevel();
 }
 
+// ── UI input forwarding ──────────────────────────────────────
+// Runs the python-evdev forwarder scripts under ../scripts that
+// clone the Flipper One's key / touchpad evdev devices onto a
+// uinput device on seat0. Start = detached background run
+// (`nohup … &`) so the forwarder survives this request and the
+// node server; stop = `pkill -f`; status = `pgrep -f`. These
+// mirror the manual commands exactly:
+//   sudo nohup python3 forward-keys.py > /dev/null 2>&1 &
+//   sudo pkill -f forward-keys.py
+var SCRIPTS_DIR = path.join(BASE, '..', 'scripts');
+
+function forwardScriptName(kind) {
+    return 'forward-' + (kind === 'touchpad' ? 'touchpad' : 'keys') + '.py';
+}
+
+function startForward(kind) {
+    if (kind !== 'keys' && kind !== 'touchpad') {
+        return { success: false, error: 'Invalid kind' };
+    }
+    var script = forwardScriptName(kind);
+    if (!fs.existsSync(path.join(SCRIPTS_DIR, script))) {
+        return { success: false, error: 'Script not found' };
+    }
+    // Detached so it keeps running independently. cwd = scripts
+    // dir so the bare script name resolves (matches the manual
+    // command). Fire-and-forget — `&` makes the shell return at
+    // once; the python process is reparented to init.
+    exec('sudo nohup python3 ' + script + ' > /dev/null 2>&1 &',
+        { cwd: SCRIPTS_DIR }, function() {});
+    return { success: true };
+}
+
+function stopForward(kind) {
+    if (kind !== 'keys' && kind !== 'touchpad') {
+        return { success: false, error: 'Invalid kind' };
+    }
+    exec('sudo pkill -f ' + forwardScriptName(kind), function() {});
+    return { success: true };
+}
+
+// Is a forwarder currently running? Uses `pgrep -f` with the
+// classic bracket trick on the first letter ([f]orward-…) so the
+// pgrep command's own shell — whose argv contains the pattern —
+// isn't counted as a match.
+function isForwardRunning(kind, cb) {
+    var script = forwardScriptName(kind);                    // forward-keys.py
+    var pat    = '[' + script.charAt(0) + ']' + script.slice(1);  // [f]orward-keys.py
+    exec('pgrep -f "' + pat + '"', function(err, stdout) {
+        cb(!!(stdout && String(stdout).trim()));
+    });
+}
+
 // ── Internet radio streaming ─────────────────────────────────────
 // mpg123 streams MP3/Shoutcast/Icecast directly over HTTP, so the
 // radio scene can hand us a URL and we hand it straight to a
@@ -4326,6 +4378,46 @@ var server = http.createServer(function(req, res) {
         req.on('error', drop);
         res.on('close', drop);
         res.on('error', drop);
+        return;
+    }
+    // ── /api/forward/status ─────────────────────────────────────
+    // Which forwarders are actually running (pgrep-based).
+    if (req.url === '/api/forward/status' && req.method === 'GET') {
+        var st = {};
+        var pending = 2;
+        var finish = function(kind, running) {
+            st[kind] = running;
+            if (--pending === 0) {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(st));
+            }
+        };
+        isForwardRunning('keys',     function(r) { finish('keys', r); });
+        isForwardRunning('touchpad', function(r) { finish('touchpad', r); });
+        return;
+    }
+    // ── /api/forward/start ──────────────────────────────────────
+    // Body: { kind: 'keys'|'touchpad' }. Launches the matching
+    // forwarder script detached (nohup &).
+    if (req.url === '/api/forward/start' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            var kind = data && data.kind;
+            var fr = startForward(kind);
+            res.writeHead(fr.success ? 200 : 400,
+                          { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(fr));
+        });
+        return;
+    }
+    // ── /api/forward/stop ───────────────────────────────────────
+    // Body: { kind: 'keys'|'touchpad' }. Kills that forwarder.
+    if (req.url === '/api/forward/stop' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            var kind = data && data.kind;
+            var sr = stopForward(kind);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(sr));
+        });
         return;
     }
     // ── /api/radio/install ──────────────────────────────────────
