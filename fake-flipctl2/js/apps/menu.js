@@ -199,7 +199,7 @@ var MenuScene = (function() {
     function testingMenu(sm) {
         return new SubMenuScene(sm, 'Testing', [
             'Screen',
-            'Boot menu - UI demo',
+            'UI Demos',
             'Input',
             'Touchpad',
             'Touchpad ABS',
@@ -211,7 +211,7 @@ var MenuScene = (function() {
             'Switch to fake-flipctl'
         ], {
             'Screen': function() { return new ScreenTestScene(); },
-            'Boot menu - UI demo': function() { return new UIDemoScene(sm); },
+            'UI Demos': function() { return demoMenu(sm); },
             'Touchpad': function() { return new TouchpadTestScene(); },
             'Touchpad ABS': function() { return new TouchpadAbsScene(); },
             'Screen Keyboard': function() { return new KeyboardTestScene(); },
@@ -222,6 +222,19 @@ var MenuScene = (function() {
                 fetch('/api/switch/flipctl', { method: 'POST' });
                 return null;
             }
+        });
+    }
+
+    // Testing → UI Demos bucket. Hosts the design-only UI demo
+    // scenes we don't want polluting the top of the Testing
+    // submenu. Add new "* - UI demo" entries here as they land.
+    function demoMenu(sm) {
+        return new SubMenuScene(sm, 'UI Demos', [
+            'Boot menu - UI demo',
+            'Power menu - UI demo'
+        ], {
+            'Boot menu - UI demo':  function() { return new UIDemoScene(sm); },
+            'Power menu - UI demo': function() { return new PowerMenuUIDemoScene(sm); }
         });
     }
 

@@ -49,9 +49,11 @@ var SubMenuScene = (function() {
             'Fake-FlipCTL_2': true
         };
 
-        // Container top sits 16px below the status bar (breadcrumb row
-        // spans the area between status bar and container).
-        this.containerY   = UI.STATUS_BAR_H + 16;
+        // Container top sits 15px below the status bar (breadcrumb row
+        // spans the area between status bar and container). Was 16,
+        // then lifted to 14 to fit an extra row above a bottom app
+        // button; nudged back down 1px to 15.
+        this.containerY   = UI.STATUS_BAR_H + 15;
         this.breadcrumbX  = 4;
         this.breadcrumbY  = UI.STATUS_BAR_H + 2;
 
@@ -84,6 +86,76 @@ var SubMenuScene = (function() {
 
         this.scrollbar = new UI.Scrollbar(items.length, VISIBLE_COUNT, this.scrollOffset);
     }
+
+    // Force a fixed breadcrumb trail instead of the stack-derived
+    // one. Used by self-contained demo flows (e.g. the Power-menu
+    // UI demo's Settings submenu) that want a clean "> Settings"
+    // crumb rather than inheriting the long Testing → UI Demos →
+    // … path that led there. Pass an array of crumb titles; render
+    // joins them with " > " and prefixes "> ".
+    SubMenuScene.prototype.setBreadcrumbTrail = function(titles) {
+        this._breadcrumbTrail = titles && titles.length ? titles.slice() : null;
+    };
+
+    // Suppress the top status bar for this instance only. Default
+    // is to draw it (every existing submenu keeps it); the
+    // Power-menu UI demo's Settings page opts out so it reads as a
+    // clean breadcrumb-over-white page with no chrome strip.
+    SubMenuScene.prototype.setHideStatusBar = function(hide) {
+        this._hideStatusBar = !!hide;
+    };
+
+    // Install a custom header renderer for this instance. When set,
+    // it's called with (canvas) in place of the default status bar
+    // — the Power-menu UI demo passes its own chrome (dev label +
+    // battery on white) so its Settings page matches the demo's
+    // main screen. Implies hiding the default status bar.
+    SubMenuScene.prototype.setHeaderRenderer = function(fn) {
+        this._headerRenderer = (typeof fn === 'function') ? fn : null;
+    };
+
+    // Attach an app-defined button (any UI.{Left,Right,Middle}Button
+    // instance) rendered along the bottom row for this instance
+    // only. Its `action` is matched in handleInput; the existing
+    // back/esc → pop path already covers an ESC button, so this is
+    // primarily a visual affordance. Pass null to clear.
+    SubMenuScene.prototype.setAppButton = function(button) {
+        this._appButton = button || null;
+    };
+
+    // Make the 'run' action (B key) a no-op for this instance.
+    // SubMenuScene normally aliases run → ok (select the row); the
+    // Power-menu demo's Settings page wants B to do nothing, while
+    // 'ok' (center / Enter) still selects. Other submenus leave
+    // this unset and keep the run-as-ok behaviour.
+    SubMenuScene.prototype.setIgnoreRun = function(ignore) {
+        this._ignoreRun = !!ignore;
+    };
+
+    // Make the 'esc' action (Z key) pop the stack all the way back
+    // to `targetScene` in one press, instead of the default single
+    // pop. Used by the Power-menu demo so ESC returns to its main
+    // screen no matter how deep into Settings → … the user is.
+    // 'back' (Escape / Backspace keys) still single-pops.
+    SubMenuScene.prototype.setEscTarget = function(targetScene) {
+        this._escTarget = targetScene || null;
+    };
+
+    // Bottom-button geometry. The bottom app button is 14 px tall
+    // — shorter than a 20 px menu row — so with the container
+    // lifted 2 px the full VISIBLE_COUNT rows fit above it (the
+    // last row's bottom padding just meets the button's top edge).
+    // We only shorten the scrollbar so its track doesn't run under
+    // the button.
+    var APP_BUTTON_H = 14;
+    SubMenuScene.prototype._visibleCount = function() {
+        return VISIBLE_COUNT;
+    };
+    SubMenuScene.prototype._scrollbarHeight = function() {
+        return this._appButton
+            ? (SCROLLBAR_H - APP_BUTTON_H - 1)
+            : SCROLLBAR_H;
+    };
 
     // Mark this submenu as an "app" — it then participates in the
     // App Switcher exactly like a PlaceholderAppScene: enter()
@@ -134,10 +206,11 @@ var SubMenuScene = (function() {
     };
 
     SubMenuScene.prototype._ensureVisible = function() {
+        var vis = this._visibleCount();
         if (this.selectedIndex < this.scrollOffset) {
             this.scrollOffset = this.selectedIndex;
-        } else if (this.selectedIndex >= this.scrollOffset + VISIBLE_COUNT) {
-            this.scrollOffset = this.selectedIndex - VISIBLE_COUNT + 1;
+        } else if (this.selectedIndex >= this.scrollOffset + vis) {
+            this.scrollOffset = this.selectedIndex - vis + 1;
         }
     };
 
@@ -161,13 +234,28 @@ var SubMenuScene = (function() {
             return;
         }
 
+        // Per-instance opt-out: swallow the 'run' (B) action so it
+        // does nothing. 'ok' (center / Enter) still selects.
+        if (action === 'run' && this._ignoreRun) {
+            return;
+        }
+
         var n = this.items.length;
 
-        // Left/right toggle: any row whose MenuLine defines `onToggle`
-        // (set by the submenu's owner at construction time).
+        // Left/right on a row that defines either `onToggle` (flip a
+        // boolean) or `onAdjust(direction)` (cycle / step a value).
+        // `onAdjust` gets the direction so it can step up vs down;
+        // `onToggle` is direction-agnostic. Both flash the pressed
+        // chevron for 120ms.
         var selectedItem = this.items[this.selectedIndex];
-        if ((action === 'left' || action === 'right') && typeof selectedItem.onToggle === 'function') {
-            selectedItem.onToggle();
+        if ((action === 'left' || action === 'right')
+                && (typeof selectedItem.onToggle === 'function'
+                    || typeof selectedItem.onAdjust === 'function')) {
+            if (typeof selectedItem.onAdjust === 'function') {
+                selectedItem.onAdjust(action);
+            } else {
+                selectedItem.onToggle();
+            }
             // Visual tap feedback on the pressed chevron — 120ms in
             // #222222, then reverts to the normal status colour. 120ms
             // is long enough to be visible past the rAF cadence and
@@ -204,8 +292,13 @@ var SubMenuScene = (function() {
             this._ensureVisible();
         } else if (action === 'ok' || action === 'run') {
             // Toggle rows flip their value on enter — no press flash,
-            // no scene push (same behaviour as left/right).
+            // no scene push (same behaviour as left/right). Adjust
+            // rows (left/right value steppers) ignore OK entirely so
+            // it doesn't trigger the press-flash / factory path.
             var pressedLine = this.items[this.selectedIndex];
+            if (typeof pressedLine.onAdjust === 'function') {
+                return;
+            }
             if (typeof pressedLine.onToggle === 'function') {
                 pressedLine.onToggle();
                 if (window.requestRender) window.requestRender();
@@ -233,22 +326,63 @@ var SubMenuScene = (function() {
                 if (window.requestRender) window.requestRender();
             }, 30);
         } else if (action === 'back' || action === 'esc') {
+            // ESC with a target set: pop straight back to it in one
+            // press (e.g. Power-menu demo → main screen from any
+            // depth). Done in-place via sceneManager.pop() rather
+            // than returning 'pop', so we control how many levels
+            // unwind. 'back' always single-pops.
+            if (action === 'esc' && this._escTarget && this.sceneManager) {
+                var smRef = this.sceneManager;
+                var guard = 0;
+                while (smRef.current()
+                        && smRef.current() !== this._escTarget
+                        && guard < 32) {
+                    var cur = smRef.current();
+                    smRef.pop();
+                    if (smRef.current() === cur) break;  // hit root
+                    guard++;
+                }
+                if (window.requestRender) window.requestRender();
+                return;
+            }
             return 'pop';
         }
     };
 
     SubMenuScene.prototype.render = function(canvas) {
         canvas.clear('#fff');
-        UI.drawStatusBar(canvas, '');
+        // Header: a custom renderer takes precedence (e.g. the
+        // Power-menu demo's dev-label + battery chrome); otherwise
+        // the default status bar draws unless this instance opted
+        // out via setHideStatusBar(true). The breadcrumb + item
+        // layout anchors are unchanged in every case.
+        if (this._headerRenderer) {
+            this._headerRenderer(canvas);
+        } else if (!this._hideStatusBar) {
+            UI.drawStatusBar(canvas, '');
+        }
 
-        // Breadcrumb: "> Title", left-aligned, in the canonical accent
-        // gray. No background fill.
-        HaxrcorpFont16.draw(canvas.ctx, '> ' + this.title, this.breadcrumbX, this.breadcrumbY, '#CCCCCC');
+        // Breadcrumb: full "> A > B > …" trail built from every
+        // scene on the stack that contributes a `breadcrumbTitle`
+        // (Desktop / Main Menu contribute none, so a top-level
+        // submenu reads "> Testing" while a nested one reads
+        // "> Testing > Demo"). Falls back to this submenu's own
+        // title if the SceneManager isn't reachable. Left-aligned,
+        // canonical accent gray, no background fill.
+        var crumbTitles = this._breadcrumbTrail
+            || ((this.sceneManager
+                    && typeof this.sceneManager.breadcrumb === 'function')
+                ? this.sceneManager.breadcrumb()
+                : [this.title]);
+        if (!crumbTitles || !crumbTitles.length) crumbTitles = [this.title];
+        var crumbTrail = '> ' + crumbTitles.join(' > ');
+        HaxrcorpFont16.draw(canvas.ctx, crumbTrail, this.breadcrumbX, this.breadcrumbY, '#CCCCCC');
 
         // Selector width tracks scrollbar visibility; the gray divider
         // matches the selector's straight edge (width − 2×radius).
+        var vis = this._visibleCount();
         var total = this.items.length;
-        var hasScroll = total > VISIBLE_COUNT;
+        var hasScroll = total > vis;
         var selectorW = hasScroll ? SELECTOR_W_WITH_SCROLL : SELECTOR_W_NO_SCROLL;
         var dividerX = SELECTOR_X + SELECTOR_CORNER_R;
         var dividerW = selectorW - 2 * SELECTOR_CORNER_R;
@@ -262,7 +396,7 @@ var SubMenuScene = (function() {
 
         // Render only the slice of items currently in the viewport.
         var first = this.scrollOffset;
-        var last = Math.min(total, first + VISIBLE_COUNT);
+        var last = Math.min(total, first + vis);
         var y = this.containerY;
         var selectedLineY = this.containerY;
         for (var i = first; i < last; i++) {
@@ -289,9 +423,16 @@ var SubMenuScene = (function() {
             this.items[this.selectedIndex].render(canvas, CONTAINER_X, selectedLineY);
         }
 
-        // Scrollbar (same geometry as main menu).
-        this.scrollbar.update(total, VISIBLE_COUNT, this.scrollOffset);
-        this.scrollbar.render(canvas, SCROLLBAR_X, SCROLLBAR_Y, SCROLLBAR_H, SCROLLBAR_THUMB_PAD);
+        // Scrollbar (same geometry as main menu). Height shrinks
+        // when an app button occupies the bottom row so the track
+        // never runs under the button.
+        this.scrollbar.update(total, vis, this.scrollOffset);
+        this.scrollbar.render(canvas, SCROLLBAR_X, SCROLLBAR_Y, this._scrollbarHeight(), SCROLLBAR_THUMB_PAD);
+
+        // App-defined bottom button (per-instance; e.g. the
+        // Power-menu demo Settings page's ESC). Drawn over the
+        // item list, below the modal overlay.
+        if (this._appButton) this._appButton.render(canvas);
 
         // Modal overlay on top of everything.
         if (this._modal) this._modal.render(canvas);

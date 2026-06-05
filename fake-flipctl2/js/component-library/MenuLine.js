@@ -166,7 +166,8 @@ var MenuLine = (function() {
             var statusColor = this.state === STATE_PRESSED
                 ? textColor
                 : (active ? '#000' : '#999999');
-            if (status === '< ON >' || status === '< OFF >') {
+            if ((status === '< ON >' || status === '< OFF >')
+                    && typeof this.onAdjust !== 'function') {
                 // Toggle-style status: show the `< value >` layout only
                 // while the row is highlighted (SELECTED or PRESSED) —
                 // the arrows are an affordance for the left/right
@@ -197,6 +198,41 @@ var MenuLine = (function() {
                 } else {
                     var dimW = statusFont.textWidth(midTxt);
                     statusFont.draw(canvas.ctx, midTxt, x + this.w - dimW - STATUS_PAD_R, textY, statusColor);
+                }
+            } else if (/^<\s*[\s\S]+\s*>$/.test(status)) {
+                // Generic "< value >" cycle / adjust affordance —
+                // any bracketed value that isn't the ON/OFF toggle
+                // above (e.g. "< 10 sec >", "< 50% >", "< Never >").
+                // Spread arrows around the value while the row is
+                // highlighted (so left/right reads as adjustable);
+                // collapse to the value alone, right-aligned, when
+                // not highlighted. Arrows tap-flash in #222 via
+                // arrowPressed, same as the toggle path.
+                var gMid    = status.replace(/^<\s*/, '').replace(/\s*>$/, '');
+                var gRightX = x + this.w - STATUS_PAD_R;
+                if (active) {
+                    var gSpacing = 6;
+                    var gLtW  = statusFont.textWidth('<');
+                    var gGtW  = statusFont.textWidth('>');
+                    var gMidW = statusFont.textWidth(gMid);
+                    var gGtX  = gRightX - gGtW;
+                    var gMidX = gGtX - gSpacing - gMidW;
+                    var gLtX  = gMidX - gSpacing - gLtW;
+                    var gLtColor = this.arrowPressed === 'left'  ? '#222222' : statusColor;
+                    var gGtColor = this.arrowPressed === 'right' ? '#222222' : statusColor;
+                    // Hide the left arrow at the value's low end and
+                    // the right arrow at its high end — the row
+                    // exposes optional atStart() / atEnd() predicates
+                    // for this. The value keeps its position either
+                    // way; only the arrow glyph is suppressed.
+                    var hideLt = (typeof this.atStart === 'function') && this.atStart();
+                    var hideGt = (typeof this.atEnd   === 'function') && this.atEnd();
+                    if (!hideLt) statusFont.draw(canvas.ctx, '<', gLtX, textY, gLtColor);
+                    statusFont.draw(canvas.ctx, gMid, gMidX, textY, statusColor);
+                    if (!hideGt) statusFont.draw(canvas.ctx, '>', gGtX, textY, gGtColor);
+                } else {
+                    var gDimW = statusFont.textWidth(gMid);
+                    statusFont.draw(canvas.ctx, gMid, gRightX - gDimW, textY, statusColor);
                 }
             } else {
                 var sw = statusFont.textWidth(status);

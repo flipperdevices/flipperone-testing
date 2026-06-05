@@ -382,32 +382,49 @@ var UI = (function() {
             if (typeof window.requestRender === 'function') window.requestRender();
         }
 
-        // Battery sprite (16x9) + percentage, right-aligned.
-        var pctStr = batteryLevel >= 0 ? batteryLevel + '%' : '--%';
+        // Battery sprite (16x9) + percentage, right-aligned. Shares
+        // the standalone drawBattery() helper so scenes that want
+        // just the battery glyph (no full bar) get identical pixels.
+        drawBattery(canvas, fg, top);
+    }
+
+    // Battery cluster — percentage text + 16x9 sprite + level bar +
+    // optional charging bolt — right-aligned against the canvas's
+    // right edge. Extracted from drawStatusBar so scenes can paint
+    // the battery indicator on their own (e.g. a chrome-less
+    // power-menu screen: black glyph on white, no status-bar
+    // background). `fg` colours the text / sprite / bar; `top` is
+    // the y origin (the status bar passes STATUS_BAR_PAD_TOP).
+    function drawBattery(canvas, fg, top) {
+        fg = fg || '#000';
+        if (typeof top !== 'number') top = STATUS_BAR_PAD_TOP;
+
+        var pctStr   = batteryLevel >= 0 ? batteryLevel + '%' : '--%';
         var batteryW = StatusBarBattery.sprite.w;
         var batteryX = canvas.w - 2 - batteryW;
-        var textX = batteryX - 1 - HaxrcorpFont16.textWidth(pctStr);
+        var textX    = batteryX - 1 - HaxrcorpFont16.textWidth(pctStr);
 
         HaxrcorpFont16.draw(canvas.ctx, pctStr, textX, top - 2, fg);
         var batteryY = top - 1;
         canvas.drawSprite(StatusBarBattery.sprite, batteryX, batteryY, fg);
 
         // Battery level bar inside the sprite — offset kept constant
-        // relative to the sprite's top-left.
+        // relative to the sprite's top-left (sprite is 2 px in from
+        // its own left edge, so barX = batteryX + 2).
         var barMaxWidth = 10;
-        var barHeight = 5;
-        var barX = 240;
-        var barY = top + 1;
-        var barWidth = Math.round((barMaxWidth * Math.max(0, batteryLevel)) / 100);
+        var barHeight   = 5;
+        var barX        = batteryX + 2;
+        var barY        = top + 1;
+        var barWidth    = Math.round((barMaxWidth * Math.max(0, batteryLevel)) / 100);
 
         if (barWidth > 0) {
             canvas.drawRect(barX, barY, barWidth, barHeight, fg);
         }
 
         // Charging bolt overlays the battery icon flush with its
-        // left/top edge. Rendered literally so black stays black, white
-        // stays white, and transparent lets the battery sprite show
-        // through.
+        // left/top edge. Rendered literally so black stays black,
+        // white stays white, and transparent lets the battery
+        // sprite show through.
         if (batteryCharging) {
             canvas.drawSpriteLiteral(Icons.charging_status_bar, batteryX, batteryY);
         }
@@ -462,6 +479,19 @@ var UI = (function() {
         };
     }
 
+    // Toggle-button mixin: same press/release as a normal button,
+    // plus a `toggled` flag and a `toggle()` flip. render() passes
+    // `toggled` through to the draw method (which paints the 2 px
+    // top bar accordingly).
+    function _makeToggleButton(drawMethod) {
+        return {
+            render:  function(canvas) { canvas[drawMethod](this.text, this.x, this.w, this.pressed, this.disabled, this.toggled); },
+            press:   function() { if (!this.disabled) this.pressed = true; },
+            release: function() { this.pressed = false; },
+            toggle:  function() { this.toggled = !this.toggled; }
+        };
+    }
+
     // Hard cap on app-defined bottom-bar button width: one 48px slot.
     // Clamped in the constructors so both the stored width and the
     // self-positioning (RightButton anchors at screenW - w) use the
@@ -480,6 +510,22 @@ var UI = (function() {
         this.onPress = onPress || null;
     }
     MiddleButton.prototype = _makeButton('drawMiddleButton');
+
+    // Toggle variant of the middle button — same slot-indexed
+    // positioning, plus a `toggled` state shown as a 2 px bar on
+    // top (black when on, gray when off). `toggle()` flips it.
+    function MiddleToggleButton(text, index, w, gap, action, onPress, toggled) {
+        if (w > MAX_BTN_W) w = MAX_BTN_W;
+        this.text     = text;
+        this.x        = index * (w + gap);
+        this.w        = w;
+        this.pressed  = false;
+        this.disabled = false;
+        this.toggled  = !!toggled;
+        this.action   = action  || null;
+        this.onPress  = onPress || null;
+    }
+    MiddleToggleButton.prototype = _makeToggleButton('drawMiddleToggleButton');
 
     // Left button — always flush with left screen edge (x = 0)
     function LeftButton(text, w, action, onPress) {
@@ -1252,9 +1298,11 @@ var UI = (function() {
 
     return {
         drawStatusBar:  drawStatusBar,
+        drawBattery:    drawBattery,
         drawMenuList:   drawMenuList,
         visibleCount:   visibleCount,
         MiddleButton:   MiddleButton,
+        MiddleToggleButton: MiddleToggleButton,
         LeftButton:     LeftButton,
         RightButton:    RightButton,
         NumericTabButton: NumericTabButton,

@@ -112,6 +112,26 @@ var FlipCanvas = (function() {
         _btnText(this.ctx, text, x, w, y, c.fg);
     };
 
+    // Toggle variant of the middle button — identical body, plus a
+    // 2 px accent bar sitting directly on top of the button. The
+    // bar is the toggle affordance: black (#000) when `toggled` is
+    // on, light gray (#CCCCCC) when off, so the button reads as a
+    // toggle in both states. The bar spans the button's flat top
+    // (x+3 .. x+w-3) so it lines up with the rounded top edge.
+    FlipCanvas.prototype.drawMiddleToggleButton = function(text, x, w, pressed, disabled, toggled) {
+        // Standard button body first.
+        this.drawMiddleButton(text, x, w, pressed, disabled);
+        // 2 px black bar — only shown while toggled ON; hidden in
+        // the regular (untoggled) state so the button reads as a
+        // plain button until it's pushed. Sits 1 px into the top
+        // edge, 2 px wider than the flat top (x+2 / w-4).
+        if (toggled && !disabled) {
+            var y = this.h - BTN_H;
+            this.ctx.fillStyle = '#000000';
+            this.ctx.fillRect(x + 2, y + 1, w - 4, 2);
+        }
+    };
+
     // Numeric-layout tab button. Looks like a middle app-defined
     // button rotated 180° — top corners are square (radius 0)
     // and the bottom corners are rounded with r=4. No top stroke;

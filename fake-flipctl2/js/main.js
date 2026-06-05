@@ -55,7 +55,8 @@
             'Screen':             function(sm) { return new ScreenTestScene(); },
             'Voice recorder':     function(sm) { return new VoiceRecorderScene(sm); },
             'Internet radio':     function(sm) { return new InternetRadioScene(sm); },
-            'Wi-Fi':              function(sm) { return new WifiScene(sm); }
+            'Wi-Fi':              function(sm) { return new WifiScene(sm); },
+            'Power menu - UI demo': function(sm) { return new PowerMenuUIDemoScene(sm); }
         };
         var debugFactory = DEBUG_SCENE_MAP[DEBUG_CONFIG.scene];
         if (typeof debugFactory === 'function') {
