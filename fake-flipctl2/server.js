@@ -773,6 +773,12 @@ async function refreshDisk() {
 var SOUND_DIR = '/flipperone-testing/sound/audio_files';
 var DRIVER_SCRIPT = '/flipperone-testing/sound/audio-driver-restart.sh';
 var audioChild = null;
+// True only while a radio stream's mpg123 child is alive. Set
+// when playRadioStream starts, cleared when that child exits (a
+// dead URL makes mpg123 quit within a second or two) or when any
+// stopSound() runs. /api/radio/status reports it so the UI shows
+// "Playing" only for an actually-live stream.
+var radioPlaying = false;
 
 // Extra sound entries that live outside SOUND_DIR — the device
 // has its stock list under /flipperone-testing/sound/audio_files
@@ -1103,6 +1109,7 @@ function _killAudioChild() {
 function stopSound() {
     // Break the walkie-talkie respawn loop, if one is running.
     walkieActive = false;
+    radioPlaying = false;
     _killAudioChild();
     // Clear the recorder's playback state too — /api/sound/stop
     // is the canonical "stop everything" call, so the player
@@ -1390,6 +1397,108 @@ function isForwardRunning(kind, cb) {
     });
 }
 
+// ── Boot default (extlinux) ──────────────────────────────────
+// Parse /boot/extlinux/extlinux.conf for the DEFAULT entry. The
+// profile a label boots is identified by the systemd target in
+// its `append … systemd.unit=<X>.target` (e.g.
+// tv-media-box.target); a label with no systemd.unit override
+// boots the normal graphical/KDE default, reported as 'default'.
+// Returns { defaultLabel, defaultName (its MENU LABEL),
+// defaultTarget } — nulls if the file is missing / has no
+// DEFAULT line. The Boot Menu maps defaultTarget → a profile and
+// tags it "default".
+var EXTLINUX_CONF = '/boot/extlinux/extlinux.conf';
+
+function readExtlinuxDefault() {
+    var out = { defaultLabel: null, defaultName: null, defaultTarget: null };
+    try {
+        if (!fs.existsSync(EXTLINUX_CONF)) return out;
+        var txt = fs.readFileSync(EXTLINUX_CONF, 'utf8');
+        var dm = txt.match(/^[ \t]*default[ \t]+(\S+)/im);
+        if (!dm) return out;
+        out.defaultLabel  = dm[1];
+        out.defaultName   = dm[1];
+        out.defaultTarget = 'default';   // graphical/KDE unless overridden
+        // Walk to the DEFAULT label's block and read its MENU
+        // LABEL + the systemd.unit in its append line. Stop at
+        // the next LABEL.
+        var lines = txt.split('\n');
+        var inBlock = false;
+        for (var i = 0; i < lines.length; i++) {
+            var lm = lines[i].match(/^[ \t]*label[ \t]+(\S+)/i);
+            if (lm) {
+                if (inBlock) break;
+                inBlock = (lm[1].toLowerCase() === out.defaultLabel.toLowerCase());
+                continue;
+            }
+            if (inBlock) {
+                var mm = lines[i].match(/^[ \t]*menu[ \t]+label[ \t]+(.+?)[ \t]*$/i);
+                if (mm) out.defaultName = mm[1];
+                var tm = lines[i].match(/systemd\.unit=(\S+)/i);
+                if (tm) out.defaultTarget = tm[1];
+            }
+        }
+    } catch (e) {
+        out.error = String(e.message || e);
+    }
+    return out;
+}
+
+// Find the extlinux LABEL that boots `target`: the first block
+// whose append carries `systemd.unit=<target>`, or — for the
+// pseudo-target 'default' — the first block with no systemd.unit
+// override (the normal graphical/KDE boot).
+function findLabelForTarget(txt, target) {
+    var lines    = txt.split('\n');
+    var curLabel = null, curUnit = null, result = null;
+    function consider() {
+        if (curLabel === null || result !== null) return;
+        if (target === 'default') { if (!curUnit) result = curLabel; }
+        else if (curUnit === target) { result = curLabel; }
+    }
+    for (var i = 0; i < lines.length; i++) {
+        var lm = lines[i].match(/^[ \t]*label[ \t]+(\S+)/i);
+        if (lm) { consider(); curLabel = lm[1]; curUnit = null; continue; }
+        var tm = lines[i].match(/systemd\.unit=(\S+)/i);
+        if (tm) curUnit = tm[1];
+    }
+    consider();
+    return result;
+}
+
+// Switch the running system to a systemd target right now
+// (`systemctl isolate <target>`). The target is validated to a
+// strict `<name>.target` shape so nothing arbitrary reaches the
+// shell. Fire-and-forget: isolating may tear down the session
+// running this UI, which is the intended mode switch.
+function isolateTarget(target) {
+    if (typeof target !== 'string' || !/^[a-z0-9][a-z0-9.\-]*\.target$/i.test(target)) {
+        return { success: false, error: 'Invalid target' };
+    }
+    exec('sudo systemctl isolate ' + target, function() {});
+    return { success: true, target: target };
+}
+
+// Rewrite the `default <label>` line so it points at the label
+// that boots `target`. Only that one line is touched.
+function setExtlinuxDefault(target) {
+    if (!target) return { success: false, error: 'No target' };
+    try {
+        if (!fs.existsSync(EXTLINUX_CONF)) return { success: false, error: 'extlinux.conf not found' };
+        var txt   = fs.readFileSync(EXTLINUX_CONF, 'utf8');
+        var label = findLabelForTarget(txt, target);
+        if (!label) return { success: false, error: 'No label for target ' + target };
+        var newTxt = txt.replace(/^([ \t]*default[ \t]+)\S+/im, '$1' + label);
+        if (newTxt === txt && !/^[ \t]*default[ \t]+/im.test(txt)) {
+            return { success: false, error: 'No default line to rewrite' };
+        }
+        fs.writeFileSync(EXTLINUX_CONF, newTxt, 'utf8');
+        return { success: true, label: label };
+    } catch (e) {
+        return { success: false, error: String(e.message || e) };
+    }
+}
+
 // ── Internet radio streaming ─────────────────────────────────────
 // mpg123 streams MP3/Shoutcast/Icecast directly over HTTP, so the
 // radio scene can hand us a URL and we hand it straight to a
@@ -1405,6 +1514,11 @@ function playRadioStream(url) {
     if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
         return { success: false, error: 'Invalid URL' };
     }
+    // Mark playing now (intent). The child's exit handler flips it
+    // back off if the stream fails / ends; set here so a status
+    // poll right after Play can't briefly read stale 'false' while
+    // a deferred respawn is pending.
+    radioPlaying = true;
     var spawn = require('child_process').spawn;
 
     function doSpawn() {
@@ -1430,9 +1544,11 @@ function playRadioStream(url) {
         // out if we still ARE the active child. Without this,
         // a stale predecessor's exit event (which races with
         // the next playRadioStream call) overwrites the new
-        // process's reference and the radio orphans.
-        child.on('exit',  function() { if (audioChild === child) audioChild = null; });
-        child.on('error', function() { if (audioChild === child) audioChild = null; });
+        // process's reference and the radio orphans. The exit
+        // also flips radioPlaying off — a dead stream's mpg123
+        // quits on its own, so the UI's "Playing" line clears.
+        child.on('exit',  function() { if (audioChild === child) { audioChild = null; radioPlaying = false; } });
+        child.on('error', function() { if (audioChild === child) { audioChild = null; radioPlaying = false; } });
         audioChild = child;
     }
 
@@ -4266,7 +4382,7 @@ var server = http.createServer(function(req, res) {
             mpg123Installed = true;
         } catch (e) { /* not installed */ }
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ mpg123Installed: mpg123Installed }));
+        res.end(JSON.stringify({ mpg123Installed: mpg123Installed, playing: radioPlaying }));
         return;
     }
     // ── /api/radio/play ─────────────────────────────────────────
@@ -4378,6 +4494,59 @@ var server = http.createServer(function(req, res) {
         req.on('error', drop);
         res.on('close', drop);
         res.on('error', drop);
+        return;
+    }
+    // ── /api/boot/default ───────────────────────────────────────
+    // GET  → the extlinux DEFAULT entry + its systemd target.
+    // POST { target } → rewrite the DEFAULT line to the label that
+    //        boots that target ('Select as default' from the
+    //        Boot Menu).
+    if (req.url === '/api/boot/default' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(readExtlinuxDefault()));
+        return;
+    }
+    if (req.url === '/api/boot/default' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            var r = setExtlinuxDefault(data && data.target);
+            res.writeHead(r.success ? 200 : 400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(r));
+        });
+        return;
+    }
+    // ── /api/boot/isolate ───────────────────────────────────────
+    // POST { target } → `systemctl isolate <target>` (switch the
+    // running system to that target now). Used when a Boot Menu
+    // profile is selected with OK.
+    if (req.url === '/api/boot/isolate' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            var r = isolateTarget(data && data.target);
+            res.writeHead(r.success ? 200 : 400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(r));
+        });
+        return;
+    }
+    // ── /api/boot/target-active ─────────────────────────────────
+    // GET ?target=<x>.target → `systemctl is-active <target>`.
+    // Returns { target, state, active }. The Boot Menu polls this
+    // while its "Starting…" spinner is up, closing it once the
+    // target reaches 'active'.
+    if (req.method === 'GET' && req.url.indexOf('/api/boot/target-active') === 0) {
+        var qm = req.url.split('?')[1] || '';
+        var tmatch = qm.match(/(?:^|&)target=([^&]+)/);
+        var qTarget = tmatch ? decodeURIComponent(tmatch[1]) : '';
+        if (!/^[a-z0-9][a-z0-9.\-]*\.target$/i.test(qTarget)) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ active: false, error: 'Invalid target' }));
+            return;
+        }
+        // is-active exits non-zero when not active, but still
+        // prints the state on stdout — read it regardless of err.
+        exec('systemctl is-active ' + qTarget, function(err, stdout) {
+            var state = String(stdout || '').trim();
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ target: qTarget, state: state, active: state === 'active' }));
+        });
         return;
     }
     // ── /api/forward/status ─────────────────────────────────────

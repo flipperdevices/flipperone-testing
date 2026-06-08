@@ -98,7 +98,8 @@ var InternetRadioScene = (function() {
             'London':   ['Capital London',     'Heart London'],
             'New York': ['WNYC-FM',            'WQXR Classical'],
             'Tokyo':    ['J-Pop Sakura',       'Japan Hits'],
-            'Berlin':   ['Berliner Rundfunk',  'Spreeradio 105.5']
+            'Berlin':   ['Berliner Rundfunk',  'Spreeradio 105.5'],
+            'Saratov':  ['Nashe Radio']
         };
 
         // Station name → MP3 stream URL. mpg123 reads the URL
@@ -113,7 +114,8 @@ var InternetRadioScene = (function() {
             'J-Pop Sakura':      'https://quincy.torontocast.com:2070/stream.mp3',
             'Japan Hits':        'http://quincy.torontocast.com:2020/stream.mp3',
             'Berliner Rundfunk': 'http://stream.berliner-rundfunk.de/brf/mp3-128/internetradio/',
-            'Spreeradio 105.5':  'http://stream.spreeradio.de/spree-live/mp3-192/radio-browser.info/'
+            'Spreeradio 105.5':  'http://stream.spreeradio.de/spree-live/mp3-192/radio-browser.info/',
+            'Nashe Radio':       'https://nashe1.hostingradio.ru/nashe-128.mp3'
         };
 
         // Picker rows. Each entry has an `options` array + a
@@ -128,7 +130,7 @@ var InternetRadioScene = (function() {
         // `/api/sound/devices` once `_initSettings()` runs.
         this._pickers = {
             city: {
-                options: ['London', 'New York', 'Tokyo', 'Berlin'],
+                options: ['London', 'New York', 'Tokyo', 'Berlin', 'Saratov'],
                 current: saved.city
             },
             station: {
@@ -173,6 +175,13 @@ var InternetRadioScene = (function() {
         // still playing in the background paints the Stop
         // label on the right button immediately.
         this._playingStation = saved.playingStation;
+        // Whether a stream is ACTUALLY live (mpg123 alive),
+        // polled from /api/radio/status. The "Playing:" title
+        // line shows only when this is true, so a dead URL — where
+        // mpg123 quits right after launch — doesn't leave a stale
+        // "Playing" label up.
+        this._reallyPlaying = false;
+        this._statusTimer   = null;
         // Dropdown overlay state. `_dropdownKey` names which
         // picker is open ('city' / 'station' / 'audioDevice');
         // null = closed. `_dropdownIndex` is the highlighted
@@ -311,6 +320,36 @@ var InternetRadioScene = (function() {
         // actually report — the constructor seeded both with
         // placeholder values that would otherwise be a lie.
         this._initSettings();
+        // Poll the real playing state so the "Playing:" line tracks
+        // whether the stream is actually live (clears itself when a
+        // dead stream's mpg123 quits). Once now, then every 2 s.
+        var self = this;
+        this._pollPlaying();
+        if (this._statusTimer) clearInterval(this._statusTimer);
+        this._statusTimer = setInterval(function() { self._pollPlaying(); }, 2000);
+    };
+
+    // GET /api/radio/status → update `_reallyPlaying` from the
+    // server's live mpg123 state.
+    InternetRadioScene.prototype._pollPlaying = function() {
+        var self = this;
+        try {
+            var xhr = new XMLHttpRequest();
+            xhr.open('GET', '/api/radio/status', true);
+            xhr.timeout = 3000;
+            xhr.onload = function() {
+                if (xhr.status !== 200) return;
+                try {
+                    var d = JSON.parse(xhr.responseText);
+                    var was = self._reallyPlaying;
+                    self._reallyPlaying = !!d.playing;
+                    if (was !== self._reallyPlaying && window.requestRender) {
+                        window.requestRender();
+                    }
+                } catch (e) {}
+            };
+            xhr.send();
+        } catch (e) { /* offline / mocked — ignore */ }
     };
 
     // Hydrate `_volume` and the audioDevice picker from the
@@ -603,6 +642,12 @@ var InternetRadioScene = (function() {
             clearInterval(this._installAnimTimer);
             this._installAnimTimer = null;
         }
+        // Stop the playing-state poll (the stream itself keeps
+        // running in the background; only the poll loop stops).
+        if (this._statusTimer) {
+            clearInterval(this._statusTimer);
+            this._statusTimer = null;
+        }
     };
 
     // Fire POST /api/radio/play with the station's URL. Optimistic:
@@ -831,7 +876,7 @@ var InternetRadioScene = (function() {
         // glyph run ends, with a 2 px baseline drop so the
         // Haxrcorp cap line aligns with Sporty's optical
         // x-height.
-        if (this._playingStation) {
+        if (this._playingStation && this._reallyPlaying) {
             var suffix = 'Playing: ' + this._playingStation;
             var appNameW = Born2bSportyV2Medium.textWidth(appName);
             HaxrcorpFont16.draw(ctx, suffix,

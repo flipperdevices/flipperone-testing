@@ -28,6 +28,7 @@ var MenuScene = (function() {
 
     var menuItems = [
         'Router',
+        'Boot Menu',
         'Apps',
         'Files',
         'Network',
@@ -367,7 +368,8 @@ var MenuScene = (function() {
         'Apps':    appsMenu,
         'Testing': testingMenu,
         'Settings': settingsMenu,
-        'Router':  function() { return null; }
+        'Router':  function() { return null; },
+        'Boot Menu': function(reSm) { return new BootMenuScene(reSm); }
     };
 
     function MenuScene(sceneManager) {
