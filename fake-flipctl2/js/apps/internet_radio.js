@@ -18,6 +18,13 @@ var InternetRadioScene = (function() {
     var SELECTOR_W = 252;
     var SELECTOR_H = 15;
 
+    // How long after a Play press we wait before confirming the
+    // stream actually came up. The server spawns mpg123 fire-and-
+    // forget and a dead URL's process quits within a second or
+    // two; 3.5 s clears a healthy stream's connect/buffer time
+    // while still flagging a failure promptly.
+    var CONNECT_GRACE_MS = 3500;
+
     // Persistent across scene re-entries. The App Switcher
     // builds a fresh InternetRadioScene every time the user
     // re-opens the app, so without parking these here the
@@ -222,6 +229,21 @@ var InternetRadioScene = (function() {
             buttonIndex: 0,
             output:      ''
         };
+
+        // Play-failure modal. When the user hits Play we mark the
+        // station optimistically (button flips to Stop), then a
+        // few seconds later confirm the stream actually came up
+        // (mpg123 still alive) via /api/radio/status. If it never
+        // started — dead URL, missing decoder, server down — we
+        // roll the optimistic state back and pop this modal so the
+        // button reverts to "Play" instead of sitting on "Stop".
+        this._errorModal = { open: false, station: '' };
+        // `_connecting` is true between the Play press and that
+        // confirmation; `_connectTimer` is the one-shot that fires
+        // the check (cleared on stop / station-switch / exit so a
+        // late timer can't false-alarm).
+        this._connecting   = false;
+        this._connectTimer = null;
     }
 
     // Sync the Station picker's options + current value to the
@@ -648,6 +670,13 @@ var InternetRadioScene = (function() {
             clearInterval(this._statusTimer);
             this._statusTimer = null;
         }
+        // Disarm a pending connect-confirmation so its callback
+        // can't fire on a torn-down scene.
+        if (this._connectTimer) {
+            clearTimeout(this._connectTimer);
+            this._connectTimer = null;
+        }
+        this._connecting = false;
     };
 
     // Fire POST /api/radio/play with the station's URL. Optimistic:
@@ -662,14 +691,38 @@ var InternetRadioScene = (function() {
         var self = this;
         self._playingStation = stationName;
         saved.playingStation = stationName;
+        // Enter the "connecting" window and arm the confirmation
+        // check. The server responds to the POST almost immediately
+        // (it spawns mpg123 fire-and-forget), so the 200 doesn't
+        // mean the stream is live — only that mpg123 launched. We
+        // wait CONNECT_GRACE_MS and then ask the server whether the
+        // process is still alive; a dead URL's mpg123 quits within
+        // a second or two, so by then radioPlaying reflects reality.
+        self._connecting = true;
+        if (self._connectTimer) clearTimeout(self._connectTimer);
+        self._connectTimer = setTimeout(function() {
+            self._connectTimer = null;
+            self._verifyPlaying(stationName);
+        }, CONNECT_GRACE_MS);
+
         var xhr = new XMLHttpRequest();
         xhr.open('POST', '/api/radio/play', true);
         xhr.setRequestHeader('Content-Type', 'application/json');
         xhr.timeout = 5000;
-        var clear = function() { self._playingStation = null; saved.playingStation = null; };
-        xhr.onload = function() { if (xhr.status !== 200) clear(); };
-        xhr.onerror   = clear;
-        xhr.ontimeout = clear;
+        // POST itself failed (server down / bad request / timeout):
+        // the play command never took, so don't wait for the grace
+        // window — roll back and surface the error immediately.
+        var fail = function() {
+            if (self._playingStation !== stationName) return;
+            if (self._connectTimer) { clearTimeout(self._connectTimer); self._connectTimer = null; }
+            self._connecting = false;
+            self._playingStation = null;
+            saved.playingStation = null;
+            self._showPlayError(stationName);
+        };
+        xhr.onload = function() { if (xhr.status !== 200) fail(); };
+        xhr.onerror   = fail;
+        xhr.ontimeout = fail;
         xhr.send(JSON.stringify({ url: url }));
     };
 
@@ -680,6 +733,11 @@ var InternetRadioScene = (function() {
     InternetRadioScene.prototype._stopRadio = function() {
         this._playingStation = null;
         saved.playingStation = null;
+        // User stopped (or switched) before the connect window
+        // elapsed — disarm the confirmation so it can't fire a
+        // false "couldn't start" error after an intentional stop.
+        this._connecting = false;
+        if (this._connectTimer) { clearTimeout(this._connectTimer); this._connectTimer = null; }
         var xhr = new XMLHttpRequest();
         xhr.open('POST', '/api/radio/stop', true);
         xhr.timeout = 3000;
@@ -694,6 +752,19 @@ var InternetRadioScene = (function() {
         // page state.
         if (this._installModal.open) {
             return this._handleInstallModalInput(action);
+        }
+        // Play-failure modal is a single-button acknowledgement —
+        // it owns input while open and any confirm/back key just
+        // dismisses it. Checked before the dropdown/page handlers
+        // for the same reason the install modal is: it's painted
+        // on top of everything else.
+        if (this._errorModal.open) {
+            if (action === 'ok' || action === 'run' ||
+                action === 'back' || action === 'esc') {
+                this._errorModal.open = false;
+                if (window.requestRender) window.requestRender();
+            }
+            return;
         }
         // Dropdown owns input while open: up/down cycles its
         // items, OK commits the selection (and closes), back/
@@ -878,9 +949,11 @@ var InternetRadioScene = (function() {
         // x-height.
         if (this._playingStation && this._reallyPlaying) {
             var suffix = 'Playing: ' + this._playingStation;
-            var appNameW = Born2bSportyV2Medium.textWidth(appName);
+            // Right-aligned with 2 px padding from the screen's
+            // right edge.
+            var suffixW = HaxrcorpFont16.textWidth(suffix);
             HaxrcorpFont16.draw(ctx, suffix,
-                TITLE_X + appNameW + 4,
+                canvas.w - 2 - suffixW,
                 TITLE_TEXT_Y + 2, '#000');
         }
 
@@ -986,6 +1059,12 @@ var InternetRadioScene = (function() {
         // it first refusal in `handleInput`.
         if (this._installModal.open) {
             this._renderInstallModal(canvas);
+        }
+        // Play-failure modal — same top-of-stack treatment as the
+        // install modal. They're mutually exclusive in practice,
+        // but render after it so it always wins if both were set.
+        if (this._errorModal.open) {
+            this._renderErrorModal(canvas);
         }
     };
 
@@ -1272,6 +1351,113 @@ var InternetRadioScene = (function() {
             this._installBtnSelector.setSize(w, h);
             this._installBtnSelector.render(canvas);
         }
+    };
+
+    // ── Play-failure flow ────────────────────────────────────
+    // Fires CONNECT_GRACE_MS after a Play press. Asks the server
+    // whether the stream is still alive; if it isn't, the URL
+    // never came up (dead host, 404, missing decoder, …) — roll
+    // the optimistic Play state back so the button returns to
+    // "Play", and pop the error modal.
+    InternetRadioScene.prototype._verifyPlaying = function(station) {
+        var self = this;
+        // Stale guard: user stopped or switched stations between
+        // the Play press and this check firing.
+        if (!self._connecting || self._playingStation !== station) {
+            self._connecting = false;
+            return;
+        }
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', '/api/radio/status', true);
+        xhr.timeout = 3000;
+        xhr.onload = function() {
+            // Re-check staleness on the async boundary too.
+            if (!self._connecting || self._playingStation !== station) {
+                self._connecting = false;
+                return;
+            }
+            self._connecting = false;
+            var playing = false;
+            if (xhr.status === 200) {
+                try { playing = !!JSON.parse(xhr.responseText).playing; }
+                catch (e) {}
+            }
+            self._reallyPlaying = playing;
+            if (!playing) {
+                self._playingStation = null;
+                saved.playingStation = null;
+                self._showPlayError(station);
+            }
+            if (window.requestRender) window.requestRender();
+        };
+        // Can't confirm (network error / timeout): don't false-
+        // alarm. Leave the optimistic state in place — the 2 s
+        // periodic poll will reconcile the "Playing" line either
+        // way.
+        var giveUp = function() {
+            if (self._playingStation === station) self._connecting = false;
+        };
+        xhr.onerror   = giveUp;
+        xhr.ontimeout = giveUp;
+        xhr.send();
+    };
+
+    // Open the play-failure modal for `station`.
+    InternetRadioScene.prototype._showPlayError = function(station) {
+        this._errorModal.open    = true;
+        this._errorModal.station = station || '';
+        if (window.requestRender) window.requestRender();
+    };
+
+    // Centred acknowledgement modal — same chrome as the install
+    // modal (washed background, 4-px ResponsiveFrame, Born2bSporty
+    // title + Haxrcorp body) but a single OK button. Dismissed by
+    // ok/run/back/esc in handleInput.
+    InternetRadioScene.prototype._renderErrorModal = function(canvas) {
+        var ctx = canvas.ctx;
+        var m   = this._errorModal;
+
+        var W = 150, H = 58;
+        var X = Math.floor((canvas.w - W) / 2);
+        var Y = Math.floor((canvas.h - H) / 2);
+
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
+        ctx.fillRect(0, 0, canvas.w, canvas.h);
+
+        var frame = new ResponsiveFrame({
+            x: X, y: Y, width: W, height: H,
+            anchorH: 'left', anchorV: 'top',
+            strokeColor: '#000', showStroke: true,
+            fillColor:   '#fff', showFill:   true,
+            cornerRadius: 4,
+            corners: { tl: true, tr: true, bl: true, br: true }
+        });
+        frame.render(canvas);
+
+        var titleY = Y + 6;
+        var bodyY  = Y + 23;
+        var BTN_H  = 14;
+        var BTN_W  = W - 16;
+        var BTN_X  = X + Math.floor((W - BTN_W) / 2);
+        var btnY   = Y + 38;
+
+        function centerSporty(text, y) {
+            var tw = Born2bSportyV2Medium.textWidth(text);
+            Born2bSportyV2Medium.draw(ctx, text,
+                X + Math.floor((W - tw) / 2), y, '#000');
+        }
+        function centerHaxrcorp(text, y, color) {
+            var tw = HaxrcorpFont16.textWidth(text);
+            HaxrcorpFont16.draw(ctx, text,
+                X + Math.floor((W - tw) / 2), y, color || '#000');
+        }
+
+        centerSporty('Stream error', titleY);
+        var body = m.station ? ('Could not start ' + m.station)
+                             : 'Could not start stream';
+        if (body.length > 28) body = body.slice(0, 26) + '..';
+        centerHaxrcorp(body, bodyY, '#666');
+        this._drawStackedButton(canvas, BTN_X, btnY, BTN_W, BTN_H, 'OK', true);
     };
 
     return InternetRadioScene;
