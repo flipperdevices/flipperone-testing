@@ -16,6 +16,12 @@ var DesktopScene = (function() {
         this.hostnameLine1 = '';
         this.hostnameLine2 = '';
 
+        // Active boot profile shown above the hostname — "TV Media
+        // Box" / "Desktop Computer". Populated from
+        // /api/target/current (empty until the first fetch
+        // resolves, in which case the line is simply not drawn).
+        this.currentTargetProfile = '';
+
         // Thermal readings in °C (null = not yet read).
         this.batteryTempC = null;
         this.cpuTempC = null;
@@ -46,6 +52,27 @@ var DesktopScene = (function() {
             var data;
             try { data = JSON.parse(xhr.responseText); } catch (e) { return; }
             self._setHostname(data.hostname || '');
+        };
+        xhr.send();
+    };
+
+    // Which boot profile is running right now. Stored as the
+    // friendly name ("Desktop Computer", …) and repainted only on
+    // change so a steady-state poll doesn't thrash the canvas.
+    DesktopScene.prototype._fetchCurrentTarget = function() {
+        var self = this;
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', '/api/target/current', true);
+        xhr.timeout = 3000;
+        xhr.onload = function() {
+            if (xhr.status !== 200) return;
+            var data;
+            try { data = JSON.parse(xhr.responseText); } catch (e) { return; }
+            var next = (data && data.profile) ? data.profile : '';
+            if (next !== self.currentTargetProfile) {
+                self.currentTargetProfile = next;
+                if (typeof window.requestRender === 'function') window.requestRender();
+            }
         };
         xhr.send();
     };
@@ -92,6 +119,7 @@ var DesktopScene = (function() {
         this._fetchStat('/api/power/usage',  'watts', 'powerWatts');
         this._fetchEthernet();
         this._fetchWifi();
+        this._fetchCurrentTarget();
     };
 
     // Pull /api/ethernet, keep one snapshot per connected interface,
@@ -307,23 +335,51 @@ var DesktopScene = (function() {
         //   of the render path can reuse it.
         var HOSTNAME_LINE_H = 12;
         var HOSTNAME_WRAP_THRESHOLD = 40;
-        var hostnameY = UI.STATUS_BAR_H + 43;
+        var hostnameY = UI.STATUS_BAR_H + 49;
+        // "Hostname" label baseline — nudged 1 px below the value
+        // baseline (visual tweak for the gray label only).
+        var hostnameLabelY = hostnameY + 1;
+        // "Current target: <profile>" line, one row above the
+        // hostname (same centered label+value styling).
+        var targetY = UI.STATUS_BAR_H + 36;
+        // Divider separating the current-target line from the
+        // hostname. Sits above the hostname label, so it stays
+        // put regardless of hostnameShift (only rows below the
+        // value-line move when the hostname wraps).
+        var midDividerY = UI.STATUS_BAR_H + 48;
         var hostnameLabel = 'Hostname';
         var hostnameWraps = !!(this.hostnameRaw
             && this.hostnameRaw.length > HOSTNAME_WRAP_THRESHOLD);
         var hostnameShift = hostnameWraps ? HOSTNAME_LINE_H : 0;
 
-        // Two horizontal divider rules below the status bar — top at 36 px,
-        // bottom at 59 px (shifted by hostnameShift when the value wraps).
-        // 1 px tall, full canvas width, light gray.
-        canvas.drawRect(0, UI.STATUS_BAR_H + 36, canvas.w, 1, '#CCCCCC');
-        canvas.drawRect(0, UI.STATUS_BAR_H + 59 + hostnameShift, canvas.w, 1, '#CCCCCC');
+        // Horizontal divider rules below the status bar — top at 34 px,
+        // a middle rule between the current-target and hostname lines,
+        // and the bottom at 62 px (shifted by hostnameShift when the
+        // value wraps). 1 px tall, full canvas width, light gray.
+        canvas.drawRect(0, UI.STATUS_BAR_H + 34, canvas.w, 1, '#CCCCCC');
+        canvas.drawRect(0, midDividerY, canvas.w, 1, '#CCCCCC');
+        canvas.drawRect(0, UI.STATUS_BAR_H + 62 + hostnameShift, canvas.w, 1, '#CCCCCC');
+
+        // Current-target line — centered "Current target: <profile>"
+        // (label gray, value black). Drawn only once the active
+        // profile is known so the label never flashes value-less
+        // before /api/target/current resolves.
+        if (this.currentTargetProfile) {
+            var tgtLabel  = 'Current target:';
+            var tgtLabelW = HaxrcorpFont16.textWidth(tgtLabel);
+            var tgtGap    = 4;
+            var tgtValueW = HaxrcorpFont16.textWidth(this.currentTargetProfile);
+            var tgtLabelX = Math.floor((canvas.w - (tgtLabelW + tgtGap + tgtValueW)) / 2);
+            HaxrcorpFont16.draw(canvas.ctx, tgtLabel, tgtLabelX, targetY, '#6D6D6D');
+            HaxrcorpFont16.draw(canvas.ctx, this.currentTargetProfile,
+                tgtLabelX + tgtLabelW + tgtGap, targetY, '#000');
+        }
 
         if (hostnameWraps) {
             // Two-line layout: label on top, value below, both centered.
             var lblW = HaxrcorpFont16.textWidth(hostnameLabel);
             HaxrcorpFont16.draw(canvas.ctx, hostnameLabel,
-                Math.floor((canvas.w - lblW) / 2), hostnameY, '#6D6D6D');
+                Math.floor((canvas.w - lblW) / 2), hostnameLabelY, '#6D6D6D');
             var valW = HaxrcorpFont16.textWidth(this.hostnameRaw);
             HaxrcorpFont16.draw(canvas.ctx, this.hostnameRaw,
                 Math.floor((canvas.w - valW) / 2),
@@ -339,7 +395,7 @@ var DesktopScene = (function() {
             var hostnameTotalW = hostnameLabelW
                 + (this.hostnameRaw ? hostnameGap + hostnameValueW : 0);
             var hostnameLabelX = Math.floor((canvas.w - hostnameTotalW) / 2);
-            HaxrcorpFont16.draw(canvas.ctx, hostnameLabel, hostnameLabelX, hostnameY, '#6D6D6D');
+            HaxrcorpFont16.draw(canvas.ctx, hostnameLabel, hostnameLabelX, hostnameLabelY, '#6D6D6D');
             if (this.hostnameRaw) {
                 var hostValueX = hostnameLabelX + hostnameLabelW + hostnameGap;
                 HaxrcorpFont16.draw(canvas.ctx, this.hostnameRaw, hostValueX, hostnameY, '#000');
@@ -347,21 +403,21 @@ var DesktopScene = (function() {
         }
 
         // Battery thermal block.
-        //   "Temperature" label — 57 px from left, 4 px below status bar.
+        //   "Temperature" label — 57 px from left, 3 px below status bar.
         //   Battery icon + reading module — 36 px from left;
-        //   icon top edge is 15 px below the status bar.
+        //   icon top edge is 14 px below the status bar.
         drawThermalCard(canvas,
-            57, UI.STATUS_BAR_H + 4,            // label position
-            36, UI.STATUS_BAR_H + 15,           // icon position
+            57, UI.STATUS_BAR_H + 3,            // label position
+            36, UI.STATUS_BAR_H + 14,           // icon position
             'Temperature', Icons.battery_vertical, this.batteryTempC);
 
         // CPU thermal block — icon + reading only, no label.
-        //   Icon — 82 px from left; top edge 16 px below the status bar
+        //   Icon — 82 px from left; top edge 15 px below the status bar
         //   (this puts the bottom of the 15-tall CPU icon at the same y as
         //   the bottom of the 16-tall battery icon — they line up cleanly).
         drawThermalCard(canvas,
             0, 0,                                // no label
-            82, UI.STATUS_BAR_H + 16,            // icon position
+            82, UI.STATUS_BAR_H + 15,            // icon position
             null, Icons.cpu_15px, this.cpuTempC);
 
         // Battery power flow.
@@ -373,8 +429,8 @@ var DesktopScene = (function() {
         //   Icon top y matches CPU's so all three icons bottom-align.
         var powerIconX = cpuTempEndX(this.cpuTempC) + 34;
         drawPowerCard(canvas,
-            163, UI.STATUS_BAR_H + 4,            // label position
-            powerIconX, UI.STATUS_BAR_H + 16,    // icon position
+            163, UI.STATUS_BAR_H + 3,            // label position
+            powerIconX, UI.STATUS_BAR_H + 15,    // icon position
             'Power flow', Icons.power_usage, this.powerWatts);
 
         // Connection cards — one per active link, stacked vertically below

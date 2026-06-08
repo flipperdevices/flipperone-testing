@@ -1479,6 +1479,32 @@ function isolateTarget(target) {
     return { success: true, target: target };
 }
 
+// Which boot profile is running right now. Mirrors the Boot
+// Menu's ISOLATE_TARGET map (profile → runtime target), checked
+// in priority order: the most specific profile target wins.
+// Desktop runs graphical.target; TV Media Box runs its own
+// tv-media-box.target. They're mutually exclusive in practice,
+// but tv-media-box is listed first so it's reported even if a
+// build ever leaves graphical.target up alongside it. One
+// `systemctl is-active a b` call prints one state line per unit
+// in argument order, so a single exec covers both. The unit
+// names are hard-coded constants — no user input reaches the
+// shell. (Minimal system / multi-user.target isn't a profile yet.)
+var TARGET_PROFILES = [
+    { target: 'tv-media-box.target', profile: 'TV Media Box' },
+    { target: 'graphical.target',    profile: 'Desktop Computer' }
+];
+function currentTargetProfile(cb) {
+    var args = TARGET_PROFILES.map(function(c) { return c.target; }).join(' ');
+    exec('systemctl is-active ' + args, function(err, stdout) {
+        var lines = String(stdout || '').split('\n');
+        for (var i = 0; i < TARGET_PROFILES.length; i++) {
+            if ((lines[i] || '').trim() === 'active') return cb(TARGET_PROFILES[i]);
+        }
+        cb(null);
+    });
+}
+
 // Rewrite the `default <label>` line so it points at the label
 // that boots `target`. Only that one line is touched.
 function setExtlinuxDefault(target) {
@@ -4546,6 +4572,21 @@ var server = http.createServer(function(req, res) {
             var state = String(stdout || '').trim();
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ target: qTarget, state: state, active: state === 'active' }));
+        });
+        return;
+    }
+    // ── /api/target/current ─────────────────────────────────────
+    // Which boot profile is active right now (TV Media Box /
+    // Desktop Computer / Minimal system). The Desktop dashboard
+    // shows this above the hostname. Returns { target, profile }
+    // (both null if none of the known profile targets are active).
+    if (req.url === '/api/target/current' && req.method === 'GET') {
+        currentTargetProfile(function(c) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                target:  c ? c.target  : null,
+                profile: c ? c.profile : null
+            }));
         });
         return;
     }
