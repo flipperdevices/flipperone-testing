@@ -1505,6 +1505,31 @@ function currentTargetProfile(cb) {
     });
 }
 
+// Every systemd target known to the system — installed unit files
+// merged with currently-loaded units — deduped. The Boot Menu uses
+// this to decide which profiles are actually available (e.g. show
+// "TV Media Box" only when tv-media-box.target exists) instead of
+// assuming the targets are present. Both unit names are read from
+// the first whitespace-delimited column of each output line.
+function listTargets(cb) {
+    var set = {};
+    var harvest = function(out) {
+        String(out || '').split('\n').forEach(function(line) {
+            var m = line.trim().match(/^(\S+\.target)\b/);
+            if (m) set[m[1]] = true;
+        });
+    };
+    // list-unit-files → installed (may be inactive/never loaded);
+    // list-units --all → loaded (active or not). Union covers both.
+    exec('systemctl list-unit-files --type=target --no-legend --no-pager', function(e1, o1) {
+        harvest(o1);
+        exec('systemctl list-units --type=target --all --no-legend --no-pager --plain', function(e2, o2) {
+            harvest(o2);
+            cb(Object.keys(set));
+        });
+    });
+}
+
 // Rewrite the `default <label>` line so it points at the label
 // that boots `target`. Only that one line is touched.
 function setExtlinuxDefault(target) {
@@ -4572,6 +4597,18 @@ var server = http.createServer(function(req, res) {
             var state = String(stdout || '').trim();
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ target: qTarget, state: state, active: state === 'active' }));
+        });
+        return;
+    }
+    // ── /api/boot/targets ───────────────────────────────────────
+    // GET → { targets: [...] }: every systemd target known to the
+    // system (installed unit files + loaded units). The Boot Menu
+    // checks this to gate profiles on their target's presence rather
+    // than hardcoding which targets exist.
+    if (req.url === '/api/boot/targets' && req.method === 'GET') {
+        listTargets(function(targets) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ targets: targets }));
         });
         return;
     }

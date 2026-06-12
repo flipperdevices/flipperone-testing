@@ -52,6 +52,16 @@ var BootMenuScene = (function() {
         'Minimal system':   'multi-user.target'
     };
 
+    // Profiles whose availability is verified against the live systemd
+    // target list (GET /api/boot/targets) rather than assumed: each is
+    // shown active only when its target is present, and dimmed 'N/A'
+    // otherwise. (Profile name → target to look for.) The other rows
+    // are static placeholders ('TBA'), unaffected by this check.
+    var DYNAMIC_PROFILE_TARGET = {
+        'TV Media Box':     'tv-media-box.target',
+        'Desktop Computer': 'graphical.target'
+    };
+
     function BootMenuScene(sceneManager) {
         this.sceneManager    = sceneManager || null;
         this.displayName     = 'Boot Menu';
@@ -81,19 +91,35 @@ var BootMenuScene = (function() {
 
         this.items = [];
         for (var i = 0; i < names.length; i++) {
+            var nm        = names[i];
+            var isStatic  = !!inactiveSet[nm];             // permanent placeholder
+            var isDynamic = !!DYNAMIC_PROFILE_TARGET[nm];  // target-gated profile
+            // Status while inactive: static placeholders are 'TBA'
+            // (planned); the target-gated profiles use 'N/A' (target
+            // not present / not yet verified).
+            var inactiveStatus = isStatic ? 'TBA' : 'N/A';
+            // Target-gated profiles START inactive — grayed exactly like
+            // the placeholders — and are promoted to active by
+            // _applyTargets ONLY once their systemd target is confirmed
+            // present. So a profile is never shown active until verified.
+            var startInactive = isStatic || isDynamic;
             var line = new MenuLine({
-                text:  names[i],
+                text:  nm,
                 width: CONTAINER_W,
-                icon:  iconMap[names[i]] || null,
-                status: inactiveSet[names[i]] ? 'TBA' : null
+                icon:  iconMap[nm] || null,
+                status: startInactive ? inactiveStatus : null
             });
-            line._inactive = !!inactiveSet[names[i]];
+            line._inactive       = startInactive;
+            line._inactiveStatus = inactiveStatus;
             this.items.push(line);
         }
-        // Start on the first selectable (active) row.
+        // Initial selection: the first target-gated profile. It starts
+        // grayed and is promoted once its target is confirmed; if it
+        // turns out unavailable, _applyTargets hops the selection to the
+        // next active row. Falls back to row 0.
         this.selectedIndex = 0;
         for (var s = 0; s < this.items.length; s++) {
-            if (!this.items[s]._inactive) { this.selectedIndex = s; break; }
+            if (DYNAMIC_PROFILE_TARGET[this.items[s].text]) { this.selectedIndex = s; break; }
         }
         this.items[this.selectedIndex].state = MenuLine.STATE_SELECTED;
         this.scrollOffset = 0;
@@ -132,13 +158,69 @@ var BootMenuScene = (function() {
     }
 
     BootMenuScene.prototype.enter = function() {
-        this._refetchDefault();
+        // Gate the target-backed profiles against the live target list
+        // first, then re-fetch the extlinux default (so the "Default"
+        // tag lands on a row whose active/inactive state is settled).
+        this._fetchTargets();
     };
     BootMenuScene.prototype.exit  = function() {
         if (this._spinnerTimer) {
             clearInterval(this._spinnerTimer);
             this._spinnerTimer = null;
         }
+    };
+
+    // GET the live systemd target list and gate the target-backed
+    // profiles on it, then (always) re-fetch the extlinux default.
+    // Runs the default re-fetch even on error so an unreachable /
+    // mocked endpoint still tags the default off the optimistic state.
+    BootMenuScene.prototype._fetchTargets = function() {
+        var self = this;
+        var done = function() { self._refetchDefault(); };
+        try {
+            var x = new XMLHttpRequest();
+            x.open('GET', '/api/boot/targets', true);
+            x.timeout = 3000;
+            x.onload = function() {
+                if (x.status === 200) {
+                    try {
+                        var d = JSON.parse(x.responseText);
+                        self._applyTargets(d.targets || []);
+                    } catch (e) {}
+                }
+                done();
+            };
+            x.onerror   = done;
+            x.ontimeout = done;
+            x.send();
+        } catch (e) { done(); }
+    };
+
+    // Mark each target-gated profile active/inactive by whether its
+    // target appears in the live list. Absent → dimmed 'N/A' and
+    // skipped by the selector; present → active (default tag applied
+    // afterwards). If the current selection lands on a row that just
+    // went inactive, move it to the next selectable one.
+    BootMenuScene.prototype._applyTargets = function(targets) {
+        var present = {};
+        for (var t = 0; t < targets.length; t++) present[targets[t]] = true;
+        for (var i = 0; i < this.items.length; i++) {
+            var tgt = DYNAMIC_PROFILE_TARGET[this.items[i].text];
+            if (!tgt) continue;   // static placeholder — leave as-is
+            var avail = !!present[tgt];
+            this.items[i]._inactive = !avail;
+            this.items[i].status = avail
+                ? (this.items[i]._isDefault ? 'Default' : null)
+                : this.items[i]._inactiveStatus;   // 'N/A'
+        }
+        // Selection may now sit on a freshly-inactive row — hop off it.
+        if (this.items[this.selectedIndex] && this.items[this.selectedIndex]._inactive) {
+            this.items[this.selectedIndex].state = MenuLine.STATE_DEFAULT;
+            this.selectedIndex = this._nextSelectable(this.selectedIndex, 1);
+            this.items[this.selectedIndex].state = MenuLine.STATE_SELECTED;
+            this._ensureVisible();
+        }
+        if (window.requestRender) window.requestRender();
     };
 
     // GET the extlinux DEFAULT and re-tag the matching profile.
@@ -165,7 +247,9 @@ var BootMenuScene = (function() {
         for (var i = 0; i < this.items.length; i++) {
             if (this.items[i]._isDefault) {
                 this.items[i]._isDefault = false;
-                this.items[i].status = this.items[i]._inactive ? 'TBA' : null;
+                this.items[i].status = this.items[i]._inactive
+                    ? (this.items[i]._inactiveStatus || 'TBA')
+                    : null;
             }
         }
         if (tgt) {

@@ -58,7 +58,15 @@ var UIDemoScene = (function() {
         if (this.icon) {
             var iconX = x + PAD_X;
             var iconY = y + Math.floor((this.h - this.icon.h) / 2);  // Center vertically
-            canvas.drawIcon(this.icon, iconX, iconY, iconColor);
+            // Grayscale icons go through drawSprite; binary ones
+            // through drawIcon (same convention MenuLine uses). The
+            // `media` icon is now 6-bit grayscale, so this branch
+            // matters — drawIcon would misread its packed data.
+            if (this.icon.grayscale) {
+                canvas.drawSprite(this.icon, iconX, iconY, iconColor);
+            } else {
+                canvas.drawIcon(this.icon, iconX, iconY, iconColor);
+            }
         }
 
         // Draw text (offset if icon is present)
