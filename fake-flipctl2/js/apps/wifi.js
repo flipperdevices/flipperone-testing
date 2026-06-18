@@ -386,7 +386,7 @@ var WifiScene = (function() {
     // failure (e.g. saved profile broken / password changed)
     // falls back to opening the regular password modal so the
     // user can re-enter the PSK.
-    WifiScene.prototype._connectSavedDirectly = function(ssidOrName) {
+    WifiScene.prototype._connectSavedDirectly = function(ssidOrName, openNetwork) {
         var self = this;
         if (!ssidOrName) return;
         // Trigger spinner overlay on the visible-networks modal.
@@ -394,17 +394,31 @@ var WifiScene = (function() {
         // `_modalConnecting`; setting it here is enough.
         self._modalConnecting = true;
         if (window.requestRender) window.requestRender();
+        // Failure handling differs by network kind: a saved network
+        // falls back to the password modal so the user can re-enter
+        // the PSK; an OPEN network has no password, so we never show
+        // the keyboard — just surface a short toast instead.
+        var onFail = function() {
+            self._modalConnecting = false;
+            if (openNetwork) {
+                self._modalToast      = 'Connection failed';
+                self._modalToastUntil = Date.now() + 1600;
+                if (window.requestRender) window.requestRender();
+            } else {
+                self._openConnectModal(ssidOrName, '');
+            }
+        };
         try {
             var xhr = new XMLHttpRequest();
             xhr.open('POST', '/api/wifi/connect', true);
             xhr.timeout = 35000;
             xhr.setRequestHeader('Content-Type', 'application/json');
             xhr.onload = function() {
-                self._modalConnecting = false;
                 if (xhr.status === 200) {
                     // Close the visible-networks modal — wifi
                     // page poller will pick up the new active
                     // connection on its next tick.
+                    self._modalConnecting = false;
                     self._modal = null;
                     if (self._modalAnimTimer) {
                         clearInterval(self._modalAnimTimer);
@@ -413,23 +427,13 @@ var WifiScene = (function() {
                     if (window.requestRender) window.requestRender();
                     return;
                 }
-                // Saved-profile reuse failed (broken creds, etc.)
-                // — fall back to the password modal so the user
-                // can re-enter the PSK.
-                self._openConnectModal(ssidOrName, '');
+                onFail();
             };
-            xhr.onerror = function() {
-                self._modalConnecting = false;
-                self._openConnectModal(ssidOrName, '');
-            };
-            xhr.ontimeout = function() {
-                self._modalConnecting = false;
-                self._openConnectModal(ssidOrName, '');
-            };
+            xhr.onerror   = onFail;
+            xhr.ontimeout = onFail;
             xhr.send(JSON.stringify({ ssid: ssidOrName, password: '' }));
         } catch (e) {
-            self._modalConnecting = false;
-            self._openConnectModal(ssidOrName, '');
+            onFail();
         }
     };
 
@@ -661,6 +665,13 @@ var WifiScene = (function() {
                         // handles the brief join delay.
                         if (self._savedSsids && self._savedSsids[picked.ssid]) {
                             self._connectSavedDirectly(self._savedSsids[picked.ssid]);
+                            return;
+                        }
+                        // Open network (no security) → no password
+                        // needed; connect directly instead of opening
+                        // the password keyboard.
+                        if (!picked.security) {
+                            self._connectSavedDirectly(picked.ssid, true);
                             return;
                         }
                         self._openConnectModal(picked.ssid, picked.security);

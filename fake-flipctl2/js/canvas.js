@@ -112,6 +112,23 @@ var FlipCanvas = (function() {
         _btnText(this.ctx, text, x, w, y, c.fg);
     };
 
+    // Icon-only middle button — same body as drawMiddleButton but with
+    // a centred icon instead of a text label. The icon is tinted with
+    // the button's foreground colour (black at rest, white while
+    // pressed, gray when disabled). Reuses drawMiddleButton (empty
+    // label) for the body so the chrome stays pixel-identical.
+    FlipCanvas.prototype.drawMiddleIconButton = function(icon, x, w, pressed, disabled, dy) {
+        this.drawMiddleButton('', x, w, pressed, disabled);
+        if (!icon) return;
+        var y = this.h - BTN_H;
+        var c = disabled ? { bg: '#CCC', fg: '#999' } : _btnColors(pressed);
+        var ix = x + Math.floor((w - icon.w) / 2);
+        // Centred, plus an optional per-button vertical nudge (dy).
+        var iy = y + Math.floor((BTN_H - icon.h) / 2) + (dy || 0);
+        if (icon.grayscale) this.drawSprite(icon, ix, iy, c.fg);
+        else                this.drawIcon(icon, ix, iy, c.fg);
+    };
+
     // Toggle variant of the middle button — identical body, plus a
     // 2 px accent bar sitting directly on top of the button. The
     // bar is the toggle affordance: black (#000) when `toggled` is
@@ -125,6 +142,17 @@ var FlipCanvas = (function() {
         // the regular (untoggled) state so the button reads as a
         // plain button until it's pushed. Sits 1 px into the top
         // edge, 2 px wider than the flat top (x+2 / w-4).
+        if (toggled && !disabled) {
+            var y = this.h - BTN_H;
+            this.ctx.fillStyle = '#000000';
+            this.ctx.fillRect(x + 2, y + 1, w - 4, 2);
+        }
+    };
+
+    // Icon toggle button — drawMiddleIconButton plus the same 2 px
+    // accent bar as drawMiddleToggleButton (shown only while toggled).
+    FlipCanvas.prototype.drawMiddleIconToggleButton = function(icon, x, w, pressed, disabled, toggled, dy) {
+        this.drawMiddleIconButton(icon, x, w, pressed, disabled, dy);
         if (toggled && !disabled) {
             var y = this.h - BTN_H;
             this.ctx.fillStyle = '#000000';
@@ -302,6 +330,67 @@ var FlipCanvas = (function() {
         this.ctx.fillRect(x + 1, y + 2, 1, 1);
         // Left border straight
         this.ctx.fillRect(x, y + 3, 1, BTN_H - 3);
+
+        _btnText(this.ctx, text, x, w, y, c.fg);
+    };
+
+    // Variant of drawRightButton whose frame is the
+    // target_app_defined_button icon — a 48 x 21 grayscale outline
+    // with a top-right tab and a rounded bottom-left corner. The
+    // icon's lower 14 rows (BTN_H) are the button body; the top 7 px
+    // protrude above as the tab. Drawn over the body fill, with the
+    // text on top. The stock drawRightButton (and every other
+    // RightButton in the app) is left untouched.
+    FlipCanvas.prototype.drawRightButtonTopCut = function(text, x, w, pressed, disabled, icon) {
+        var y = this.h - BTN_H;
+        // Standard button colours: white fill at rest, inverted to
+        // black bg / white text while pressed, gray when disabled.
+        var c = disabled ? { bg: '#CCC', fg: '#999' } : _btnColors(pressed);
+
+        // Body fill — rounded top-left rectangle (the lower BTN_H px).
+        // The step matches the icon's rounded corner so the fill sits
+        // flush inside the outline.
+        this.ctx.fillStyle = c.bg;
+        this.ctx.fillRect(x + 3, y,      w - 3, 1);         // Row 0: 4px from left
+        this.ctx.fillRect(x + 2, y + 1,  w - 2, 1);         // Row 1: 3px from left
+        this.ctx.fillRect(x + 1, y + 2,  w - 1, 1);         // Row 2: 2px from left
+        this.ctx.fillRect(x,     y + 3,  w,     1);         // Row 3: 1px from left
+        this.ctx.fillRect(x,     y + 4,  w,     BTN_H - 4); // Rows 4+: full width
+
+        // Frame icon + matching tab fill. The icon is anchored so its
+        // bottom aligns with the screen bottom; its body top edge then
+        // lands on the button's top edge (y) and the top 7 px tab
+        // protrudes above.
+        var frameIcon = (typeof Icons !== 'undefined') ? Icons.target_app_defined_button : null;
+        if (frameIcon) {
+            var topY = this.h - frameIcon.h;  // icon top row
+            // Fill the protruding tab interior with the body colour
+            // too. The tab occupies the icon's top rows above the
+            // body; its left edge follows the diagonal (icon cols
+            // 29 / 28 / 27 over rows 1 / 2-5 / 6) and it runs flush to
+            // the right edge. Filled before the outline so the black
+            // icon redraws the diagonal on top. Columns mirror the
+            // icon geometry.
+            this.ctx.fillStyle = c.bg;
+            this.ctx.fillRect(x + 29, topY + 1, w - 29, 1);  // row 1
+            this.ctx.fillRect(x + 28, topY + 2, w - 28, 4);  // rows 2-5
+            this.ctx.fillRect(x + 27, topY + 6, w - 27, 1);  // row 6
+            // Outline (black) over the fill.
+            this.drawSprite(frameIcon, x, topY, '#000');
+        }
+
+        // Icon above the label. Defaults to the purpose-drawn
+        // media_small sprite (10x8 grayscale) but callers can pass a
+        // different one (e.g. desktop_small_icon). Horizontally centred
+        // then shifted right (into the tab), bottom edge on the body
+        // top (y). ix/iy kept for easy nudging.
+        var btnIcon = icon || ((typeof Icons !== 'undefined') ? Icons.media_small : null);
+        if (btnIcon) {
+            var mi = btnIcon;
+            var ix = x + Math.floor((w - mi.w) / 2) + 14;
+            var iy = y - mi.h + 3;
+            this.drawSprite(mi, ix, iy, '#000');
+        }
 
         _btnText(this.ctx, text, x, w, y, c.fg);
     };
@@ -1360,6 +1449,53 @@ var FlipCanvas = (function() {
         } else {
             // Binary (1-bit) sprite
             this._drawBinarySprite(sprite, x, y, color);
+        }
+    };
+
+    // drawSpriteRotated(sprite, x, y, color, turns)
+    // Like drawSprite (6-bit grayscale path) but rotated by `turns`
+    // clockwise quarter-turns (0..3). 90° multiples are a pure index
+    // remap — each source pixel maps exactly to one dest pixel, so
+    // there are no sub-pixel/anti-aliasing artifacts (unlike a
+    // ctx.rotate). (x, y) is the top-left of the rotated bounding box;
+    // for a square sprite that's the same box as the unrotated draw.
+    FlipCanvas.prototype.drawSpriteRotated = function(sprite, x, y, color, turns) {
+        if (!sprite || !sprite.d) return;
+        turns = (((turns || 0) % 4) + 4) % 4;
+        if (turns === 0 || !sprite.grayscale || sprite.bitsPerPixel !== 6) {
+            // No rotation (or unsupported format) → defer to drawSprite.
+            this.drawSprite(sprite, x, y, color);
+            return;
+        }
+        var ctx = this.ctx;
+        color = color || '#000';
+        var w = sprite.w, h = sprite.h;
+        var dataIndex = 0;
+        for (var row = 0; row < h; row++) {
+            for (var col = 0; col < w; col += 4) {
+                var b0 = sprite.d[dataIndex]     || 0;
+                var b1 = sprite.d[dataIndex + 1] || 0;
+                var b2 = sprite.d[dataIndex + 2] || 0;
+                dataIndex += 3;
+                var pix = [
+                    (b0 >> 2) & 0x3F,
+                    (((b0 & 0x03) << 4) | ((b1 >> 4) & 0x0F)) & 0x3F,
+                    (((b1 & 0x0F) << 2) | ((b2 >> 6) & 0x03)) & 0x3F,
+                    b2 & 0x3F
+                ];
+                for (var i = 0; i < 4 && col + i < w; i++) {
+                    var opacity = (63 - pix[i]) / 63;
+                    if (opacity <= 0.01) continue;  // transparent
+                    var c = col + i, r = row, dx, dy;
+                    if (turns === 1)      { dx = h - 1 - r; dy = c; }            // 90° CW
+                    else if (turns === 2) { dx = w - 1 - c; dy = h - 1 - r; }    // 180°
+                    else                  { dx = r;         dy = w - 1 - c; }    // 270° CW
+                    ctx.globalAlpha = opacity;
+                    ctx.fillStyle = color;
+                    ctx.fillRect(x + dx, y + dy, 1, 1);
+                    ctx.globalAlpha = 1.0;
+                }
+            }
         }
     };
 

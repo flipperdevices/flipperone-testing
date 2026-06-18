@@ -36,6 +36,12 @@ var MenuScene = (function() {
         'Settings'
     ];
 
+    // Active boot-target profile for the current menu session (set by
+    // the MenuScene constructor). Lets appsMenu drop TV Media Box from
+    // the Apps list when that app has moved up to the main-menu first
+    // slot (TV Media Box target).
+    var _menuTargetProfile = '';
+
     // Modal shown when the user tries to open 5G Modem while airplane
     // mode is on. Transparent overlay under a ResponsiveFrame with a
     // two-line message and two app-defined buttons (Cancel / Turn off).
@@ -300,11 +306,19 @@ var MenuScene = (function() {
                                      ? AnimatedIcons.walkie_talkie
                                      : null },
             'TV Media Box':    { factory:      function(sm) { return new TVMediaBoxScene(sm); },
+                                 // Media glyph (grayscale), matching the
+                                 // app's title bar + App Switcher card.
                                  icon:         (typeof Icons !== 'undefined')
-                                     ? Icons.tv_media_box : null,
+                                     ? Icons.media : null,
                                  iconAnimated: null }
         };
         var order = ['Internet radio', 'Voice recorder', 'Walkie Talkie', 'TV Media Box'];
+        // With the TV Media Box target active, that app lives in the
+        // main menu's first slot — drop it from Apps to avoid showing
+        // it twice.
+        if (_menuTargetProfile === 'TV Media Box') {
+            order = order.filter(function(n) { return n !== 'TV Media Box'; });
+        }
 
         var factories = {};
         order.forEach(function(name) {
@@ -369,19 +383,34 @@ var MenuScene = (function() {
         'Testing': testingMenu,
         'Settings': settingsMenu,
         'Router':  function() { return null; },
-        'Boot Menu': function(reSm) { return new BootMenuScene(reSm); }
+        'Boot Menu': function(reSm) { return new BootMenuScene(reSm); },
+        // Target apps surfaced in the main-menu first slot.
+        'TV Media Box':     function(reSm) { return new TVMediaBoxScene(reSm); },
+        'Desktop Computer': function(reSm) {
+            return (typeof DesktopComputerScene === 'function')
+                ? new DesktopComputerScene(reSm) : null;
+        }
     };
 
-    function MenuScene(sceneManager) {
+    function MenuScene(sceneManager, targetProfile) {
         this.sceneManager = sceneManager;
         this.displayName = 'Main Menu';
         this.selectedIndex = 0;
         this.scrollOffset = 0;
         this.items = [];
 
+        // First menu item is the active target's app, replacing the
+        // old fixed "Router" slot: TV Media Box target → TV Media Box,
+        // otherwise (Desktop / unknown) → Desktop Computer.
+        _menuTargetProfile = targetProfile || '';
+        this.menuNames = menuItems.slice();
+        this.menuNames[0] = (_menuTargetProfile === 'TV Media Box')
+            ? 'TV Media Box' : 'Desktop Computer';
+
         var iconMap = {
-            'Settings': Icons.system,
-            'Router':   Icons.router
+            'Settings':         Icons.system,
+            'TV Media Box':     (typeof Icons !== 'undefined') ? Icons.media : null,
+            'Desktop Computer': (typeof Icons !== 'undefined') ? Icons.desktop_computer : null
             // 'Network' / 'Files' / 'Apps' / 'Testing' have no static
             // icon — they fall back to frame 0 of their animated strip
             // while unselected.
@@ -394,12 +423,12 @@ var MenuScene = (function() {
             'Testing':  AnimatedIcons.testing_animated
         };
 
-        for (var i = 0; i < menuItems.length; i++) {
+        for (var i = 0; i < this.menuNames.length; i++) {
             this.items.push(new MenuLine({
-                text: menuItems[i],
+                text: this.menuNames[i],
                 width: CONTAINER_W,
-                icon: iconMap[menuItems[i]] || null,
-                iconAnimated: animatedIconMap[menuItems[i]] || null
+                icon: iconMap[this.menuNames[i]] || null,
+                iconAnimated: animatedIconMap[this.menuNames[i]] || null
             }));
         }
 
@@ -417,7 +446,7 @@ var MenuScene = (function() {
             showFill: false
         });
 
-        this.scrollbar = new UI.Scrollbar(menuItems.length, VISIBLE_COUNT, this.scrollOffset);
+        this.scrollbar = new UI.Scrollbar(this.menuNames.length, VISIBLE_COUNT, this.scrollOffset);
     }
 
     MenuScene.prototype.enter = function() {
@@ -467,7 +496,7 @@ var MenuScene = (function() {
             if (window.requestRender) window.requestRender();
             setTimeout(function() {
                 line.state = MenuLine.STATE_SELECTED;
-                var factory = subMenus[menuItems[idx]];
+                var factory = subMenus[self.menuNames[idx]];
                 if (factory) {
                     var next = factory(self.sceneManager);
                     if (next) self.sceneManager.push(next);

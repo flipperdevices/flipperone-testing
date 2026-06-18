@@ -1357,14 +1357,19 @@ function stopMicLevelMonitor() {
 var SCRIPTS_DIR = path.join(BASE, '..', 'scripts');
 
 function forwardScriptName(kind) {
-    return 'forward-' + (kind === 'touchpad' ? 'touchpad' : 'keys') + '.py';
+    var names = {
+        keys:     'forward-keys.py',
+        touchpad: 'forward-touchpad.py',
+        remote:   'forward-remote.py'    // d-pad + OK + Back only
+    };
+    return names[kind] || null;
 }
 
 function startForward(kind) {
-    if (kind !== 'keys' && kind !== 'touchpad') {
+    var script = forwardScriptName(kind);
+    if (!script) {
         return { success: false, error: 'Invalid kind' };
     }
-    var script = forwardScriptName(kind);
     if (!fs.existsSync(path.join(SCRIPTS_DIR, script))) {
         return { success: false, error: 'Script not found' };
     }
@@ -1378,10 +1383,11 @@ function startForward(kind) {
 }
 
 function stopForward(kind) {
-    if (kind !== 'keys' && kind !== 'touchpad') {
+    var script = forwardScriptName(kind);
+    if (!script) {
         return { success: false, error: 'Invalid kind' };
     }
-    exec('sudo pkill -f ' + forwardScriptName(kind), function() {});
+    exec('sudo pkill -f ' + script, function() {});
     return { success: true };
 }
 
@@ -1395,6 +1401,55 @@ function isForwardRunning(kind, cb) {
     exec('pgrep -f "' + pat + '"', function(err, stdout) {
         cb(!!(stdout && String(stdout).trim()));
     });
+}
+
+// ── UInput typer (synthetic key injection) ───────────────────
+// A persistent uinput-type.py keyboard fed key specs on stdin —
+// started when the TV Media Box keyboard view opens, stopped when
+// it closes. Managed (not detached) so we can pipe keystrokes to
+// its stdin; EOF on stdin makes it exit cleanly.
+var typeProc = null;
+
+function startType() {
+    if (typeProc) return { success: true };
+    if (!fs.existsSync(path.join(SCRIPTS_DIR, 'uinput-type.py'))) {
+        return { success: false, error: 'Script not found' };
+    }
+    try {
+        typeProc = spawn('sudo', ['python3', 'uinput-type.py'],
+            { cwd: SCRIPTS_DIR, stdio: ['pipe', 'ignore', 'ignore'] });
+        typeProc.on('error', function() { typeProc = null; });
+        typeProc.on('exit',  function() { typeProc = null; });
+    } catch (e) {
+        typeProc = null;
+        return { success: false, error: String((e && e.message) || e) };
+    }
+    return { success: true };
+}
+
+function stopType() {
+    if (typeProc) {
+        try { typeProc.stdin.end(); } catch (e) {}   // EOF -> clean exit
+        try { typeProc.kill('SIGTERM'); } catch (e) {}
+        typeProc = null;
+    }
+    exec('sudo pkill -f uinput-type.py', function() {});   // stray-daemon backstop
+    return { success: true };
+}
+
+// One key spec to the typer's stdin. keyName must be a KEY_* evdev
+// name; shift holds Left-Shift for the tap (uppercase / shifted).
+function sendTypeKey(keyName, shift) {
+    if (!typeProc || !typeProc.stdin || !typeProc.stdin.writable) {
+        return { success: false, error: 'Typer not running' };
+    }
+    if (typeof keyName !== 'string' || !/^KEY_[A-Z0-9_]+$/.test(keyName)) {
+        return { success: false, error: 'Bad key name' };
+    }
+    var line = (shift ? 'shift ' : '') + keyName + '\n';
+    try { typeProc.stdin.write(line); }
+    catch (e) { return { success: false, error: String((e && e.message) || e) }; }
+    return { success: true };
 }
 
 // ── Boot default (extlinux) ──────────────────────────────────
@@ -3816,6 +3871,30 @@ var server = http.createServer(function(req, res) {
         res.end(JSON.stringify({ success: true }));
         return;
     }
+    // ── /api/tvmb/kodi-send ──────────────────────────────────────
+    // Body: { action }. Runs the EXACT shell command that works over
+    // SSH — `kodi-send --action="<action>"` — via /bin/sh so PATH /
+    // wrapper resolution matches the interactive shell. The action is
+    // allowlisted (no ", $, `, \, ;, |, & …) and wrapped in double
+    // quotes, so the parens stay literal and nothing can break out.
+    if (req.url === '/api/tvmb/kodi-send' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            var action = data && data.action;
+            if (typeof action !== 'string' || !/^[A-Za-z0-9_.,():\- ]+$/.test(action)) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: 'Invalid action' }));
+                return;
+            }
+            var cmd = 'kodi-send --action="' + action + '"';
+            exec(cmd, { timeout: 5000 }, function(e2, stdout, stderr) {
+                if (e2) console.error('[kodi-send] failed:', e2.message,
+                                      String(stderr || '').trim());
+            });
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true }));
+        });
+        return;
+    }
     // ── /api/tvmb/status ─────────────────────────────────────────
     // { running, preset } — tells the client which preset (if any)
     // is currently spawned. Survives across HTTP requests because
@@ -4664,6 +4743,34 @@ var server = http.createServer(function(req, res) {
             var sr = stopForward(kind);
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify(sr));
+        });
+        return;
+    }
+    // ── /api/type/start ─────────────────────────────────────────
+    // Launch the persistent uinput-type.py keyboard (managed child,
+    // fed via stdin). Idempotent.
+    if (req.url === '/api/type/start' && req.method === 'POST') {
+        var tStart = startType();
+        res.writeHead(tStart.success ? 200 : 500,
+                      { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(tStart));
+        return;
+    }
+    // ── /api/type/stop ──────────────────────────────────────────
+    if (req.url === '/api/type/stop' && req.method === 'POST') {
+        var tStop = stopType();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(tStop));
+        return;
+    }
+    // ── /api/type/key ───────────────────────────────────────────
+    // Body: { key: 'KEY_A', shift: bool }. Taps it on the typer.
+    if (req.url === '/api/type/key' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            var kr = sendTypeKey(data && data.key, !!(data && data.shift));
+            res.writeHead(kr.success ? 200 : 400,
+                          { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(kr));
         });
         return;
     }

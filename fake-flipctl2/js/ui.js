@@ -511,6 +511,25 @@ var UI = (function() {
     }
     MiddleButton.prototype = _makeButton('drawMiddleButton');
 
+    // Icon-only middle button — same slot positioning as MiddleButton,
+    // but renders a centred icon instead of a text label
+    // (canvas.drawMiddleIconButton). `icon` replaces `text`.
+    function MiddleIconButton(icon, index, w, gap, action, onPress) {
+        if (w > MAX_BTN_W) w = MAX_BTN_W;
+        this.icon     = icon;
+        this.x        = index * (w + gap);
+        this.w        = w;
+        this.pressed  = false;
+        this.disabled = false;
+        this.action   = action  || null;
+        this.onPress  = onPress || null;
+    }
+    MiddleIconButton.prototype = {
+        render:  function(canvas) { canvas.drawMiddleIconButton(this.icon, this.x, this.w, this.pressed, this.disabled, this.iconDy || 0); },
+        press:   function() { if (!this.disabled) this.pressed = true; },
+        release: function() { this.pressed = false; }
+    };
+
     // Toggle variant of the middle button — same slot-indexed
     // positioning, plus a `toggled` state shown as a 2 px bar on
     // top (black when on, gray when off). `toggle()` flips it.
@@ -526,6 +545,26 @@ var UI = (function() {
         this.onPress  = onPress || null;
     }
     MiddleToggleButton.prototype = _makeToggleButton('drawMiddleToggleButton');
+
+    // Icon toggle button — MiddleToggleButton with a centred icon
+    // instead of a text label (canvas.drawMiddleIconToggleButton).
+    function MiddleIconToggleButton(icon, index, w, gap, action, onPress, toggled) {
+        if (w > MAX_BTN_W) w = MAX_BTN_W;
+        this.icon     = icon;
+        this.x        = index * (w + gap);
+        this.w        = w;
+        this.pressed  = false;
+        this.disabled = false;
+        this.toggled  = !!toggled;
+        this.action   = action  || null;
+        this.onPress  = onPress || null;
+    }
+    MiddleIconToggleButton.prototype = {
+        render:  function(canvas) { canvas.drawMiddleIconToggleButton(this.icon, this.x, this.w, this.pressed, this.disabled, this.toggled, this.iconDy || 0); },
+        press:   function() { if (!this.disabled) this.pressed = true; },
+        release: function() { this.pressed = false; },
+        toggle:  function() { this.toggled = !this.toggled; }
+    };
 
     // Left button — always flush with left screen edge (x = 0)
     function LeftButton(text, w, action, onPress) {
@@ -552,6 +591,30 @@ var UI = (function() {
         this.onPress = onPress || null;
     }
     RightButton.prototype = _makeButton('drawRightButton');
+
+    // Right button variant with the top black stroke cut short on
+    // the right (see canvas.drawRightButtonTopCut). Same flush-right
+    // positioning and 48 px cap as RightButton — only the draw
+    // method differs, so the stock RightButton is left untouched.
+    function RightButtonTopCut(text, w, action, onPress, screenW) {
+        if (w > MAX_BTN_W) w = MAX_BTN_W;
+        this.text    = text;
+        this.x       = (screenW || 256) - w;
+        this.w       = w;
+        this.pressed = false;
+        this.disabled = false;
+        this.action  = action  || null;
+        this.onPress = onPress || null;
+        // Optional icon drawn above the label; null → media_small
+        // (the default, applied in the canvas draw method).
+        this.icon    = null;
+    }
+    RightButtonTopCut.prototype = _makeButton('drawRightButtonTopCut');
+    // Override render to pass the optional icon through to the canvas.
+    RightButtonTopCut.prototype.render = function(canvas) {
+        canvas.drawRightButtonTopCut(this.text, this.x, this.w,
+            this.pressed, this.disabled, this.icon);
+    };
 
     // Numeric-layout tab button — visual cousin of MiddleButton
     // with the corner radii flipped (square top, rounded bottom).
@@ -1302,9 +1365,12 @@ var UI = (function() {
         drawMenuList:   drawMenuList,
         visibleCount:   visibleCount,
         MiddleButton:   MiddleButton,
+        MiddleIconButton: MiddleIconButton,
         MiddleToggleButton: MiddleToggleButton,
+        MiddleIconToggleButton: MiddleIconToggleButton,
         LeftButton:     LeftButton,
         RightButton:    RightButton,
+        RightButtonTopCut: RightButtonTopCut,
         NumericTabButton: NumericTabButton,
         IconTabButton:    IconTabButton,
         PopupMenuLeft:  PopupMenuLeft,

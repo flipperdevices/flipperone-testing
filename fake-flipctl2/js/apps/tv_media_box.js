@@ -12,6 +12,13 @@
 var TVMediaBoxScene = (function() {
     var TITLE_H = 16;
 
+    // TV remote panel — "open" phase (Phase 01): 107 × 119, right edge
+    // 5 px from the screen edge (144 + 107 = 251). The "closed" phase
+    // (Phase 02) is the TV remote button's own rect, read live from the
+    // button; pressing the button tweens the frame between the two.
+    var REMOTE_OPEN    = { x: 144, y: 35, w: 107, h: 119 };
+    var REMOTE_ANIM_MS = 180;   // tween duration each way
+
     // CEC support-detection knobs. We probe `tv-present` quickly on
     // HDMI connect; the first ACK promotes us to 'supported' (sticky
     // for the HDMI session — never re-flapped by a missed poll), and
@@ -21,6 +28,11 @@ var TVMediaBoxScene = (function() {
     var CEC_MISS_LIMIT      = 3;
     var CEC_PROBE_PERIOD_MS = 2000;
     var CEC_ANIM_PERIOD_MS  = 333;
+    // Per-frame duration of the tv_screen_checking strip (8 frames →
+    // ~0.8 s loop). Also the cadence the CEC anim timer repaints at,
+    // so the strip plays smoothly (the "checking..." dots keep their
+    // own CEC_ANIM_PERIOD_MS period, derived from Date.now()).
+    var TV_CHECK_FRAME_MS   = 100;
 
     // Mid-session tv-power tolerance: a single null reply is more
     // likely CEC bus jitter than the TV genuinely powering down, so
@@ -75,8 +87,46 @@ var TVMediaBoxScene = (function() {
         // transient-snapshot path (this scene is already a real
         // RunningApps card).
         this._isApp   = true;
-        this.icon     = (typeof Icons !== 'undefined') ? Icons.tv_media_box : null;
+        // App Switcher card icon — the media glyph (grayscale),
+        // matching the Apps-menu row and the in-app title bar.
+        this.icon     = (typeof Icons !== 'undefined') ? Icons.media : null;
         this.imagePath = null;
+
+        // Sub-view within the app: 'main' (the default info/settings
+        // screen) or 'tvRemote' (empty screen with the D-pad TV-remote
+        // graphic, app chrome retained). Toggled by the TV remote button.
+        this._view = 'main';
+
+        // Control-view D-pad feedback: `_pressedDir` is the d-pad key
+        // currently pressed ('left'/'up'/'right'/'down'/'ok') or null.
+        // Directions lay the single left-press overlay on the base
+        // D-pad rotated to the pressed arm (left=0°, up=90°, right=180°,
+        // down=270°); 'ok' lays the dedicated ok-press asset centred in
+        // the D-pad. Cleared by a short timer (a tap flash; auto-repeat
+        // keeps it lit while held).
+        this._pressedDir = null;
+        this._pressTimer = null;
+
+        // Open/close morph of the TV remote panel: `_openProgress`
+        // tweens 0 (closed = button rect) → 1 (open = REMOTE_OPEN) and
+        // back. `_animTimer` drives the eased tween; while it's < 1 the
+        // panel is mid-animation and the d-pad isn't drawn yet.
+        this._openProgress = 0;
+        this._openTarget   = 0;
+        this._animFrom     = 0;
+        this._animStart    = 0;
+        this._animTimer    = null;
+
+        // Back button press flash: shows back_button_remote_pressed for
+        // a moment before the popup closes.
+        this._backPressed  = false;
+        this._backTimer    = null;
+
+        // True while the keyboard forwarder (forward-keys.py — the same
+        // unmodified script the Testing UIinput tool uses) is running:
+        // started on popup open, stopped on close / exit, so keys reach
+        // Kodi only inside this menu.
+        this._forwardActive = false;
 
         // Preset run-state, polled from /api/tvmb/status (kodiRunning is
         // a server-side `pgrep -x kodi.bin` check). Drives the
@@ -157,21 +207,32 @@ var TVMediaBoxScene = (function() {
             dismissed:      false
         };
 
-        // Bottom-bar buttons.
-        //   Start (right / run)  — unified launch: wakes the TV via
-        //                          CEC (when supported) and spawns
-        //                          the binary for the selected preset.
-        //                          Visible whenever HDMI is connected.
-        //   Stop (left / esc)    — kills the running preset via
-        //                          POST /api/tvmb/stop. Only while
-        //                          Kodi is running.
+        // App-defined middle buttons:
+        //   Keyboard (X / edit) — slot 1 (mouse_keyboard icon)
+        //   Control  (V / del)  — slot 3 (TV remote)
+        // Slots mirror the physical key positions (z·x·c·v·b →
+        // left·1·2·3·right), so each label sits above its key.
         var self = this;
-        this._startBtn = new UI.RightButton('Start', 48, 'run', function() {
-            self._handleStart();
-        }, 256);
-        this._stopBtn = new UI.LeftButton('Stop', 48, 'esc', function() {
-            self._stopKodi();
-        });
+        // Keyboard button (X / edit) — the mouse_keyboard icon. Opens
+        // the on-screen emulator keyboard whose key presses are
+        // injected via UInput (so they reach Kodi).
+        this._keyboardBtn = new UI.MiddleIconButton(
+            (typeof Icons !== 'undefined') ? Icons.mouse_keyboard : null,
+            1, 48, 2, 'edit', function() { self._openKeyboard(); });
+        this._keyboardBtn.iconDy = 1;   // nudge the mouse_keyboard icon 1 px down
+        // Control is a toggle: pressing it enters the TV remote view
+        // and raises the bar on the button; pressing it again returns
+        // to the main view. `toggled` tracks _view.
+        this._tvRemoteBtn = new UI.MiddleIconToggleButton(
+            (typeof Icons !== 'undefined') ? Icons.tv_remote : null,
+            3, 48, 2, 'del', function() { self._onTvRemote(); }, false);
+        this._tvRemoteBtn.iconDy = 1;   // nudge the tv_remote icon 1 px down
+
+        // Wake button (B / run, right edge) — shown only while the TV
+        // is detected asleep (standby). Wakes it and switches it to
+        // our HDMI input via the CEC start-tv path.
+        this._wakeBtn = new UI.RightButton('Wake', 48, 'run',
+            function() { self._handleWake(); }, 256);
 
         // Body frame — decorative card that tucks underneath the title
         // bar. y=16 puts the top 13 px (with the rounded corners) behind
@@ -216,7 +277,7 @@ var TVMediaBoxScene = (function() {
         // swaps based on HDMI state: 'No screen detected' when
         // unplugged, '<W>x<H> <NN>Hz' once a screen is attached.
         this._screenInfoFrame = new ResponsiveFrame({
-            x: 175, y: 50, width: 84, height: 9,
+            x: 175, y: 49, width: 84, height: 11,
             anchorH: 'center', anchorV: 'top',
             fillColor:   '#000', showFill:   true,
             strokeColor: '#000', showStroke: false,
@@ -228,6 +289,21 @@ var TVMediaBoxScene = (function() {
     // True when the TV is on (or coming on) per the latest power poll.
     TVMediaBoxScene.prototype._isTvOn = function() {
         return this._tvPower === 'on' || this._tvPower === 'to-on';
+    };
+
+    // True when the TV is detected in standby — i.e. the on-screen
+    // status reads "TV: Sleep". Reusing the label keeps all the gating
+    // (HDMI connected + CEC supported + power = standby) in one place,
+    // so the Wake button shows exactly when the Sleep label does.
+    TVMediaBoxScene.prototype._isTvAsleep = function() {
+        return this._tvStatusLabel() === 'TV: Sleep';
+    };
+
+    // Wake button (B / run): wake the TV and switch it to our HDMI
+    // input — the same CEC path (image-view-on + active-source) the
+    // old Start TV used.
+    TVMediaBoxScene.prototype._handleWake = function() {
+        this._sendTv('/api/cec/start-tv');
     };
 
     // POST a TV power command, then re-query power to reflect the result
@@ -280,6 +356,216 @@ var TVMediaBoxScene = (function() {
             if (btn.onPress) btn.onPress();
             if (window.requestRender) window.requestRender();
         }, 30);
+    };
+
+    // TV remote button (V / del) → toggle the TV remote panel with a
+    // morph. Opening enters the view immediately and grows the panel
+    // from the button; closing shrinks it back to the button and only
+    // then returns to the main view (handled when the tween finishes).
+    TVMediaBoxScene.prototype._onTvRemote = function() {
+        if (this._view === 'tvRemote') {
+            this._tvRemoteBtn.toggled = false;
+            this._stopForward();
+            this._startRemoteAnim(0);
+        } else {
+            this._view = 'tvRemote';
+            this._tvRemoteBtn.toggled = true;
+            this._startForward();
+            this._startRemoteAnim(1);
+        }
+        if (window.requestRender) window.requestRender();
+    };
+
+    // Start / stop forward-remote.py (kind 'remote') so only the d-pad
+    // + OK + Back keys are forwarded to Kodi while the popup is open.
+    TVMediaBoxScene.prototype._startForward = function() {
+        if (this._forwardActive) return;
+        this._forwardActive = true;
+        this._postForward('/api/forward/start');
+    };
+    TVMediaBoxScene.prototype._stopForward = function() {
+        if (!this._forwardActive) return;
+        this._forwardActive = false;
+        this._postForward('/api/forward/stop');
+    };
+    TVMediaBoxScene.prototype._postForward = function(url) {
+        try {
+            var x = new XMLHttpRequest();
+            x.open('POST', url, true);
+            x.setRequestHeader('Content-Type', 'application/json');
+            x.timeout = 4000;
+            x.send(JSON.stringify({ kind: 'remote' }));
+        } catch (e) { /* offline / mocked — ignore */ }
+    };
+
+    TVMediaBoxScene.prototype._postKodiSend = function(actionStr) {
+        try {
+            var x = new XMLHttpRequest();
+            x.open('POST', '/api/tvmb/kodi-send', true);
+            x.setRequestHeader('Content-Type', 'application/json');
+            x.timeout = 4000;
+            x.send(JSON.stringify({ action: actionStr }));
+        } catch (e) { /* offline / mocked — ignore */ }
+    };
+
+    // ── Shared d-pad helpers (used by both the TV remote and the
+    // Adjust-screen popup) ────────────────────────────────────────
+
+    // Flash a d-pad press overlay (auto-repeat while held keeps it lit).
+    TVMediaBoxScene.prototype._flashPress = function(action) {
+        var self = this;
+        this._pressedDir = action;
+        if (this._pressTimer) clearTimeout(this._pressTimer);
+        this._pressTimer = setTimeout(function() {
+            self._pressedDir = null;
+            self._pressTimer = null;
+            if (window.requestRender) window.requestRender();
+        }, 150);
+        if (window.requestRender) window.requestRender();
+    };
+
+    // Flash the back button (back_button_remote_pressed); `onDone`, if
+    // given, fires once the flash ends (e.g. close the popup).
+    TVMediaBoxScene.prototype._flashBack = function(onDone) {
+        var self = this;
+        this._backPressed = true;
+        if (this._backTimer) clearTimeout(this._backTimer);
+        this._backTimer = setTimeout(function() {
+            self._backPressed = false;
+            self._backTimer = null;
+            if (window.requestRender) window.requestRender();
+            if (onDone) onDone();
+        }, 150);
+        if (window.requestRender) window.requestRender();
+    };
+
+    // Draw the d-pad (base + the current press overlay) at (dx, dy).
+    // OK uses its dedicated centred asset; directions reuse the
+    // left-press asset rotated to the pressed arm.
+    TVMediaBoxScene.prototype._drawDpad = function(canvas, dx, dy) {
+        if (typeof Icons === 'undefined' || !Icons.d_pad_tv_remote) return;
+        var dp = Icons.d_pad_tv_remote;
+        canvas.drawSprite(dp, dx, dy, '#000');
+        if (this._pressedDir === 'ok') {
+            if (Icons.d_pad_tv_remote_ok_press) {
+                var ok = Icons.d_pad_tv_remote_ok_press;
+                canvas.drawSprite(ok, dx + Math.floor((dp.w - ok.w) / 2),
+                                  dy + Math.floor((dp.h - ok.h) / 2), '#000');
+            }
+        } else if (this._pressedDir && Icons.d_pad_tv_remote_left_press) {
+            var TURNS = { left: 0, up: 1, right: 2, down: 3 };
+            canvas.drawSpriteRotated(Icons.d_pad_tv_remote_left_press, dx, dy, '#000',
+                                     TURNS[this._pressedDir] || 0);
+        }
+    };
+
+    // Adjust-screen popup open/close (own view; no morph). Opens Kodi's
+    // calibration and forwards keys, same as the TV remote.
+    TVMediaBoxScene.prototype._openAdjust = function() {
+        this._postKodiSend('ActivateWindow(screencalibration)');
+        this._view = 'adjust';
+        this._startForward();
+        if (window.requestRender) window.requestRender();
+    };
+    TVMediaBoxScene.prototype._closeAdjust = function() {
+        this._view = 'main';
+        this._stopForward();
+        if (window.requestRender) window.requestRender();
+    };
+
+    // ── On-screen keyboard (Screen Keyboard) ─────────────────────
+    // TVMediaKeyboard is TV Media Box's OWN copy of the Screen
+    // Keyboard (so it can be modified without touching the shared
+    // TextInputScreen used by Wi-Fi / other forms). Run it embedded,
+    // the same way Wi-Fi runs its password modal: create, enter(),
+    // then delegate render + input while open. It closes itself
+    // (Done / Cancel / Back) by returning 'pop'.
+    TVMediaBoxScene.prototype._openKeyboard = function() {
+        this._kbScreen = new TVMediaKeyboard({
+            displayName: this.displayName,
+            title:       'Keyboard'
+            // No onSave / onDiscard yet — both default to closing
+            // (pop). UInput injection of the typed text wires here.
+        });
+        this._kbScreen.enter();
+        this._view = 'keyboard';
+        if (window.requestRender) window.requestRender();
+    };
+    TVMediaBoxScene.prototype._closeKeyboard = function() {
+        if (this._kbScreen) {
+            if (this._kbScreen.exit) this._kbScreen.exit();
+            this._kbScreen = null;
+        }
+        this._view = 'main';
+        if (window.requestRender) window.requestRender();
+    };
+
+    // Typer lifecycle + per-key POSTs (mirrors _postForward).
+    TVMediaBoxScene.prototype._startType = function() {
+        this._postType('/api/type/start', null);
+    };
+    TVMediaBoxScene.prototype._stopType = function() {
+        this._postType('/api/type/stop', null);
+    };
+    TVMediaBoxScene.prototype._postTypeKey = function(keyName, shift) {
+        this._postType('/api/type/key', { key: keyName, shift: !!shift });
+    };
+    TVMediaBoxScene.prototype._postType = function(url, body) {
+        try {
+            var x = new XMLHttpRequest();
+            x.open('POST', url, true);
+            x.setRequestHeader('Content-Type', 'application/json');
+            x.timeout = 4000;
+            x.send(body ? JSON.stringify(body) : null);
+        } catch (e) { /* offline / mocked — ignore */ }
+    };
+
+
+    // Kick (or redirect) the open/close tween toward `target` (0 or 1).
+    // Re-pointing mid-flight reverses smoothly: the tween restarts from
+    // the current progress.
+    TVMediaBoxScene.prototype._startRemoteAnim = function(target) {
+        this._openTarget = target;
+        this._animFrom   = this._openProgress;
+        this._animStart  = Date.now();
+        if (this._animTimer) return;   // tick loop already running
+        var self = this;
+        this._animTimer = setInterval(function() { self._tickRemoteAnim(); }, 16);
+    };
+
+    TVMediaBoxScene.prototype._tickRemoteAnim = function() {
+        var t = (Date.now() - this._animStart) / REMOTE_ANIM_MS;
+        if (t < 0) t = 0;
+        if (t > 1) t = 1;
+        var e = 1 - Math.pow(1 - t, 3);   // easeOutCubic
+        this._openProgress = this._animFrom + (this._openTarget - this._animFrom) * e;
+        if (window.requestRender) window.requestRender();
+        if (t >= 1) {
+            this._openProgress = this._openTarget;
+            if (this._animTimer) { clearInterval(this._animTimer); this._animTimer = null; }
+            // Fully closed → leave the TV remote view.
+            if (this._openTarget === 0) this._view = 'main';
+        }
+    };
+
+    // The panel rect at the current progress: lerp between the closed
+    // phase (the TV remote button's own rect) and the open phase
+    // (REMOTE_OPEN). The button height is the bottom-bar button height.
+    TVMediaBoxScene.prototype._remoteRect = function(canvas, p) {
+        var BTN_H = 14;
+        // Push the closed phase's bottom edge 3 px below the screen so
+        // the frame's rounded bottom corners fall off-screen — the real
+        // button is flush at the bottom, so those corners shouldn't show
+        // as the panel collapses back into it.
+        var CLOSED_OVERHANG = 3;
+        var cx = this._tvRemoteBtn.x, cw = this._tvRemoteBtn.w;
+        var cy = canvas.h - BTN_H;   // closed top = button top
+        var o  = REMOTE_OPEN;
+        var lerp = function(a, b) { return Math.round(a + (b - a) * p); };
+        return {
+            x: lerp(cx, o.x), y: lerp(cy, o.y),
+            w: lerp(cw, o.w), h: lerp(BTN_H + CLOSED_OVERHANG, o.h)
+        };
     };
 
     // One status fetch → updates _kodiRunning + repaints on change.
@@ -493,14 +779,16 @@ var TVMediaBoxScene = (function() {
         }
     };
 
-    // Drives the animated "..." dots in the 'checking' state. Just
-    // a render-tick — the dot count itself is derived from Date.now()
-    // in render(), so the timer only has to wake the main loop.
+    // Drives the 'checking' animations — the "..." dots AND the
+    // tv_screen_checking strip in the TV screen area. Just a render-
+    // tick (both frame counts are derived from Date.now() in render),
+    // so it only has to wake the main loop; runs at TV_CHECK_FRAME_MS
+    // so the 8-frame strip plays smoothly.
     TVMediaBoxScene.prototype._startCecAnim = function() {
         if (this._cecAnimTimer) return;
         this._cecAnimTimer = setInterval(function() {
             if (window.requestRender) window.requestRender();
-        }, CEC_ANIM_PERIOD_MS);
+        }, TV_CHECK_FRAME_MS);
     };
     TVMediaBoxScene.prototype._stopCecAnim = function() {
         if (this._cecAnimTimer) {
@@ -762,6 +1050,28 @@ var TVMediaBoxScene = (function() {
         this._stopCecProbe();
         this._stopCecAnim();
         this._stopCecPoll();
+        if (this._pressTimer) {
+            clearTimeout(this._pressTimer);
+            this._pressTimer = null;
+        }
+        if (this._animTimer) {
+            clearInterval(this._animTimer);
+            this._animTimer = null;
+        }
+        if (this._backTimer) {
+            clearTimeout(this._backTimer);
+            this._backTimer = null;
+        }
+        // Stop the remote forwarder if the popup was open when we left.
+        this._stopForward();
+        // Stop the UInput typer if the keyboard view was open.
+        this._stopType();
+        // Tear down the embedded Screen Keyboard if it was open (it
+        // owns document listeners + a touchpad EventSource).
+        if (this._kbScreen) {
+            if (this._kbScreen.exit) this._kbScreen.exit();
+            this._kbScreen = null;
+        }
         if (this._installAnimTimer) {
             clearInterval(this._installAnimTimer);
             this._installAnimTimer = null;
@@ -786,8 +1096,10 @@ var TVMediaBoxScene = (function() {
     // MenuDropdownLine and selector should anchor to.
     TVMediaBoxScene.prototype._buildRows = function() {
         return [
-            { title: 'Video out', pickerKey: 'videoOut', value: this._pickers.videoOut.current, y: ROW1_Y },
-            { title: 'Preset',    pickerKey: 'preset',   value: this._pickers.preset.current,   y: ROW2_Y }
+            { title: 'Video out',    pickerKey: 'videoOut', value: this._pickers.videoOut.current, y: ROW1_Y },
+            // Plain action row — OK opens Kodi's screen calibration and
+            // pops the TV remote to drive it.
+            { title: 'Adjust screen', plain: true, adjust: true, y: ROW2_Y }
         ];
     };
 
@@ -824,6 +1136,67 @@ var TVMediaBoxScene = (function() {
     };
 
     TVMediaBoxScene.prototype.handleInput = function(action) {
+        // TV remote sub-view: back/esc closes it (shrink to the button,
+        // then return to the main view); the whole app isn't popped.
+        if (this._view === 'tvRemote') {
+            // Back (N key → 'back') flashes the on-screen back button;
+            // it's forwarded to Kodi, NOT used to close. 'esc' (z) is
+            // handled separately below and does close, so it must NOT be
+            // treated as back here.
+            if (action === 'back') {
+                this._flashBack();   // flash only; forwarded to Kodi
+                return;
+            }
+            // Esc (z) → close the popup (exit the menu).
+            if (action === 'esc') {
+                this._onTvRemote();
+                return;
+            }
+            // TV remote button again (V / del) → toggle back to main.
+            if (action === 'del') {
+                this._pressBtn(this._tvRemoteBtn);
+                return;
+            }
+            // D-pad press → flash the matching press overlay (directions
+            // rotate the left-press asset; OK uses its own).
+            if (action === 'left' || action === 'up'
+                || action === 'right' || action === 'down'
+                || action === 'ok') {
+                this._flashPress(action);
+                return;
+            }
+            return;
+        }
+        // Adjust-screen sub-view: d-pad drives Kodi's calibration. Back
+        // (N) "applies" — flash, then close; esc / del also close.
+        if (this._view === 'adjust') {
+            if (action === 'back') {
+                var selfA = this;
+                this._flashBack(function() { selfA._closeAdjust(); });
+                return;
+            }
+            if (action === 'esc' || action === 'del') {
+                this._closeAdjust();
+                return;
+            }
+            if (action === 'left' || action === 'up'
+                || action === 'right' || action === 'down'
+                || action === 'ok') {
+                this._flashPress(action);
+                return;
+            }
+            return;
+        }
+        // Screen Keyboard (embedded TVMediaKeyboard) owns all input
+        // while open; it returns 'pop' from Done / Cancel / Back, which
+        // closes the keyboard and returns to the main view.
+        if (this._view === 'keyboard') {
+            if (this._kbScreen) {
+                var kbR = this._kbScreen.handleInput(action);
+                if (kbR === 'pop') this._closeKeyboard();
+            }
+            return;
+        }
         // Modal gets first refusal — it renders on top of everything.
         if (this._installModal.open) {
             this._handleInstallModalInput(action);
@@ -837,7 +1210,7 @@ var TVMediaBoxScene = (function() {
             this._handleDropdownInput(action);
             return;
         }
-        // Row navigation across the Video out / Preset stack.
+        // Row navigation across the Video out / Adjust screen stack.
         var rows = this._buildRows();
         if (action === 'up') {
             this._selectedRow = (this._selectedRow - 1 + rows.length) % rows.length;
@@ -850,7 +1223,8 @@ var TVMediaBoxScene = (function() {
         // Left / right cycle the selected row's picker value inline,
         // without opening the dropdown (mirrors Internet Radio). These
         // pickers have no side-effect on change — the value is read at
-        // Start time — so we just advance `current` and repaint.
+        // Start time — so we just advance `current` and repaint. Rows
+        // without a picker (e.g. "Adjust screen") simply ignore this.
         if (action === 'left' || action === 'right') {
             var selRow = rows[this._selectedRow];
             if (selRow && selRow.pickerKey && this._pickers[selRow.pickerKey]) {
@@ -871,6 +1245,12 @@ var TVMediaBoxScene = (function() {
         // stored value isn't in the list.
         if (action === 'ok') {
             var row = rows[this._selectedRow];
+            // "Adjust screen" → open Kodi calibration + the Adjust popup.
+            if (row && row.adjust) {
+                this._openAdjust();
+                return;
+            }
+            // Rows with a picker open their dropdown.
             if (row && row.pickerKey && this._pickers[row.pickerKey]) {
                 var p   = this._pickers[row.pickerKey];
                 var idx = p.options.indexOf(p.current);
@@ -880,26 +1260,42 @@ var TVMediaBoxScene = (function() {
                 return;
             }
         }
-        // Bottom-bar buttons remain on their dedicated keys — Start
-        // on 'run' (visible whenever HDMI is connected; routes
-        // through _handleStart for unified wake + preset launch),
-        // Stop on 'esc' (only while Kodi is running). OK is owned by
-        // the dropdown rows.
-        if (this._hdmiConnected && !this._kodiRunning && action === 'run') {
-            this._pressBtn(this._startBtn);
-            return;
-        }
-        if (this._kodiRunning && action === 'esc') {
-            this._pressBtn(this._stopBtn);
+        // App-defined middle buttons: Adjust on 'edit' (X), Control
+        // on 'del' (V). Brief press-flash, then fire the handler.
+        if (action === 'edit') { this._pressBtn(this._keyboardBtn); return; }
+        if (action === 'del')  { this._pressBtn(this._tvRemoteBtn); return; }
+        // Wake button on 'run' (B) — only present while the TV is
+        // asleep; wakes it and switches to our HDMI input.
+        if (action === 'run' && this._isTvAsleep()) {
+            this._pressBtn(this._wakeBtn);
             return;
         }
         if (action === 'back' || action === 'esc') return 'pop';
     };
 
     TVMediaBoxScene.prototype.render = function(canvas) {
-        var ctx = canvas.ctx;
         canvas.clear('#fff');
+        // The main TV window is always drawn. The TV remote view lays a
+        // d-pad panel on top of it (an overlay, not a separate screen).
+        // The Screen Keyboard is a full dedicated view (it clears and
+        // draws its own chrome); nothing of the main view behind it.
+        if (this._view === 'keyboard') {
+            if (this._kbScreen) this._kbScreen.render(canvas);
+            return;
+        }
+        this._renderMain(canvas);
+        if (this._view === 'tvRemote') {
+            this._renderTvRemote(canvas);
+        } else if (this._view === 'adjust') {
+            this._renderAdjust(canvas);
+        }
+    };
 
+    // The main TV Media Box screen — the "TV window": app chrome, the
+    // TV-state graphic, the screen-info pill / CEC line, the settings
+    // rows, the bottom buttons, and any open dropdown / modal.
+    TVMediaBoxScene.prototype._renderMain = function(canvas) {
+        var ctx = canvas.ctx;
         // Body frame first so the title bar and status bar paint on
         // top of its rounded top corners.
         this._bodyFrame.render(canvas);
@@ -911,10 +1307,13 @@ var TVMediaBoxScene = (function() {
         ctx.fillStyle = '#D9D9D9';
         ctx.fillRect(0, TITLE_Y, canvas.w, TITLE_H);
 
-        if (this.icon) {
-            canvas.drawSprite(this.icon, 2, TITLE_Y + 1, '#000');
+        if (typeof Icons !== 'undefined' && Icons.media) {
+            // Media glyph (14×14) vertically centred in the 16 px
+            // title bar. (this.icon / tv_media_box is still used for
+            // the App Switcher + Apps-menu row.)
+            canvas.drawSprite(Icons.media, 2, TITLE_Y + 1, '#000');
         }
-        Born2bSportyV2Medium.draw(ctx, this.displayName, 18, UI.STATUS_BAR_H + 1, '#000');
+        Born2bSportyV2Medium.draw(ctx, this.displayName, 18, UI.STATUS_BAR_H, '#000');
 
         // "Running Kodi" status on the title line — HaxrcorpFont16,
         // right-aligned 4 px from the right edge. Shown only while a
@@ -929,7 +1328,19 @@ var TVMediaBoxScene = (function() {
         var TV_FRAME_Y = 38;
         var TV_FRAME_W = 61;
         var TV_FRAME_H = 43;
-        if (typeof Icons !== 'undefined' && Icons.tv_frame) {
+        // In the Sleep state the whole TV graphic (frame + face) is one
+        // illustration: tv_frame_sleep. Draw it instead of the normal
+        // frame, aligned so its bottom-left corner matches the old
+        // frame's bottom-left (TV_FRAME_X, TV_FRAME_Y + TV_FRAME_H);
+        // being larger it extends up/right from that anchor.
+        var tvLabel   = this._tvStatusLabel();
+        var sleepFull = (tvLabel === 'TV: Sleep'
+            && typeof Icons !== 'undefined' && Icons.tv_frame_sleep);
+        if (sleepFull) {
+            var sf = Icons.tv_frame_sleep;
+            canvas.drawSprite(sf, TV_FRAME_X,
+                (TV_FRAME_Y + TV_FRAME_H) - sf.h, '#000');
+        } else if (typeof Icons !== 'undefined' && Icons.tv_frame) {
             canvas.drawSprite(Icons.tv_frame, TV_FRAME_X, TV_FRAME_Y, '#000');
         }
 
@@ -947,22 +1358,45 @@ var TVMediaBoxScene = (function() {
         else if (this._hdmiConnected) infoText = this._hdmiResolution || 'Connected';
         else                          infoText = 'No screen detected';
         var infoW = HaxrcorpFont16.textWidth(infoText);
-        this._screenInfoFrame.setSize(infoW + 10, 9);  // 5 px padding each side
+        // 5 px horizontal padding each side; 11 px tall = text + 1 px
+        // top + 1 px bottom (pill top sits at y=49, see constructor).
+        this._screenInfoFrame.setSize(infoW + 10, 11);
         this._screenInfoFrame.render(canvas);
         var infoX = 175 - Math.floor(infoW / 2);
-        // Pill top is y=50; nudge text 2 px up (y=49) so the cap row
-        // sits visually closer to the pill's optical center — the 11-
-        // row HaxrcorpFont16 frame leaves blank rows below the caps,
-        // which would otherwise pull them down.
+        // Text baseline kept at y=49 (the pill grew symmetrically
+        // around it). The 11-row HaxrcorpFont16 cell leaves blank rows
+        // below the caps, so this keeps the glyph optically centred.
         var infoY = 49;
         HaxrcorpFont16.draw(ctx, infoText, infoX, infoY, '#fff');
 
-        // TV status text painted on the sprite's screen area.
-        // _tvStatusLabel returns null in the "no answer to give" cases
-        // (HDMI poll still pending, or HDMI up but CEC not yet
-        // resolved); only paint when we actually have a label.
-        var tvLabel = this._tvStatusLabel();
-        if (tvLabel) {
+        // Per-state screen content on the TV's screen area. ON / Off
+        // show a centred glyph (tv_screen_on / tv_screen_off), Checking
+        // the animated strip, anything else falls back to text. Sleep
+        // is NOT handled here — the tv_frame_sleep illustration above
+        // already includes the face. (tvLabel + sleepFull come from the
+        // frame-draw block above.) The -3 nudge sits the glyph on the
+        // screen, not the frame's mid-height.
+        var screenIcon = null;
+        if (typeof Icons !== 'undefined') {
+            if (tvLabel === 'TV: ON')       screenIcon = Icons.tv_screen_on;
+            else if (tvLabel === 'TV: Off') screenIcon = Icons.tv_screen_off;
+        }
+        if (screenIcon) {
+            var scX = TV_FRAME_X + Math.floor((TV_FRAME_W - screenIcon.w) / 2);
+            var scY = TV_FRAME_Y + Math.floor((TV_FRAME_H - screenIcon.h) / 2) - 3;
+            canvas.drawSprite(screenIcon, scX, scY, '#000');
+        } else if (tvLabel === 'TV: Checking'
+            && typeof AnimatedIcons !== 'undefined' && AnimatedIcons.tv_screen_checking) {
+            // Animated checking glyph (8-frame strip). Current frame
+            // from Date.now(); centred in the frame with the same -3
+            // screen nudge as the on/off glyphs.
+            var ck       = AnimatedIcons.tv_screen_checking;
+            var ckFrameH = Math.floor(ck.h / ck.frames);
+            var ckFrame  = Math.floor(Date.now() / TV_CHECK_FRAME_MS) % ck.frames;
+            var ckX = TV_FRAME_X + Math.floor((TV_FRAME_W - ck.w) / 2);
+            var ckY = TV_FRAME_Y + Math.floor((TV_FRAME_H - ckFrameH) / 2) - 5;
+            canvas.drawSpriteFrame(ck, ckX, ckY, ckFrame, '#000');
+        } else if (tvLabel && !sleepFull) {
             var tvLw = HaxrcorpFont16.textWidth(tvLabel);
             var tvLx = TV_FRAME_X + Math.floor((TV_FRAME_W - tvLw) / 2);
             var tvLy = TV_FRAME_Y + Math.floor((TV_FRAME_H - 7) / 2);
@@ -995,19 +1429,26 @@ var TVMediaBoxScene = (function() {
         }
 
         // ── Settings rows ───────────────────────────────────────
-        // Two stacked MenuDropdownLine rows below the CEC line —
-        // Video out + Preset. Page-level selector outlines whichever
-        // one `_selectedRow` points at, suppressed while a dropdown
-        // is open so the inner dropdown selector is the only active
-        // focus the user sees.
+        // Stacked rows below the CEC line — "Video out" (a dropdown
+        // line with a value chip) and "Adjust screen" (a plain action
+        // label, no chip). Page-level selector outlines whichever one
+        // `_selectedRow` points at, suppressed while a dropdown is open
+        // so the inner dropdown selector is the only active focus.
         var rows = this._buildRows();
         for (var ri = 0; ri < rows.length; ri++) {
-            new MenuDropdownLine({
-                y:        rows[ri].y,
-                title:    rows[ri].title,
-                value:    rows[ri].value,
-                selected: (ri === this._selectedRow && !this._dropdownOpen)
-            }).render(canvas);
+            if (rows[ri].plain) {
+                // Plain label — same title metrics as MenuDropdownLine
+                // (x = 6, y + TOP_PAD, black) but no value chip.
+                HaxrcorpFont16.draw(canvas.ctx, rows[ri].title,
+                    6, rows[ri].y + MenuDropdownLine.TOP_PAD, '#000');
+            } else {
+                new MenuDropdownLine({
+                    y:        rows[ri].y,
+                    title:    rows[ri].title,
+                    value:    rows[ri].value,
+                    selected: (ri === this._selectedRow && !this._dropdownOpen)
+                }).render(canvas);
+            }
         }
         if (!this._dropdownOpen) {
             if (!this._pageSelectorFrame) {
@@ -1028,16 +1469,18 @@ var TVMediaBoxScene = (function() {
         // Status bar last so its indicators sit on top of the chrome.
         UI.drawStatusBar(canvas, '');
 
-        // Bottom-bar buttons render independently:
-        //   • Start (right) — when HDMI is connected AND Kodi isn't
-        //     already running. Hidden while running so it doesn't
-        //     offer to start what's already up.
-        //   • Stop (left) — only while Kodi is running.
-        if (this._hdmiConnected && !this._kodiRunning) {
-            this._startBtn.render(canvas);
+        // App-defined middle buttons: Keyboard (X, slot 1) and the TV
+        // remote / Control (V, slot 3). The TV remote button is hidden
+        // while its view is open — the morphing panel grows from /
+        // shrinks to its rect, so the panel is the button's expanded
+        // form.
+        this._keyboardBtn.render(canvas);
+        if (this._view !== 'tvRemote') {
+            this._tvRemoteBtn.render(canvas);
         }
-        if (this._kodiRunning) {
-            this._stopBtn.render(canvas);
+        // Wake button (B, right edge) — only while the TV is asleep.
+        if (this._isTvAsleep()) {
+            this._wakeBtn.render(canvas);
         }
 
         // Dropdown overlay — painted before the dependency / source
@@ -1058,6 +1501,136 @@ var TVMediaBoxScene = (function() {
         // us before CEC ever reached 'supported').
         if (this._sourceModal.open) {
             this._renderSourceModal(canvas);
+        }
+    };
+
+    // TV remote sub-view — laid on TOP of the main TV window: the d-pad
+    // (with its press overlays) wrapped in a ResponsiveFrame panel. The
+    // chrome, TV graphic and bottom buttons behind it are drawn by
+    // _renderMain; this method only paints the panel + d-pad on top.
+    TVMediaBoxScene.prototype._renderTvRemote = function(canvas) {
+        // Backdrop wash dimming the main view behind the popup — same
+        // 0.75 white wash the dropdown / modals use, but scaled by
+        // `_openProgress` so it fades in as the panel opens and clears
+        // as it collapses back into the button.
+        var washA = 0.75 * this._openProgress;
+        if (washA > 0.01) {
+            canvas.ctx.fillStyle = 'rgba(255, 255, 255, ' + washA + ')';
+            canvas.ctx.fillRect(0, 0, canvas.w, canvas.h);
+        }
+
+        // Panel — the d-pad's parent. Its rect tweens between the closed
+        // phase (the TV remote button) and the open phase (REMOTE_OPEN)
+        // by `_openProgress`, so it grows from / shrinks to the button.
+        var r = this._remoteRect(canvas, this._openProgress);
+        new ResponsiveFrame({
+            x: r.x, y: r.y, width: r.w, height: r.h,
+            anchorH: 'left', anchorV: 'top',
+            fillColor: '#fff', showFill: true,
+            strokeColor: '#000', showStroke: true,
+            cornerRadius: 4,
+            corners: { tl: true, tr: true, bl: true, br: true }
+        }).render(canvas);
+
+        // Close affordance — a thin gray bar where the TV remote button
+        // sits (same width, 4 px tall). Its Y tweens with the panel:
+        // at the open phase it peeks up flush with the bottom edge
+        // (canvas.h - 4); collapsed it sits at canvas.h, fully below the
+        // visible area. So it slides up as the popup opens and drops
+        // back out of view as it closes.
+        var ax = this._tvRemoteBtn.x, aw = this._tvRemoteBtn.w;
+        var ay = Math.round(canvas.h - 4 * this._openProgress);
+        new ResponsiveFrame({
+            x: ax, y: ay, width: aw, height: 4,
+            anchorH: 'left', anchorV: 'top',
+            fillColor: '#999999', showFill: true, showStroke: false,
+            cornerRadius: 2,
+            // Top corners rounded; bottom corners square so the handle
+            // sits flush against the screen's bottom edge.
+            corners: { tl: true, tr: true, bl: false, br: false }
+        }).render(canvas);
+
+        // D-pad only once the panel is fully open — it's a fixed-size
+        // sprite, so it can't scale with the growing frame; it appears
+        // when the panel lands and disappears as soon as it closes.
+        if (this._openProgress < 1) return;
+
+        // Headline at the panel top — Born2bSportyV2Medium, centred.
+        var hl  = 'Kodi remote';
+        var hlW = Born2bSportyV2Medium.textWidth(hl);
+        Born2bSportyV2Medium.draw(canvas.ctx, hl,
+            r.x + Math.floor((r.w - hlW) / 2), r.y + 4, '#000');
+
+        if (typeof Icons === 'undefined' || !Icons.d_pad_tv_remote) return;
+        // D-pad centred inside the panel (its parent), nudged 9px left.
+        var dp = Icons.d_pad_tv_remote;
+        var cxBase = r.x + Math.floor((r.w - dp.w) / 2);
+        var dx = cxBase - 9;
+        var dy = r.y + Math.floor((r.h - dp.h) / 2);
+        this._drawDpad(canvas, dx, dy);
+
+        // Back button at the d-pad's bottom-right corner, nudged 9px
+        // right (opposite the d-pad's 9px-left nudge). Anchored to the
+        // centred base, not the shifted d-pad x.
+        var bb = (this._backPressed && Icons.back_button_remote_pressed)
+            ? Icons.back_button_remote_pressed
+            : Icons.back_button_remote;
+        if (bb) {
+            canvas.drawSprite(bb, cxBase + dp.w - bb.w + 9, dy + dp.h - bb.h, '#000');
+        }
+    };
+
+    // Adjust-screen popup — its own window (no morph): a 194 × 105
+    // frame on a white wash, with the d-pad on the right, a 2-line
+    // "Use D-Pad / to adjust" prompt on the left, and a back button +
+    // "to apply" along the bottom. The d-pad shares the TV remote's
+    // press overlays (via _drawDpad) and forwards keys to Kodi.
+    TVMediaBoxScene.prototype._renderAdjust = function(canvas) {
+        var ctx = canvas.ctx;
+
+        // Backdrop wash dimming the main view behind the popup.
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
+        ctx.fillRect(0, 0, canvas.w, canvas.h);
+
+        // Frame: 194 × 105, radius 4, centred.
+        var FW = 194, FH = 105;
+        var FX = Math.floor((canvas.w - FW) / 2);
+        var FY = Math.floor((canvas.h - FH) / 2);
+        new ResponsiveFrame({
+            x: FX, y: FY, width: FW, height: FH,
+            anchorH: 'left', anchorV: 'top',
+            fillColor: '#fff', showFill: true,
+            strokeColor: '#000', showStroke: true,
+            cornerRadius: 4,
+            corners: { tl: true, tr: true, bl: true, br: true }
+        }).render(canvas);
+
+        // D-pad on the right: 15 px in from the frame's right edge,
+        // 13 px down from its top. Shares the press overlays.
+        var dpW = 0, dpH = 0;
+        if (typeof Icons !== 'undefined' && Icons.d_pad_tv_remote) {
+            var dp = Icons.d_pad_tv_remote;
+            dpW = dp.w; dpH = dp.h;
+            this._drawDpad(canvas, FX + FW - 15 - dp.w, FY + 13);
+        }
+
+        // Left: 2-line instruction (Born2bSportyV2Medium), top line
+        // 22 px from the frame's top edge.
+        var lx = FX + 12;
+        Born2bSportyV2Medium.draw(ctx, 'Use D-Pad', lx, FY + 22, '#000');
+        Born2bSportyV2Medium.draw(ctx, 'to adjust', lx, FY + 38, '#000');
+
+        // Bottom: back button (black-filled while pressed) + "to apply"
+        // to its right.
+        var bb = (this._backPressed && Icons.back_button_remote_pressed)
+            ? Icons.back_button_remote_pressed
+            : Icons.back_button_remote;
+        if (bb) {
+            var bx = lx;
+            var by = FY + FH - bb.h - 21;   // 21 px from icon bottom to frame edge
+            canvas.drawSprite(bb, bx, by, '#000');
+            HaxrcorpFont16.draw(ctx, 'to apply',
+                bx + bb.w + 5, by + 5, '#000');
         }
     };
 

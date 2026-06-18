@@ -40,6 +40,21 @@ var DesktopScene = (function() {
         // key (`edit` action) which opens the Main Menu via _onMenu().
         // Slot 1 matches the original Desktop layout (left of centre).
         this.menuBtn = new UI.MiddleButton('Menu', 1, 48, 2, 'edit');
+
+        // Bottom-bar right-side "TV Media" button — flush with the
+        // right screen edge. Uses the RightButtonTopCut variant
+        // (top black stroke cut 21 px short on the right); the
+        // stock RightButton is left untouched. Fires on the right
+        // soft-key (`run` / b) and launches the TV Media Box app.
+        // "TV Media" is 38 px wide, so it fits the 48 px slot.
+        this.tvMediaBtn = new UI.RightButtonTopCut('TV Media', 48, 'run');
+        // Shown instead when the active target is the Desktop
+        // (graphical) profile. Same slot / style; carries the
+        // desktop_small_icon (instead of the default media icon).
+        this.desktopBtn = new UI.RightButtonTopCut('Desktop', 48, 'run');
+        if (typeof Icons !== 'undefined' && Icons.desktop_small_icon) {
+            this.desktopBtn.icon = Icons.desktop_small_icon;
+        }
     }
 
     DesktopScene.prototype._fetchHostname = function() {
@@ -237,16 +252,56 @@ var DesktopScene = (function() {
     };
 
     DesktopScene.prototype._onMenu = function() {
-        this.sceneManager.push(new MenuScene(this.sceneManager));
+        // Pass the active target so the menu's first item is the right
+        // app (TV Media Box / Desktop Computer).
+        this.sceneManager.push(new MenuScene(this.sceneManager, this.currentTargetProfile));
+    };
+
+    // Launch the TV Media Box app — same scene the Apps menu opens
+    // (Apps → TV Media Box), pushed straight onto the stack.
+    DesktopScene.prototype._onTVMedia = function() {
+        if (typeof TVMediaBoxScene !== 'function') return;
+        this.sceneManager.push(new TVMediaBoxScene(this.sceneManager));
+    };
+
+    // Desktop target's app-defined button → opens the Desktop
+    // Computer app (same scene the main menu's first slot opens).
+    DesktopScene.prototype._onDesktop = function() {
+        if (typeof DesktopComputerScene !== 'function') return;
+        this.sceneManager.push(new DesktopComputerScene(this.sceneManager));
+    };
+
+    // The right app-defined button for the active target, or null
+    // until the target is known: TV Media Box → tvMediaBtn,
+    // Desktop Computer → desktopBtn.
+    DesktopScene.prototype._targetBtn = function() {
+        if (this.currentTargetProfile === 'TV Media Box')     return this.tvMediaBtn;
+        if (this.currentTargetProfile === 'Desktop Computer') return this.desktopBtn;
+        return null;
     };
 
     DesktopScene.prototype.handleInput = function(action) {
-        // Menu opens on the X key (`edit` action) — that's the binding
-        // surfaced by the visible bottom-bar button — and also on OK /
-        // Run as a primary-action alias so the central button still
-        // does the obvious thing on the dashboard.
-        if (action === 'edit' || action === 'ok' || action === 'run') {
+        // Menu opens on the X key (`edit` action) — the binding
+        // surfaced by the visible bottom-bar Menu button — and on OK
+        // (centre) as a primary-action alias.
+        if (action === 'edit' || action === 'ok') {
             this._onMenu();
+            return;
+        }
+        // Right soft-key (`run` / b) → the "TV Media" button: brief
+        // press flash for feedback, then launch the TV Media Box app.
+        if (action === 'run') {
+            // Fires whichever target button is currently shown.
+            var btn = this._targetBtn();
+            if (!btn) return;
+            btn.press();
+            if (window.requestRender) window.requestRender();
+            setTimeout(function() {
+                btn.release();
+                if (window.requestRender) window.requestRender();
+            }, 30);
+            if (btn === this.tvMediaBtn) this._onTVMedia();
+            else                          this._onDesktop();
             return;
         }
     };
@@ -459,10 +514,16 @@ var DesktopScene = (function() {
             drawEthCard(canvas, conn, line1Y, line2Y);
         }
 
-        // Bottom-bar Menu button — drawn last so it sits above any
+        // Bottom-bar buttons — drawn last so they sit above any
         // connection card that the worst-case stack might extend
-        // close to the canvas bottom.
+        // close to the canvas bottom. Menu (centre slot) + the
+        // right-edge "TV Media" shortcut.
         this.menuBtn.render(canvas);
+        // Right app-defined button matches the active target — "TV
+        // Media" under the TV Media Box target, "Desktop" under the
+        // Desktop target (nothing until the target is known).
+        var targetBtn = this._targetBtn();
+        if (targetBtn) targetBtn.render(canvas);
     };
 
     // Renders a single interface card. Two lines, each centered:
