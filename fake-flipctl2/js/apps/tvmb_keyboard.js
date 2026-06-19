@@ -232,6 +232,13 @@ var TVMediaKeyboard = (function() {
                         + self.inputText.slice(self._inputCursor);
                     self._inputCursor++;
                 }
+                // Report the raw key to a UInput consumer (if any) so
+                // it can inject the keystroke to the system. char is the
+                // resolved character ('\b' for backspace); the consumer
+                // decides which ones to forward.
+                if (self._opts && typeof self._opts.onKey === 'function') {
+                    self._opts.onKey(char);
+                }
                 if (self.cursor) self.cursor.reset();
                 if (window.requestRender) window.requestRender();
             },

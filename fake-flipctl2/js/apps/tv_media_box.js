@@ -481,13 +481,18 @@ var TVMediaBoxScene = (function() {
     // then delegate render + input while open. It closes itself
     // (Done / Cancel / Back) by returning 'pop'.
     TVMediaBoxScene.prototype._openKeyboard = function() {
+        var self = this;
         this._kbScreen = new TVMediaKeyboard({
             displayName: this.displayName,
-            title:       'Keyboard'
-            // No onSave / onDiscard yet — both default to closing
-            // (pop). UInput injection of the typed text wires here.
+            title:       'Keyboard',
+            // Every on-screen key press is injected to the system via
+            // the UInput typer (uinput-type.py on seat0), like the
+            // forward-keys.py forwarder. Numbers only for now — see
+            // _injectChar.
+            onKey:       function(ch) { self._injectChar(ch); }
         });
         this._kbScreen.enter();
+        this._startType();   // spawn the uinput-type.py keyboard on seat0
         this._view = 'keyboard';
         if (window.requestRender) window.requestRender();
     };
@@ -496,8 +501,51 @@ var TVMediaBoxScene = (function() {
             if (this._kbScreen.exit) this._kbScreen.exit();
             this._kbScreen = null;
         }
+        this._stopType();    // kill the typer
         this._view = 'main';
         if (window.requestRender) window.requestRender();
+    };
+
+    // US-layout map for the on-screen keyboard's symbols → evdev key
+    // + whether Left-Shift is held. Letters / digits / space / back-
+    // space are resolved directly in _keySpecForChar.
+    var SYMBOL_KEYS = {
+        '-':  ['KEY_MINUS', false],      '_': ['KEY_MINUS', true],
+        '=':  ['KEY_EQUAL', false],      '+': ['KEY_EQUAL', true],
+        '[':  ['KEY_LEFTBRACE', false],  '{': ['KEY_LEFTBRACE', true],
+        ']':  ['KEY_RIGHTBRACE', false], '}': ['KEY_RIGHTBRACE', true],
+        '\\': ['KEY_BACKSLASH', false],  '|': ['KEY_BACKSLASH', true],
+        ';':  ['KEY_SEMICOLON', false],  ':': ['KEY_SEMICOLON', true],
+        "'":  ['KEY_APOSTROPHE', false], '"': ['KEY_APOSTROPHE', true],
+        '`':  ['KEY_GRAVE', false],      '~': ['KEY_GRAVE', true],
+        ',':  ['KEY_COMMA', false],      '<': ['KEY_COMMA', true],
+        '.':  ['KEY_DOT', false],        '>': ['KEY_DOT', true],
+        '/':  ['KEY_SLASH', false],      '?': ['KEY_SLASH', true],
+        '!':  ['KEY_1', true],  '@': ['KEY_2', true],  '#': ['KEY_3', true],
+        '$':  ['KEY_4', true],  '%': ['KEY_5', true],  '^': ['KEY_6', true],
+        '&':  ['KEY_7', true],  '*': ['KEY_8', true],  '(': ['KEY_9', true],
+        ')':  ['KEY_0', true]
+    };
+
+    // Resolve an on-screen character to an evdev { key, shift } spec,
+    // or null when there's no US-layout key for it (e.g. '±').
+    function _keySpecForChar(ch) {
+        if (typeof ch !== 'string' || ch.length !== 1) return null;
+        if (ch === '\b')            return { key: 'KEY_BACKSPACE', shift: false };
+        if (ch >= 'a' && ch <= 'z') return { key: 'KEY_' + ch.toUpperCase(), shift: false };
+        if (ch >= 'A' && ch <= 'Z') return { key: 'KEY_' + ch,               shift: true  };
+        if (ch >= '0' && ch <= '9') return { key: 'KEY_' + ch,               shift: false };
+        if (ch === ' ')             return { key: 'KEY_SPACE',               shift: false };
+        var s = SYMBOL_KEYS[ch];
+        return s ? { key: s[0], shift: s[1] } : null;
+    }
+
+    // Inject one on-screen key press to the system via the UInput
+    // typer: letters, digits, space, backspace, and the symbol set
+    // (shifted forms hold Left-Shift). Unmapped chars are ignored.
+    TVMediaBoxScene.prototype._injectChar = function(ch) {
+        var spec = _keySpecForChar(ch);
+        if (spec) this._postTypeKey(spec.key, spec.shift);
     };
 
     // Typer lifecycle + per-key POSTs (mirrors _postForward).

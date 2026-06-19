@@ -20,14 +20,20 @@ from evdev import UInput, ecodes
 
 
 def build_caps():
-    """Keys the virtual keyboard advertises. Core set: letters,
-    digits, space, enter, backspace, plus the shift modifier."""
+    """Keys the virtual keyboard advertises: letters, digits, space,
+    enter, backspace, the shift modifier, and the US-layout punctuation
+    keys (whose shifted forms give the symbol set)."""
     keys = [ecodes.KEY_LEFTSHIFT, ecodes.KEY_SPACE,
             ecodes.KEY_ENTER, ecodes.KEY_BACKSPACE]
     for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
         keys.append(getattr(ecodes, "KEY_" + c))
     for d in "0123456789":
         keys.append(getattr(ecodes, "KEY_" + d))
+    # Punctuation keys; shifted = the symbol row (!@#... {}|:"~<>?+_).
+    for name in ("KEY_MINUS", "KEY_EQUAL", "KEY_LEFTBRACE", "KEY_RIGHTBRACE",
+                 "KEY_BACKSLASH", "KEY_SEMICOLON", "KEY_APOSTROPHE",
+                 "KEY_GRAVE", "KEY_COMMA", "KEY_DOT", "KEY_SLASH"):
+        keys.append(getattr(ecodes, name))
     return keys
 
 
