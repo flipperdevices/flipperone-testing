@@ -1547,6 +1547,7 @@ function isolateTarget(target) {
 // shell. (Minimal system / multi-user.target isn't a profile yet.)
 var TARGET_PROFILES = [
     { target: 'tv-media-box.target', profile: 'TV Media Box' },
+    { target: 'router.target',       profile: 'Router' },
     { target: 'graphical.target',    profile: 'Desktop Computer' }
 ];
 function currentTargetProfile(cb) {

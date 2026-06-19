@@ -47,6 +47,7 @@ var BootMenuScene = (function() {
     // (`systemctl isolate`). Note Desktop runs graphical.target,
     // unlike its extlinux "no systemd.unit" default above.
     var ISOLATE_TARGET = {
+        'Router':           'router.target',
         'TV Media Box':     'tv-media-box.target',
         'Desktop Computer': 'graphical.target',
         'Minimal system':   'multi-user.target'
@@ -58,6 +59,7 @@ var BootMenuScene = (function() {
     // otherwise. (Profile name → target to look for.) The other rows
     // are static placeholders ('TBA'), unaffected by this check.
     var DYNAMIC_PROFILE_TARGET = {
+        'Router':           'router.target',
         'TV Media Box':     'tv-media-box.target',
         'Desktop Computer': 'graphical.target'
     };
@@ -84,7 +86,6 @@ var BootMenuScene = (function() {
         // Profiles that aren't wired yet: rendered at 50% opacity
         // with a "TBA" status and skipped by the selector.
         var inactiveSet = {
-            'Router':            true,
             'Minimal system':     true,
             'Boot from SD card':  true
         };
