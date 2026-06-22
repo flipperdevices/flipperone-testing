@@ -38,6 +38,7 @@ var BootMenuScene = (function() {
     // the "default" tag. A label with no systemd.unit override
     // boots the normal graphical/KDE default → 'default'.
     var PROFILE_TARGET = {
+        'Router':           'router.target',
         'TV Media Box':     'tv-media-box.target',
         'Minimal system':   'multi-user.target',
         'Desktop Computer': 'default'
