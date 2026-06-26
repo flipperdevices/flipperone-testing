@@ -1,0 +1,53 @@
+#!/bin/sh
+# delete_snapshot <name|path> - delete a snapshot or other root subvolume.
+# Accepts the forms shown by list_snapshots:
+#   @_<stamp>...              bare name (assumed under @snapshots)
+#   @snapshots/@_<stamp>...   full path
+#   @.old_<stamp>             top-level leftover from restore_snapshot
+# Also removes a matching BLS entry (/boot/loader/entries/snapshot-<name>.conf).
+# Refuses layout subvolumes (@, @home, ...) and the currently booted root.
+set -eu
+die() { echo "error: $*" >&2; exit 1; }
+[ "$(id -u)" -eq 0 ] || die "must run as root (use sudo)"
+command -v btrfs >/dev/null 2>&1 || die "btrfs-progs not installed"
+
+[ $# -ge 1 ] || die "usage: delete_snapshot <name|path>"
+arg=$1
+case "$arg" in *..*|/*) die "invalid name: $arg" ;; esac
+
+rootdev=$(findmnt -no SOURCE / | sed 's/\[.*//')
+[ -n "$rootdev" ] || die "cannot determine root device"
+cur_id=$(btrfs subvolume show / 2>/dev/null | awk -F':[[:space:]]+' '/Subvolume ID/{print $2; exit}')
+
+top=$(mktemp -d)
+mount -o subvolid=5 "$rootdev" "$top"
+trap 'umount "$top" 2>/dev/null || true; rmdir "$top" 2>/dev/null || true' EXIT
+
+# resolve to a top-level-relative path: try as-given, then under @snapshots
+if [ -e "$top/$arg" ]; then
+    rel=$arg
+elif [ -e "$top/@snapshots/$arg" ]; then
+    rel="@snapshots/$arg"
+else
+    die "no such subvolume: $arg"
+fi
+
+# guards
+case "$rel" in
+    @|@home|@root|@snapshots|@var-log|@var-cache|boot)
+        die "refusing to delete layout subvolume: $rel" ;;
+esac
+btrfs subvolume show "$top/$rel" >/dev/null 2>&1 || die "not a subvolume: $rel"
+tgt_id=$(btrfs subvolume show "$top/$rel" | awk -F':[[:space:]]+' '/Subvolume ID/{print $2; exit}')
+[ -n "$cur_id" ] && [ "$tgt_id" = "$cur_id" ] && die "refusing to delete the currently booted subvolume ($rel)"
+
+btrfs subvolume delete "$top/$rel" >/dev/null
+echo "deleted $rel"
+
+# drop a matching BLS entry if present
+base=${rel##*/}
+entry="/boot/loader/entries/snapshot-$base.conf"
+if [ -f "$entry" ]; then
+    rm -f "$entry"
+    echo "removed BLS entry $entry"
+fi

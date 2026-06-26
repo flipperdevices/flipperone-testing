@@ -1,0 +1,59 @@
+#!/bin/sh
+# list_snapshots - list root snapshots under @snapshots, plus other root-like
+# subvolumes at the top level (e.g. @.old_* left behind by restore_snapshot).
+# Names are shown as top-level paths; that path is what boot/restore/delete use.
+# The currently booted subvolume is marked  <- booted. Columns auto-size to fit.
+set -eu
+die() { echo "error: $*" >&2; exit 1; }
+[ "$(id -u)" -eq 0 ] || die "must run as root (use sudo)"
+command -v btrfs >/dev/null 2>&1 || die "btrfs-progs not installed"
+
+# value of a 'Label: <ws> value' line from 'btrfs subvolume show' (strips tabs)
+get() { printf '%s\n' "$1" | awk -v k="$2" -F':[[:space:]]+' 'index($0,k){print $2; exit}'; }
+
+rootdev=$(findmnt -no SOURCE / | sed 's/\[.*//')
+[ -n "$rootdev" ] || die "cannot determine root device"
+top=$(mktemp -d)
+rows=$(mktemp)
+mount -o subvolid=5 "$rootdev" "$top"
+trap 'umount "$top" 2>/dev/null || true; rmdir "$top" 2>/dev/null || true; rm -f "$rows"' EXIT
+
+cur=$(btrfs subvolume show / 2>/dev/null) || cur=
+cur_id=$(get "$cur" "Subvolume ID")
+cur_path=$(printf '%s\n' "$cur" | head -n1)
+[ -n "$cur_path" ] && echo "booted root: $cur_path (id ${cur_id:-?})"
+echo
+
+emit() {  # $1=display name  $2=fs path  -> append a TSV row
+    info=$(btrfs subvolume show "$2" 2>/dev/null) || return 0
+    id=$(get "$info" "Subvolume ID")
+    otime=$(get "$info" "Creation time"); otime=${otime% +*}
+    flags=$(get "$info" "Flags"); case "$flags" in *readonly*) flags=ro ;; *) flags=rw ;; esac
+    mark=""; [ -n "$cur_id" ] && [ "$id" = "$cur_id" ] && mark="<- booted"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$1" "${id:-?}" "${otime:-?}" "$flags" "$mark" >> "$rows"
+}
+
+printf 'NAME\tID\tCREATED\tRO\t\n' > "$rows"
+for s in "$top"/@snapshots/*; do
+    [ -e "$s" ] || continue
+    emit "@snapshots/${s##*/}" "$s"
+done
+for d in "$top"/@*; do
+    [ -e "$d" ] || continue
+    n=${d##*/}
+    case "$n" in @|@home|@root|@snapshots|@var-log|@var-cache) continue ;; esac
+    btrfs subvolume show "$d" >/dev/null 2>&1 || continue
+    emit "$n" "$d"
+done
+
+# align: NAME auto-width, fixed widths for the rest, marker appended if present
+awk -F'\t' '
+{ r[NR]=$0; if (length($1) > w) w = length($1) }
+END {
+    for (i = 1; i <= NR; i++) {
+        split(r[i], f, "\t")
+        printf "%-*s  %-6s  %-19s  %-3s", w, f[1], f[2], f[3], f[4]
+        if (f[5] != "") printf "  %s", f[5]
+        printf "\n"
+    }
+}' "$rows"

@@ -1,0 +1,27 @@
+#!/bin/sh
+# maintenance <check|fix|dedup|balance|all>
+#   check   - read-only scrub (verify checksums, no writes)
+#   fix     - scrub with repair (only where a good copy exists: DUP metadata yes,
+#             single-profile data cannot self-heal)
+#   dedup   - offline dedup via duperemove (separate package)
+#   balance - light filtered balance to reclaim partly-empty chunks
+#   all     - fix + balance
+# Offline 'btrfs check --repair' needs an UNMOUNTED fs (boot elsewhere).
+set -eu
+die() { echo "error: $*" >&2; exit 1; }
+[ "$(id -u)" -eq 0 ] || die "must run as root (use sudo)"
+command -v btrfs >/dev/null 2>&1 || die "btrfs-progs not installed"
+MNT=/
+
+usage() { sed -n '2,10p' "$0"; exit 1; }
+[ $# -ge 1 ] || usage
+case "$1" in
+    check)   btrfs scrub start -B -r "$MNT" ;;
+    fix)     btrfs scrub start -B "$MNT" ;;
+    dedup)   command -v duperemove >/dev/null 2>&1 || die "duperemove not installed"
+             duperemove -dhr "$MNT" ;;
+    balance) btrfs balance start -dusage=50 -musage=50 "$MNT" ;;
+    all)     btrfs scrub start -B "$MNT"
+             btrfs balance start -dusage=50 -musage=50 "$MNT" ;;
+    *)       usage ;;
+esac

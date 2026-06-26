@@ -1,0 +1,53 @@
+#!/bin/sh
+# make_bls_entry <snapshot-name> - BLS type#1 entry to boot a WRITABLE snapshot,
+# matching the Flipper One layout:
+#   linux         /boot/debian/<ver>/linux
+#   initrd        /boot/debian/<ver>/initrd.img-<ver>
+#   devicetreedir /@snapshots/<name>/usr/lib/linux-image-<ver>   (snapshot's own dtbs)
+# Requires U-Boot with CONFIG_BOOTMETH_BLS (scanned after extlinux).
+set -eu
+die() { echo "error: $*" >&2; exit 1; }
+[ "$(id -u)" -eq 0 ] || die "must run as root (use sudo)"
+command -v btrfs >/dev/null 2>&1 || die "btrfs-progs not installed"
+SNAPDIR=/.snapshots
+ENTRYDIR=/boot/loader/entries
+
+[ $# -ge 1 ] || die "usage: make_bls_entry <snapshot-name>"
+name=$1
+case "$name" in */*|"") die "invalid snapshot name" ;; esac
+snap="$SNAPDIR/$name"
+[ -d "$snap" ] || die "no such snapshot: $name"
+
+flags=$(btrfs subvolume show "$snap" | awk -F':[[:space:]]+' '/Flags/{print $2}')
+case "$flags" in *readonly*) die "$name is read-only; recreate with: create_snapshot -w ..." ;; esac
+
+# kernel version from the snapshot's OWN tree, so modules + dtbs are self-consistent
+ver=$(ls -1d "$snap"/usr/lib/linux-image-* 2>/dev/null | sed 's,.*/linux-image-,,' | sort -V | tail -n1)
+[ -n "$ver" ] || die "no /usr/lib/linux-image-* found inside snapshot $name"
+[ -e "/boot/debian/$ver/linux" ]               || die "kernel not staged: /boot/debian/$ver/linux"
+[ -e "/boot/debian/$ver/initrd.img-$ver" ]     || die "initrd not staged: /boot/debian/$ver/initrd.img-$ver"
+
+uuid=$(findmnt -no UUID /)
+[ -n "$uuid" ] || die "cannot read root fs UUID"
+
+# cmdline tail = current boot cmdline minus the bits we set ourselves
+tail=$(tr ' ' '\n' < /proc/cmdline \
+       | grep -Ev '^(root=|rootflags=|BOOT_IMAGE=|initrd=)' \
+       | tr '\n' ' ' | sed 's/  */ /g; s/^ //; s/ $//')
+
+mkdir -p "$ENTRYDIR"
+out="$ENTRYDIR/snapshot-$name.conf"
+{
+    echo "# Boot Loader Specification type#1 entry (Flipper One snapshot)"
+    echo "title         $name (snapshot)"
+    echo "version       $ver"
+    echo "sort-key      snapshot"
+    echo "options       root=UUID=$uuid rootflags=subvol=@snapshots/$name${tail:+ $tail}"
+    echo "linux         /boot/debian/$ver/linux"
+    echo "devicetreedir /@snapshots/$name/usr/lib/linux-image-$ver"
+    echo "initrd        /boot/debian/$ver/initrd.img-$ver"
+} > "$out"
+
+echo "wrote $out:"
+echo "----------------------------------------"
+cat "$out"

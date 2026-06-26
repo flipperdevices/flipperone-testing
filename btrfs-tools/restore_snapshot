@@ -1,0 +1,66 @@
+#!/bin/sh
+# restore_snapshot <source-snapshot> [target] - replace <target> with a writable
+# copy of <source-snapshot>. Takes effect after rebooting into <target>.
+#
+#   target defaults to @ (the main root). It may also be:
+#     @                 the main root
+#     <snapshot-name>   e.g. @_2026-...   (a subvol under @snapshots)
+#     current | booted  whatever subvolume you are running right now
+#
+# The previous <target> is kept aside as <target>.old_<ts> (recoverable). The
+# restored copy is always writable, even if the source snapshot is read-only.
+set -eu
+die() { echo "error: $*" >&2; exit 1; }
+[ "$(id -u)" -eq 0 ] || die "must run as root (use sudo)"
+command -v btrfs >/dev/null 2>&1 || die "btrfs-progs not installed"
+SNAPDIR=/.snapshots
+
+[ $# -ge 1 ] || die "usage: restore_snapshot <source-snapshot> [@|<snapshot>|current]"
+src_name=$1
+target=${2:-@}
+case "$src_name" in */*|"") die "invalid source name" ;; esac
+[ -d "$SNAPDIR/$src_name" ] || die "no such snapshot: $src_name"
+
+rootdev=$(findmnt -no SOURCE / | sed 's/\[.*//')
+[ -n "$rootdev" ] || die "cannot determine root device"
+
+# resolve target to a top-level-relative subvolume path
+case "$target" in
+    current|booted)
+        rel=$(findmnt -no FSROOT / | sed 's,^/,,')
+        [ -n "$rel" ] || die "cannot determine booted subvolume"
+        ;;
+    @|"")         rel=@ ;;
+    @snapshots/*) rel=$target ;;
+    @_*)          rel="@snapshots/$target" ;;
+    *)            rel=$target ;;
+esac
+
+src_rel="@snapshots/$src_name"
+[ "$rel" = "$src_rel" ] && die "target and source are the same subvolume"
+
+printf 'Restore "%s" -> "%s" (writable) on %s?\nPrevious "%s" kept as .old_*. [y/N] ' \
+    "$src_name" "$rel" "$rootdev" "$rel"
+read -r ans; case "$ans" in y|Y) ;; *) die "aborted" ;; esac
+
+top=$(mktemp -d)
+mount -o subvolid=5 "$rootdev" "$top"
+trap 'umount "$top" 2>/dev/null || true; rmdir "$top" 2>/dev/null || true' EXIT
+
+src="$top/$src_rel"
+tgt="$top/$rel"
+[ -e "$src" ] || die "source not visible at top level: $src_rel"
+[ -e "$tgt" ] || die "target not found at top level: $rel"
+
+ts=$(date +%Y-%m-%d_%H-%M-%S)
+aside="$tgt.old_$ts"
+mv "$tgt" "$aside"                                    # rename aside (safe even if mounted)
+if ! btrfs subvolume snapshot "$src" "$tgt" >/dev/null; then
+    mv "$aside" "$tgt"
+    die "snapshot failed; previous $rel restored, nothing changed"
+fi
+btrfs property set "$tgt" ro false 2>/dev/null || true   # ensure the restored root is writable
+
+echo "restored '$src_name' onto '$rel' (writable); previous kept as ${rel}.old_$ts"
+echo "reboot into '$rel' to use it; remove the old copy later with:"
+echo "  sudo mount -o subvolid=5 $rootdev /mnt && sudo btrfs subvolume delete /mnt/${rel}.old_$ts && sudo umount /mnt"
