@@ -13,16 +13,20 @@ set -eu
 die() { echo "error: $*" >&2; exit 1; }
 [ "$(id -u)" -eq 0 ] || die "must run as root (use sudo)"
 command -v btrfs >/dev/null 2>&1 || die "btrfs-progs not installed"
-SNAPDIR=/.snapshots
+# Reaches @snapshots via a subvolid=5 mount, so /.snapshots need not be mounted.
 
 [ $# -ge 1 ] || die "usage: restore_snapshot <source-snapshot> [@|<snapshot>|current]"
 src_name=$1
 target=${2:-@}
 case "$src_name" in */*|"") die "invalid source name" ;; esac
-[ -d "$SNAPDIR/$src_name" ] || die "no such snapshot: $src_name"
 
 rootdev=$(findmnt -no SOURCE / | sed 's/\[.*//')
 [ -n "$rootdev" ] || die "cannot determine root device"
+top=$(mktemp -d)
+mount -o subvolid=5 "$rootdev" "$top"
+trap 'umount "$top" 2>/dev/null || true; rmdir "$top" 2>/dev/null || true' EXIT
+
+[ -d "$top/@snapshots/$src_name" ] || die "no such snapshot: $src_name"
 
 # resolve target to a top-level-relative subvolume path
 case "$target" in
@@ -42,10 +46,6 @@ src_rel="@snapshots/$src_name"
 printf 'Restore "%s" -> "%s" (writable) on %s?\nPrevious "%s" kept as .old_*. [y/N] ' \
     "$src_name" "$rel" "$rootdev" "$rel"
 read -r ans; case "$ans" in y|Y) ;; *) die "aborted" ;; esac
-
-top=$(mktemp -d)
-mount -o subvolid=5 "$rootdev" "$top"
-trap 'umount "$top" 2>/dev/null || true; rmdir "$top" 2>/dev/null || true' EXIT
 
 src="$top/$src_rel"
 tgt="$top/$rel"

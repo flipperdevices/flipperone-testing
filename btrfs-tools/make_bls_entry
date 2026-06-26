@@ -5,17 +5,24 @@
 #   initrd        /boot/debian/<ver>/initrd.img-<ver>
 #   devicetreedir /@snapshots/<name>/usr/lib/linux-image-<ver>   (snapshot's own dtbs)
 # Requires U-Boot with CONFIG_BOOTMETH_BLS (scanned after extlinux).
+# Reaches @snapshots via a subvolid=5 mount, so /.snapshots need not be mounted.
 set -eu
 die() { echo "error: $*" >&2; exit 1; }
 [ "$(id -u)" -eq 0 ] || die "must run as root (use sudo)"
 command -v btrfs >/dev/null 2>&1 || die "btrfs-progs not installed"
-SNAPDIR=/.snapshots
 ENTRYDIR=/boot/loader/entries
 
 [ $# -ge 1 ] || die "usage: make_bls_entry <snapshot-name>"
 name=$1
 case "$name" in */*|"") die "invalid snapshot name" ;; esac
-snap="$SNAPDIR/$name"
+
+rootdev=$(findmnt -no SOURCE / | sed 's/\[.*//')
+[ -n "$rootdev" ] || die "cannot determine root device"
+top=$(mktemp -d)
+mount -o subvolid=5 "$rootdev" "$top"
+trap 'umount "$top" 2>/dev/null || true; rmdir "$top" 2>/dev/null || true' EXIT
+
+snap="$top/@snapshots/$name"
 [ -d "$snap" ] || die "no such snapshot: $name"
 
 flags=$(btrfs subvolume show "$snap" | awk -F':[[:space:]]+' '/Flags/{print $2}')
@@ -24,8 +31,8 @@ case "$flags" in *readonly*) die "$name is read-only; recreate with: create_snap
 # kernel version from the snapshot's OWN tree, so modules + dtbs are self-consistent
 ver=$(ls -1d "$snap"/usr/lib/linux-image-* 2>/dev/null | sed 's,.*/linux-image-,,' | sort -V | tail -n1)
 [ -n "$ver" ] || die "no /usr/lib/linux-image-* found inside snapshot $name"
-[ -e "/boot/debian/$ver/linux" ]               || die "kernel not staged: /boot/debian/$ver/linux"
-[ -e "/boot/debian/$ver/initrd.img-$ver" ]     || die "initrd not staged: /boot/debian/$ver/initrd.img-$ver"
+[ -e "/boot/debian/$ver/linux" ]           || die "kernel not staged: /boot/debian/$ver/linux"
+[ -e "/boot/debian/$ver/initrd.img-$ver" ] || die "initrd not staged: /boot/debian/$ver/initrd.img-$ver"
 
 uuid=$(findmnt -no UUID /)
 [ -n "$uuid" ] || die "cannot read root fs UUID"
