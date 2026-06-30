@@ -235,19 +235,41 @@ var QMI_DEV = '/dev/cdc-wdm0';
 
 // ── Touchpad ABS_X / ABS_Y SSE stream ──────────────────────────────────
 //
-// Open /dev/input/event1 once at startup. The kernel emits 24-byte
-// input_event structs (16-byte timeval + u16 type + u16 code + s32 value).
-// Three integer fields per event at fixed offsets — no text, no spawn,
-// no child process. On each EV_SYN/SYN_REPORT we flush the current
-// "x,y,touching" triple to every SSE subscriber as one short line. With
-// no subscribers we skip the write entirely, so idle cost is zero.
-var TOUCHPAD_DEV = '/dev/input/event1';
+// Resolve the Touchpad evdev node BY NAME at startup — event* numbers
+// aren't stable: the Buttons and Touchpad share one i2c platform device
+// and can enumerate in either order, so a hardcoded number can land on
+// the Buttons node (no ABS_X/Y / BTN_TOUCH → the stream stays frozen at
+// 0,0,0). The kernel emits 24-byte input_event structs (16-byte timeval
+// + u16 type + u16 code + s32 value); on each EV_SYN/SYN_REPORT we flush
+// the current "x,y,touching" triple to every SSE subscriber as one short
+// line. With no subscribers we skip the write entirely, so idle cost is
+// zero.
+var TOUCHPAD_NAME     = 'Flipper One Touchpad';
+var TOUCHPAD_FALLBACK = '/dev/input/event2';
 var touchpadClients = new Set();
 var tpX = 0, tpY = 0, tpTouching = false;
 
+// /dev/input/eventN whose /sys/class/input/eventN/device/name is the
+// Touchpad, or TOUCHPAD_FALLBACK when no match is found.
+function resolveTouchpadDev() {
+    try {
+        var dir = '/sys/class/input';
+        var entries = fs.readdirSync(dir);
+        for (var i = 0; i < entries.length; i++) {
+            if (!/^event\d+$/.test(entries[i])) continue;
+            var nm;
+            try { nm = fs.readFileSync(dir + '/' + entries[i] + '/device/name', 'utf8').trim(); }
+            catch (e) { continue; }
+            if (nm === TOUCHPAD_NAME) return '/dev/input/' + entries[i];
+        }
+    } catch (e) { /* /sys unavailable */ }
+    return TOUCHPAD_FALLBACK;
+}
+
 function startTouchpadStream() {
+    var dev = resolveTouchpadDev();
     var stream;
-    try { stream = fs.createReadStream(TOUCHPAD_DEV); }
+    try { stream = fs.createReadStream(dev); }
     catch (e) { console.warn('[touchpad] open failed: ' + e.message); return; }
 
     stream.on('data', function(chunk) {
@@ -268,7 +290,7 @@ function startTouchpadStream() {
         }
     });
     stream.on('error', function(e) { console.warn('[touchpad] ' + e.message); });
-    console.log('[touchpad] streaming ABS_X/ABS_Y from ' + TOUCHPAD_DEV);
+    console.log('[touchpad] streaming ABS_X/ABS_Y from ' + dev);
 }
 
 // Bandwidth tracking: previous byte counters + timestamp
@@ -1450,6 +1472,67 @@ function sendTypeKey(keyName, shift) {
     try { typeProc.stdin.write(line); }
     catch (e) { return { success: false, error: String((e && e.message) || e) }; }
     return { success: true };
+}
+
+// ── Haptic (force-feedback) ──────────────────────────────────
+// scripts/fo-haptic-test.py runs as a long-lived DAEMON: it opens the
+// FF device once (holding the fd open so each effect plays its full
+// library waveform) and plays a library effect for every index it
+// reads on stdin. Started once at server boot and kept alive; playing
+// is just writing an index to its stdin. No per-call duration.
+var hapticProc = null;
+
+// First /dev/input/eventN whose device advertises FF effects (the
+// `B: FF=` bitmap in /proc/bus/input/devices is non-zero). Used only
+// for the status endpoint — the daemon auto-detects on its own.
+function findHapticEvent() {
+    try {
+        var blocks = fs.readFileSync('/proc/bus/input/devices', 'utf8').split(/\n\s*\n/);
+        for (var i = 0; i < blocks.length; i++) {
+            var b = blocks[i];
+            var ffm = b.match(/^B:\s*FF=([0-9a-fA-F ]+)$/m);
+            if (!ffm || !/[1-9a-fA-F]/.test(ffm[1])) continue;   // no / all-zero FF
+            var hm = b.match(/Handlers=([^\n]*)/);
+            var em = hm && hm[1].match(/\bevent(\d+)\b/);
+            if (em) return '/dev/input/event' + em[1];
+        }
+    } catch (e) { /* /proc unavailable */ }
+    return null;
+}
+
+// Spawn the haptic daemon if it isn't already running (idempotent).
+// Detached-ish managed child with a stdin pipe; auto-detects the FF
+// device itself. Returns true if a daemon is (now) running.
+function ensureHapticDaemon() {
+    if (hapticProc) return true;
+    if (!fs.existsSync(path.join(SCRIPTS_DIR, 'fo-haptic-test.py'))) return false;
+    try {
+        hapticProc = spawn('sudo', ['python3', 'fo-haptic-test.py'],
+            { cwd: SCRIPTS_DIR, stdio: ['pipe', 'ignore', 'ignore'] });
+        hapticProc.on('error', function() { hapticProc = null; });
+        hapticProc.on('exit',  function() { hapticProc = null; });
+    } catch (e) {
+        hapticProc = null;
+        return false;
+    }
+    return true;
+}
+
+// Play a library effect: ensure the daemon is up, then write the
+// command to its stdin. durationMs is optional — 2..255 plays for that
+// many ms; 0 / omitted plays the full library waveform.
+function playHapticEffect(effectId, durationMs) {
+    var eff = parseInt(effectId, 10);
+    if (isNaN(eff) || eff < 0 || eff > 255) return { success: false, error: 'Bad effectId' };
+    if (!ensureHapticDaemon() || !hapticProc || !hapticProc.stdin || !hapticProc.stdin.writable) {
+        return { success: false, error: 'Haptic daemon not running' };
+    }
+    var dur  = parseInt(durationMs, 10);
+    var hasDur = !isNaN(dur) && dur >= 2 && dur <= 255;
+    var line = hasDur ? (eff + ' ' + dur) : String(eff);
+    try { hapticProc.stdin.write(line + '\n'); }
+    catch (e) { return { success: false, error: String((e && e.message) || e) }; }
+    return { success: true, effectId: eff, durationMs: hasDur ? dur : 0 };
 }
 
 // ── Boot default (extlinux) ──────────────────────────────────
@@ -4775,6 +4858,25 @@ var server = http.createServer(function(req, res) {
         });
         return;
     }
+    // ── /api/haptic/status ──────────────────────────────────────
+    // Whether an FF-capable (haptic) device is present + daemon up.
+    if (req.url === '/api/haptic/status' && req.method === 'GET') {
+        var hev = findHapticEvent();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ available: !!hev, event: hev, daemon: !!hapticProc }));
+        return;
+    }
+    // ── /api/haptic/play ────────────────────────────────────────
+    // Body: { effectId: 0..255 }. Plays it on the haptic daemon (the
+    // daemon holds the fd open, so it runs the full library waveform).
+    if (req.url === '/api/haptic/play' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            var hr = playHapticEffect(data && data.effectId, data && data.durationMs);
+            res.writeHead(hr.success ? 200 : 400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(hr));
+        });
+        return;
+    }
     // ── /api/radio/install ──────────────────────────────────────
     // Installs mpg123 via apt-get. The node server runs as root
     // (it already invokes audio-driver-restart.sh which requires
@@ -4857,6 +4959,12 @@ server.listen(PORT, BIND, function() {
     if (process.platform === 'linux') {
         try { startTouchpadStream(); }
         catch (e) { console.warn('[touchpad] startup failed: ' + e.message); }
+
+        // Haptic daemon: open the FF device once and keep it ready to
+        // play library effects (fed via /api/haptic/play). Started here
+        // so it runs for the whole server lifetime.
+        try { ensureHapticDaemon(); }
+        catch (e) { console.warn('[haptic] startup failed: ' + e.message); }
 
         // Background refreshers keep per-endpoint snapshots fresh without
         // ever blocking the main loop. Periods match the previous client

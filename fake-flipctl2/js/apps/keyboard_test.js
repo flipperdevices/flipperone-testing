@@ -462,6 +462,30 @@ var TextInputScreen = (function() {
         this.keyboard.setSelection(row, col);
     };
 
+    // Touchpad-driven selection move: set the selection and, when the
+    // touchpad actually crosses to a DIFFERENT key, play haptic effect
+    // 3 (a tick of feedback per key the finger slides over).
+    TextInputScreen.prototype._tpSetSelection = function(row, col) {
+        var prevRow = this.keyboard.selectedRow;
+        var prevCol = this.keyboard.selectedCol;
+        this._setSelection(row, col);
+        if (this.keyboard.selectedRow !== prevRow
+                || this.keyboard.selectedCol !== prevCol) {
+            this._playHaptic(3);
+        }
+    };
+
+    // Fire-and-forget POST /api/haptic/play { effectId }.
+    TextInputScreen.prototype._playHaptic = function(effectId) {
+        try {
+            var x = new XMLHttpRequest();
+            x.open('POST', '/api/haptic/play', true);
+            x.setRequestHeader('Content-Type', 'application/json');
+            x.timeout = 2000;
+            x.send(JSON.stringify({ effectId: effectId }));
+        } catch (e) { /* offline / mocked — ignore */ }
+    };
+
     // Columns of the bottom row that visually sit above each tab.
     // Both tabs sit 2 px above the screen bottom; the 123 tab is
     // 52 px in from the LEFT edge and covers x=52..99, the
@@ -798,11 +822,11 @@ var TextInputScreen = (function() {
                     this._focusTab(tabName);
                 } else {
                     if (onTab || onInputField) this._focusKeyboard();
-                    this._setSelection(lastKbRow, targetCol);
+                    this._tpSetSelection(lastKbRow, targetCol);
                 }
             } else {
                 if (onTab || onInputField) this._focusKeyboard();
-                this._setSelection(targetRow, targetCol);
+                this._tpSetSelection(targetRow, targetCol);
             }
         }
 

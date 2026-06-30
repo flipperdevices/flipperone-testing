@@ -206,6 +206,7 @@ var MenuScene = (function() {
     function testingMenu(sm) {
         return new SubMenuScene(sm, 'Testing', [
             'Screen',
+            'Screen for photos',
             'UI Demos',
             'Input',
             'Touchpad',
@@ -214,11 +215,13 @@ var MenuScene = (function() {
             'Network LEDs',
             'Sound',
             'UIinput forwarding',
+            'Haptic tests',
             'Figma live preview',
             'GPIO',
             'Switch to fake-flipctl'
         ], {
             'Screen': function() { return new ScreenTestScene(); },
+            'Screen for photos': function() { return new ScreenForPhotosScene(sm); },
             'UI Demos': function() { return demoMenu(sm); },
             'Touchpad': function() { return new TouchpadTestScene(); },
             'Touchpad ABS': function() { return new TouchpadAbsScene(); },
@@ -226,6 +229,7 @@ var MenuScene = (function() {
             'Network LEDs': function() { return new NetworkLedsScene(sm); },
             'Sound': function() { return new SoundMenuScene(sm); },
             'UIinput forwarding': function() { return new UIInputForwardingScene(sm); },
+            'Haptic tests': function() { return new HapticTestScene(sm); },
             'Figma live preview': function() { return new FigmaLivePreviewScene(sm); },
             'Switch to fake-flipctl': function() {
                 fetch('/api/switch/flipctl', { method: 'POST' });
