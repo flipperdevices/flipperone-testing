@@ -471,18 +471,18 @@ var TextInputScreen = (function() {
         this._setSelection(row, col);
         if (this.keyboard.selectedRow !== prevRow
                 || this.keyboard.selectedCol !== prevCol) {
-            this._playHaptic(3);
+            this._playHaptic(3, 10);   // effect 3, 10 ms per key crossed
         }
     };
 
-    // Fire-and-forget POST /api/haptic/play { effectId }.
-    TextInputScreen.prototype._playHaptic = function(effectId) {
+    // Fire-and-forget POST /api/haptic/play { effectId, durationMs }.
+    TextInputScreen.prototype._playHaptic = function(effectId, durationMs) {
         try {
             var x = new XMLHttpRequest();
             x.open('POST', '/api/haptic/play', true);
             x.setRequestHeader('Content-Type', 'application/json');
             x.timeout = 2000;
-            x.send(JSON.stringify({ effectId: effectId }));
+            x.send(JSON.stringify({ effectId: effectId, durationMs: durationMs }));
         } catch (e) { /* offline / mocked — ignore */ }
     };
 
@@ -693,6 +693,9 @@ var TextInputScreen = (function() {
         this._123Btn.selected       = (tabName === 'tab123');
         this._backspaceBtn.selected = (tabName === 'tabBackspace');
         if (this.keyboard) this.keyboard.setFocused(false);
+        // Moving onto / between the 123 and backspace tabs → effect 3,
+        // 10 ms (same tick as the per-key moves).
+        this._playHaptic(3, 10);
         if (window.requestRender) window.requestRender();
     };
 
@@ -702,10 +705,15 @@ var TextInputScreen = (function() {
     // re-enables its selector pass.
     TextInputScreen.prototype._focusKeyboard = function() {
         if (this._focus === 'keyboard') return;
+        var prev = this._focus;
         this._focus = 'keyboard';
         this._123Btn.selected       = false;
         this._backspaceBtn.selected = false;
         if (this.keyboard) this.keyboard.setFocused(true);
+        // Focus-switch buzz: from the input field → effect 2 (full);
+        // from a 123 / backspace tab → effect 3, 10 ms.
+        if (prev === 'inputField') this._playHaptic(2);
+        else if (prev === 'tab123' || prev === 'tabBackspace') this._playHaptic(3, 10);
         if (window.requestRender) window.requestRender();
     };
 
@@ -721,6 +729,8 @@ var TextInputScreen = (function() {
         this._backspaceBtn.selected = false;
         if (this.keyboard) this.keyboard.setFocused(false);
         if (this.cursor) this.cursor.reset();
+        // Switching up onto the input field → effect 2, full length.
+        this._playHaptic(2);
         if (window.requestRender) window.requestRender();
     };
 

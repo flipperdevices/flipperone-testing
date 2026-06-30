@@ -133,6 +133,11 @@ var AppSwitcherScene = (function() {
     // Pad units per one focusedIdx step. Y axis on this hardware
     // ranges ~400 raw units; 400/step → full pad ≈ 1 position.
     var TP_UNITS_PER_STEP = 400;
+    // How far (in focusedIdx units) a drag must push past an end
+    // before the boundary haptic fires — a little slack so merely
+    // resting at the first/last card on touch-down doesn't trigger
+    // it; only a deliberate push into the wall does.
+    var TP_EDGE_EPS = 0.08;
     // Velocity-based momentum on release. We average raw Y movement
     // over the last `TP_VELOCITY_WINDOW_MS` of touch and project it
     // forward by `TP_VELOCITY_PROJECTION_MS` to decide how many
@@ -1153,6 +1158,14 @@ var AppSwitcherScene = (function() {
             this._tpLastRawFracIdx = this.focusedIdx;
             this._tpOvershootDir = 0;
             this._tpVelSamples = [{ y: ny, ts: now() }];
+            // Haptic tracking, reset per stroke: last position we
+            // buzzed at (for the scroll rumble), the edge we're
+            // currently pushed past, and whether the boundary thump
+            // has already fired this stroke (so the release bounce
+            // doesn't double it up).
+            this._tpHapticFrac = this.focusedIdx;
+            this._tpEdgeDir = 0;
+            this._tpEdgeBuzzed = false;
             this.phase = PHASE_DRAGGING;
             this._animDurationMs = 0;
             this._animStart = now();
@@ -1177,6 +1190,26 @@ var AppSwitcherScene = (function() {
             else if (fracIdx > n - 1) fracIdx = n - 1;
             this._tpDragDelta = fracIdx - this._tpBaselineFocusedIdx;
             this.phase = PHASE_DRAGGING;
+            // Scroll rumble: a short effect-3 (10 ms) tick whenever the
+            // clamped position moves. Throttled naturally to the pad's
+            // message rate — one tick per update that actually moved.
+            // While pinned at an end fracIdx stops changing, so the
+            // rumble ceases and the boundary thump takes over.
+            if (fracIdx !== this._tpHapticFrac) {
+                this._playHaptic(3, 10);
+                this._tpHapticFrac = fracIdx;
+            }
+            // Boundary thump: full-length effect 3 the moment the
+            // drag pushes past an end (raw index beyond [0, n-1] by
+            // more than the slack). Fires once; re-arms when the drag
+            // returns inside the range.
+            var edgeDir = (rawFracIdx < -TP_EDGE_EPS) ? -1
+                        : (rawFracIdx > (n - 1) + TP_EDGE_EPS) ? 1 : 0;
+            if (edgeDir !== 0 && edgeDir !== this._tpEdgeDir) {
+                this._playHaptic(3);
+                this._tpEdgeBuzzed = true;
+            }
+            this._tpEdgeDir = edgeDir;
             // Append a velocity sample. Trim to the recent window so
             // a long drag with a slow tail doesn't average in stale
             // movement when the user finally releases.
@@ -1287,6 +1320,9 @@ var AppSwitcherScene = (function() {
                 if (fastFocus) {
                     fastFocus._bounceDir = overshoot;
                     this.phase = PHASE_BOUNCING;
+                    // Boundary thump on release, unless the drag
+                    // already thumped when it pushed past the edge.
+                    if (!this._tpEdgeBuzzed) this._playHaptic(3);
                 } else {
                     this.phase = PHASE_REST;
                 }
@@ -1438,6 +1474,19 @@ var AppSwitcherScene = (function() {
         if (typeof window.requestRender === 'function') window.requestRender();
     };
 
+    // Fire-and-forget haptic. effectId = library effect; durationMs
+    // optional (omit for the effect's full waveform, e.g. the effect-3
+    // boundary thump). Mirrors the keyboard scenes' helper.
+    AppSwitcherScene.prototype._playHaptic = function(effectId, durationMs) {
+        try {
+            var x = new XMLHttpRequest();
+            x.open('POST', '/api/haptic/play', true);
+            x.setRequestHeader('Content-Type', 'application/json');
+            x.timeout = 2000;
+            x.send(JSON.stringify({ effectId: effectId, durationMs: durationMs }));
+        } catch (e) { /* offline / mocked — ignore */ }
+    };
+
     AppSwitcherScene.prototype.handleInput = function(action) {
         // Shared exit helper for the back / no-app-to-kill paths.
         // Returns 'pop' (or popToRoot when RunningApps is empty)
@@ -1552,6 +1601,7 @@ var AppSwitcherScene = (function() {
                 focused._bounceDir = delta;
                 this.phase = PHASE_BOUNCING;
                 this._animStart = now();
+                this._playHaptic(3);   // boundary thump (top / bottom)
                 if (typeof window.requestRender === 'function') {
                     window.requestRender();
                 }
@@ -1560,6 +1610,7 @@ var AppSwitcherScene = (function() {
         }
         this.focusedIdx = newFocusedIdx;
         applyCyclicalLayout(this.cards, this.focusedIdx);
+        this._playHaptic(3, 10);   // scroll tick, one per app step
 
         this.phase = PHASE_SCROLLING;
         this._animStart = now();
@@ -1972,11 +2023,18 @@ var AppSwitcherScene = (function() {
                             bounceFocus._bounceDir = this._tpOvershootDir;
                             this.phase = PHASE_BOUNCING;
                             this._animStart = now();
+                            // Boundary thump for momentum that flung
+                            // past an end (skip if the drag already
+                            // thumped against the wall this stroke).
+                            if (!this._tpEdgeBuzzed) this._playHaptic(3);
                         } else {
                             this.phase = PHASE_REST;
                         }
                         this._tpOvershootDir = 0;
                     } else {
+                        // Clean landing (no overshoot): the card has
+                        // snapped into the focused slot — effect 3, 50 ms.
+                        this._playHaptic(3, 50);
                         this.phase = PHASE_REST;
                     }
                 }

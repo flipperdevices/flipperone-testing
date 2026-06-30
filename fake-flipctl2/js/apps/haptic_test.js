@@ -30,7 +30,7 @@ var HapticTestScene = (function() {
 
     // Duration presets cycled by left/right on the Duration row.
     // 0 = full library waveform; others = play for that many ms.
-    var DURATIONS = [0, 50, 100, 150, 200, 255];
+    var DURATIONS = [0, 10, 50, 100, 150, 200, 255];
 
     function HapticTestScene(sceneManager) {
         this.sceneManager    = sceneManager || null;
@@ -227,6 +227,16 @@ var HapticTestScene = (function() {
         ctx.fillRect(0, TITLE_Y, canvas.w, TITLE_H);
         Born2bSportyV2Medium.draw(ctx, this.displayName,
             TITLE_TEXT_X, UI.STATUS_BAR_H + 1, '#000');
+        // Status in the title bar, right-aligned (mirrors Internet
+        // radio's "Playing: …" suffix). "No haptic device" when none
+        // is found, else the transient "Playing #N …" banner; nothing
+        // when idle.
+        var status = !this._available ? 'No haptic device' : this._statusMsg;
+        if (status) {
+            var statusW = HaxrcorpFont16.textWidth(status);
+            HaxrcorpFont16.draw(ctx, status, canvas.w - 4 - statusW,
+                UI.STATUS_BAR_H + 3, '#000');
+        }
 
         // Effect / Duration rows + the page selector.
         var bodyTop  = TITLE_Y + TITLE_H;
@@ -247,14 +257,6 @@ var HapticTestScene = (function() {
         this._selectorFrame.setPosition(SELECTOR_X, rowYAt(this._selectedRow));
         this._selectorFrame.setSize(SELECTOR_W, SELECTOR_H);
         this._selectorFrame.render(canvas);
-
-        // Status line below the rows: device-missing warning, the
-        // transient "Playing …" banner, or a play hint.
-        var statusY = rowYAt(2) + 6;
-        var line    = !this._available ? 'No haptic device detected'
-                    : (this._statusMsg || 'Press B to play the effect');
-        var color   = !this._available ? '#000' : '#6D6D6D';
-        HaxrcorpFont16.draw(ctx, line, 6, statusY, color);
 
         // Bottom-right Play button.
         this._playBtn.render(canvas);

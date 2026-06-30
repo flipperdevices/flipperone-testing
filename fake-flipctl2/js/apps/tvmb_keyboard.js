@@ -435,6 +435,11 @@ var TVMediaKeyboard = (function() {
     // glyph to match, and start / stop forward-touchpad.py on seat0.
     TVMediaKeyboard.prototype._toggleTouchpadForward = function() {
         this._tpForwarding = !this._tpForwarding;
+        // Haptic for the pad's move: Flipper One → screen plays
+        // effect 108 (full waveform); screen → Flipper One plays
+        // effect 97 (100 ms).
+        if (this._tpForwarding) this._playHaptic(108);
+        else                    this._playHaptic(97, 100);
         // Slide the touchpad glyph to its new position (animated).
         this._startTpAnim(this._tpForwarding ? TOUCHPAD_X_FWD : TOUCHPAD_X_LEFT);
         // Drop any in-progress touch baseline so the keyboard re-anchors
@@ -587,6 +592,30 @@ var TVMediaKeyboard = (function() {
         // bypass the trigger that's set up inside the Keyboard
         // component for its own keypad-driven handleInput path.
         this.keyboard.setSelection(row, col);
+    };
+
+    // Touchpad-driven selection move: set the selection and, when the
+    // touchpad crosses to a DIFFERENT key, play haptic effect 3 for
+    // 10 ms (a tick of feedback per key the finger slides over).
+    TVMediaKeyboard.prototype._tpSetSelection = function(row, col) {
+        var prevRow = this.keyboard.selectedRow;
+        var prevCol = this.keyboard.selectedCol;
+        this._setSelection(row, col);
+        if (this.keyboard.selectedRow !== prevRow
+                || this.keyboard.selectedCol !== prevCol) {
+            this._playHaptic(3, 10);
+        }
+    };
+
+    // Fire-and-forget POST /api/haptic/play { effectId, durationMs }.
+    TVMediaKeyboard.prototype._playHaptic = function(effectId, durationMs) {
+        try {
+            var x = new XMLHttpRequest();
+            x.open('POST', '/api/haptic/play', true);
+            x.setRequestHeader('Content-Type', 'application/json');
+            x.timeout = 2000;
+            x.send(JSON.stringify({ effectId: effectId, durationMs: durationMs }));
+        } catch (e) { /* offline / mocked — ignore */ }
     };
 
     // Columns of the bottom row that visually sit above each tab.
@@ -898,18 +927,18 @@ var TVMediaKeyboard = (function() {
                 // No input field above the keyboard anymore — clamp
                 // upward swipes to the top keyboard row.
                 if (onTab) this._focusKeyboard();
-                this._setSelection(0, targetCol);
+                this._tpSetSelection(0, targetCol);
             } else if (targetRow >= this.keyboard.rows.length) {
                 var tabName = this._tabForCol(targetCol);
                 if (tabName) {
                     this._focusTab(tabName);
                 } else {
                     if (onTab || onInputField) this._focusKeyboard();
-                    this._setSelection(lastKbRow, targetCol);
+                    this._tpSetSelection(lastKbRow, targetCol);
                 }
             } else {
                 if (onTab || onInputField) this._focusKeyboard();
-                this._setSelection(targetRow, targetCol);
+                this._tpSetSelection(targetRow, targetCol);
             }
         }
 
