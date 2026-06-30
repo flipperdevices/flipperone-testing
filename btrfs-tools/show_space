@@ -1,12 +1,14 @@
 #!/bin/sh
-# show_space - btrfs usage + per-root-subvolume space.
-# Lists @, every snapshot under @snapshots, and any top-level @* (e.g. @.old_*).
-#   UNIQUE - data only this subvolume holds; freed if you delete IT ALONE,
-#            others kept (btrfs fi du, exact, uncompressed)
-#   DISK   - real on-disk size of all data it references, compressed
-#            (compsize, exact). Counts extents SHARED with other roots, so DISK
-#            is NOT additive across rows.
-#   TOTAL  - apparent/uncompressed size (btrfs fi du, exact)
+# show_space [-q|--quick] - btrfs usage + per-root-subvolume space.
+# (-q/--quick skips the compsize REFERENCED column -- one less extent-walk per subvol.)
+# Lists profile roots and _stock bases, every snapshot under @snapshots, and any other
+# top-level @* (e.g. @.old_*). Shared @home/@var-* are not listed.
+#   UNIQUE     - data only this subvolume holds; freed if you delete IT ALONE,
+#                others kept (btrfs fi du, exact, uncompressed)
+#   REFERENCED - real on-disk size of all data it references, compressed
+#                (compsize, exact). Counts extents SHARED with other roots, so it
+#                is NOT additive across rows.
+#   TOTAL      - apparent/uncompressed size (btrfs fi du, exact)
 # The currently booted subvolume is marked  <- booted. Columns auto-size to fit.
 set -eu
 die() { echo "error: $*" >&2; exit 1; }
@@ -14,7 +16,10 @@ die() { echo "error: $*" >&2; exit 1; }
 command -v btrfs >/dev/null 2>&1 || die "btrfs-progs not installed"
 human() { numfmt --to=iec-i --suffix=B --format='%.1f' "${1:-0}" 2>/dev/null || printf '%s' "${1:-0}"; }
 get() { printf '%s\n' "$1" | awk -v k="$2" -F':[[:space:]]+' 'index($0,k){print $2; exit}'; }
-have_cs=0; command -v compsize >/dev/null 2>&1 && have_cs=1
+quick=0
+case "${1:-}" in -q|--quick) quick=1; shift ;; esac
+have_cs=0
+if [ "$quick" = 0 ] && command -v compsize >/dev/null 2>&1; then have_cs=1; fi
 
 echo "== filesystem =="
 btrfs filesystem usage -T /
@@ -25,38 +30,53 @@ rootdev=$(findmnt -no SOURCE / | sed 's/\[.*//')
 cur_id=$(get "$(btrfs subvolume show / 2>/dev/null)" "Subvolume ID")
 top=$(mktemp -d)
 rows=$(mktemp)
+list=$(mktemp)
 mount -o subvolid=5 "$rootdev" "$top"
-trap 'umount "$top" 2>/dev/null || true; rmdir "$top" 2>/dev/null || true; rm -f "$rows"' EXIT
+trap 'umount "$top" 2>/dev/null || true; rmdir "$top" 2>/dev/null || true; rm -f "$rows" "$list"' EXIT
 
 row() {  # $1=display name  $2=fs path  -> append a TSV row
     line=$(btrfs filesystem du -s --raw "$2" 2>/dev/null | awk 'NR==2{print $1, $2}')
     tot=$(printf '%s' "$line" | awk '{print $1}'); case "$tot" in ''|*[!0-9]*) tot=0 ;; esac
     exc=$(printf '%s' "$line" | awk '{print $2}'); case "$exc" in ''|*[!0-9]*) exc=0 ;; esac
     if [ "$have_cs" = 1 ]; then
-        disk=$(compsize -b "$2" 2>/dev/null | awk '/^TOTAL/{print $3; exit}')
-        case "$disk" in ''|*[!0-9]*) disk=0 ;; esac
-        disk_h=$(human "$disk")
+        ref=$(compsize -b "$2" 2>/dev/null | awk '/^TOTAL/{print $3; exit}')
+        case "$ref" in ''|*[!0-9]*) ref=0 ;; esac
+        ref_h=$(human "$ref")
     else
-        disk_h="-"
+        ref_h="-"
     fi
     id=$(get "$(btrfs subvolume show "$2" 2>/dev/null)" "Subvolume ID")
     mark=""; [ -n "$cur_id" ] && [ "$id" = "$cur_id" ] && mark="<- booted"
-    printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$(human "$exc")" "$disk_h" "$(human "$tot")" "$mark" >> "$rows"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$(human "$exc")" "$ref_h" "$(human "$tot")" "$mark" >> "$rows"
 }
 
-printf 'NAME\tUNIQUE\tDISK\tTOTAL\t\n' > "$rows"
-row "@" "$top/@"
+# collect the subvols to measure (cheap); then measure with progress, since each row walks
+# extents (du -s, plus compsize unless --quick) and is slow on flash
 for s in "$top"/@snapshots/*; do
     [ -e "$s" ] || continue
-    row "@snapshots/${s##*/}" "$s"
+    printf '%s\t%s\n' "@snapshots/${s##*/}" "$s" >> "$list"
 done
 for d in "$top"/@*; do
     [ -e "$d" ] || continue
     n=${d##*/}
     case "$n" in @|@home|@root|@snapshots|@var-log|@var-cache) continue ;; esac
     btrfs subvolume show "$d" >/dev/null 2>&1 || continue
-    row "$n" "$d"
+    printf '%s\t%s\n' "$n" "$d" >> "$list"
 done
+total=$(wc -l < "$list" 2>/dev/null | tr -d ' '); [ -n "$total" ] || total=0
+
+printf 'NAME\tUNIQUE\tREFERENCED\tTOTAL\t\n' > "$rows"
+if [ "$total" -gt 0 ]; then
+    if [ "$have_cs" = 1 ]; then note="du + compsize"; else note="du only"; fi
+    printf 'measuring %s subvolume(s) (%s), please wait...\n' "$total" "$note" >&2
+fi
+i=0; tab=$(printf '\t')
+while IFS="$tab" read -r nm pth; do
+    i=$((i + 1))
+    [ -t 2 ] && printf '\r  [%d/%d] %s\033[K' "$i" "$total" "$nm" >&2 || true
+    row "$nm" "$pth"
+done < "$list"
+{ [ -t 2 ] && [ "$total" -gt 0 ] && printf '\r\033[K' >&2; } || true
 
 echo "== root subvolumes & snapshots =="
 # align: NAME auto-width; numeric columns right-justified; marker appended
@@ -72,7 +92,10 @@ END {
 }' "$rows"
 
 echo
-echo "UNIQUE = freed if you delete that subvolume alone (uncompressed)."
-echo "DISK   = real on-disk size, compressed; counts shared extents, so NOT additive."
-[ "$have_cs" = 0 ] && echo "DISK shows '-': install 'compsize' (apt install compsize)."
-echo "TOTAL  = apparent (uncompressed)."
+echo "UNIQUE     = freed if you delete that subvolume alone (uncompressed)."
+echo "REFERENCED = real on-disk size, compressed; counts shared extents, so NOT additive."
+if [ "$have_cs" = 0 ]; then
+    if [ "$quick" = 1 ]; then echo "REFERENCED '-': skipped for speed (--quick); run without it for compressed sizes."
+    else echo "REFERENCED shows '-': install 'compsize' (apt install compsize)."; fi
+fi
+echo "TOTAL      = apparent (uncompressed)."

@@ -1,24 +1,38 @@
 #!/bin/sh
-# restore_snapshot <source-snapshot> [target] - replace <target> with a writable
-# copy of <source-snapshot>. Takes effect after rebooting into <target>.
+# restore_snapshot [-m|--move] <source> [dest] - materialize a WRITABLE, BOOTABLE root
+# named exactly <dest> from <source>. Takes effect after rebooting into <dest>.
 #
-#   target defaults to @ (the main root). It may also be:
-#     @                 the main root
-#     <snapshot-name>   e.g. @_2026-...   (a subvol under @snapshots)
-#     current | booted  whatever subvolume you are running right now
+#   <source>  a snapshot or golden base, by its full top-level path: @snapshots/<name>
+#             (RO restore point), @<profile>_<stamp> (top-level snapshot), or
+#             @<profile>_stock (a profile's golden base).
+#   dest      exact name of the bootable root to write (a top-level subvol). Defaults to
+#             the currently booted root. May also be current|booted.
+#   -m,--move MOVE <source> into <dest> (rename) instead of snapshotting it: <source> is
+#             consumed but its parent_uuid is PRESERVED. (A snapshot would re-parent <dest>
+#             onto <source>.) Use to promote a received incremental snapshot back to its
+#             profile root while keeping its _stock parent.
 #
-# The previous <target> is kept aside as <target>.old_<ts> (recoverable). The
-# restored copy is always writable, even if the source snapshot is read-only.
+# If <dest> does not exist it is created and a BLS boot entry is generated for it. If it
+# already exists it is replaced and the previous copy kept as <dest>.old_<ts> (recoverable;
+# existing roots already have their own boot entry, so none is added). The result is always
+# writable, even when <source> is read-only.
 set -eu
 die() { echo "error: $*" >&2; exit 1; }
 [ "$(id -u)" -eq 0 ] || die "must run as root (use sudo)"
 command -v btrfs >/dev/null 2>&1 || die "btrfs-progs not installed"
 # Reaches @snapshots via a subvolid=5 mount, so /.snapshots need not be mounted.
 
-[ $# -ge 1 ] || die "usage: restore_snapshot <source-snapshot> [@|<snapshot>|current]"
+move=0
+while :; do
+    case "${1:-}" in
+        -m|--move) move=1; shift ;;
+        *) break ;;
+    esac
+done
+[ $# -ge 1 ] || die "usage: restore_snapshot [-m|--move] <source> [<dest-root>|current]"
 src_name=$1
-target=${2:-@}
-case "$src_name" in */*|"") die "invalid source name" ;; esac
+dest=${2:-current}
+case "$src_name" in *..*|/*) die "invalid source name: $src_name" ;; esac
 
 rootdev=$(findmnt -no SOURCE / | sed 's/\[.*//')
 [ -n "$rootdev" ] || die "cannot determine root device"
@@ -26,41 +40,84 @@ top=$(mktemp -d)
 mount -o subvolid=5 "$rootdev" "$top"
 trap 'umount "$top" 2>/dev/null || true; rmdir "$top" 2>/dev/null || true' EXIT
 
-[ -d "$top/@snapshots/$src_name" ] || die "no such snapshot: $src_name"
+# require a full top-level-relative path (e.g. @snapshots/@Minimal, or @Desktop); no guessing
+resolve() { [ -e "$top/$1" ] && printf '%s' "$1"; }
 
-# resolve target to a top-level-relative subvolume path
-case "$target" in
-    current|booted)
-        rel=$(findmnt -no FSROOT / | sed 's,^/,,')
-        [ -n "$rel" ] || die "cannot determine booted subvolume"
-        ;;
-    @|"")         rel=@ ;;
-    @snapshots/*) rel=$target ;;
-    @_*)          rel="@snapshots/$target" ;;
-    *)            rel=$target ;;
+src_rel=$(resolve "$src_name")
+[ -n "$src_rel" ] || die "no such snapshot: $src_name (give the full path, e.g. @snapshots/@Minimal)"
+src="$top/$src_rel"
+
+# resolve dest to an exact top-level subvolume name (default: the booted root)
+case "$dest" in
+    current|booted|"") rel=$(findmnt -no FSROOT / | sed 's,^/,,')
+                       [ -n "$rel" ] || die "cannot determine booted subvolume" ;;
+    *)                 case "$dest" in *..*|/*) die "invalid dest: $dest" ;; esac
+                       rel=$dest ;;
 esac
+case "$rel" in
+    @home|@root|@snapshots|@var-log|@var-cache) die "refusing to write layout subvolume: $rel" ;;
+esac
+[ "$rel" = "$src_rel" ] && die "dest and source are the same subvolume"
 
-src_rel="@snapshots/$src_name"
-[ "$rel" = "$src_rel" ] && die "target and source are the same subvolume"
-
-printf 'Restore "%s" -> "%s" (writable) on %s?\nPrevious "%s" kept as .old_*. [y/N] ' \
-    "$src_name" "$rel" "$rootdev" "$rel"
+existed=0; [ -e "$top/$rel" ] && existed=1
+if [ "$move" = 1 ]; then
+    how="by MOVING $src_name into it (source consumed, parent preserved)"
+else
+    how="with a writable copy of $src_name"
+fi
+if [ "$existed" = 1 ]; then
+    printf 'Replace existing root "%s" %s on %s?\nThe current "%s" is kept as %s.old_<ts>. [y/N] ' \
+        "$rel" "$how" "$rootdev" "$rel" "$rel"
+else
+    printf 'Create writable bootable root "%s" %s on %s? [y/N] ' "$rel" "$how" "$rootdev"
+fi
 read -r ans; case "$ans" in y|Y) ;; *) die "aborted" ;; esac
 
-src="$top/$src_rel"
 tgt="$top/$rel"
-[ -e "$src" ] || die "source not visible at top level: $src_rel"
-[ -e "$tgt" ] || die "target not found at top level: $rel"
-
-ts=$(date +%Y-%m-%d_%H-%M-%S)
-aside="$tgt.old_$ts"
-mv "$tgt" "$aside"                                    # rename aside (safe even if mounted)
-if ! btrfs subvolume snapshot "$src" "$tgt" >/dev/null; then
-    mv "$aside" "$tgt"
-    die "snapshot failed; previous $rel restored, nothing changed"
+aside=""
+if [ "$existed" = 1 ]; then
+    ts=$(date +%Y-%m-%d_%H-%M-%S)
+    aside="$tgt.old_$ts"
+    mv "$tgt" "$aside"                                    # rename aside (safe even if mounted)
 fi
-btrfs property set "$tgt" ro false 2>/dev/null || true   # ensure the restored root is writable
+if [ "$move" = 1 ]; then
+    # a read-only subvol can't be renamed (EROFS), so clear ro on the source FIRST. -f is
+    # required to flip a *received* snapshot to rw; this preserves parent_uuid (only
+    # received_uuid is dropped). Then move it into place.
+    btrfs property set -f "$src" ro false || die "could not clear ro on $src_name (needed to move it)"
+    if ! mv "$src" "$tgt"; then
+        [ -n "$aside" ] && mv "$aside" "$tgt"
+        die "move failed; ${aside:+previous $rel restored, }nothing changed"
+    fi
+else
+    if ! btrfs subvolume snapshot "$src" "$tgt" >/dev/null; then
+        [ -n "$aside" ] && mv "$aside" "$tgt"
+        die "snapshot failed; ${aside:+previous $rel restored, }nothing changed"
+    fi
+fi
+# make the new root writable; on a moved received snapshot this also drops received_uuid
+# but PRESERVES parent_uuid (so e.g. a profile root keeps its _stock parent)
+btrfs property set "$tgt" ro false 2>/dev/null || true
 
-echo "restored '$src_name' onto '$rel' (writable); previous kept as ${rel}.old_$ts"
-echo "reboot into '$rel' to use it; remove the old copy later with:"
-echo "  sudo mount -o subvolid=5 $rootdev /mnt && sudo btrfs subvolume delete /mnt/${rel}.old_$ts && sudo umount /mnt"
+# a newly-created bootable root needs its own BLS entry; existing roots already have one
+if [ "$existed" = 0 ]; then
+    self=$(dirname "$0")
+    if [ -x "$self/create_boot_entry" ]; then
+        "$self/create_boot_entry" "$rel" || echo "warning: boot entry not created for $rel" >&2
+    elif command -v create_boot_entry >/dev/null 2>&1; then
+        create_boot_entry "$rel" || echo "warning: boot entry not created for $rel" >&2
+    else
+        echo "warning: create_boot_entry not found; no boot entry created for $rel" >&2
+    fi
+fi
+
+if [ "$move" = 1 ]; then verb="moved"; else verb="restored"; fi
+if [ "$existed" = 1 ]; then
+    echo "$verb '$src_name' -> '$rel' (writable); previous kept as ${rel}.old_$ts"
+    echo "reboot into '$rel' to use it; remove the old copy later with:"
+    echo "  sudo mount -o subvolid=5 $rootdev /mnt && sudo btrfs subvolume delete /mnt/${rel}.old_$ts && sudo umount /mnt"
+else
+    echo "$verb '$src_name' -> '$rel' (writable bootable root, boot entry added)"
+    echo "reboot and pick '$rel' from the boot menu to use it"
+fi
+[ "$move" = 1 ] && echo "(source consumed; parent_uuid preserved)" || true
