@@ -99,15 +99,21 @@ fi
 # but PRESERVES parent_uuid (so e.g. a profile root keeps its _stock parent)
 btrfs property set "$tgt" ro false 2>/dev/null || true
 
-# a newly-created bootable root needs its own BLS entry; existing roots already have one
+# a newly-created bootable root needs its own BLS entry; existing roots already have one.
+# Generate it via the image's BLS generator sourced as a library (FLIPPER_BLS_LIB=1) -- one
+# source of truth for the entry format / NN band / devicetreedir + DTB fallback. Run in a
+# subshell so its `set -e`/die can't abort us. $tgt is the new root's path on the subvolid=5
+# mount, so flipper_write_entry can read its kernel version and btrfs parent.
 if [ "$existed" = 0 ]; then
-    self=$(dirname "$0")
-    if [ -x "$self/create_boot_entry" ]; then
-        "$self/create_boot_entry" "$rel" || echo "warning: boot entry not created for $rel" >&2
-    elif command -v create_boot_entry >/dev/null 2>&1; then
-        create_boot_entry "$rel" || echo "warning: boot entry not created for $rel" >&2
+    lib=/etc/kernel/install.d/90-loaderentry.install
+    if [ -r "$lib" ]; then
+        # pass the SOURCE as the origin hint -> the new root lands in that profile's band even
+        # if a move/receive left its parent_uuid dangling (flipper_write_entry falls back to a
+        # btrfs parent-chain walk when the hint doesn't map).
+        ( FLIPPER_BLS_LIB=1 . "$lib"; flipper_write_entry "$rel" "$tgt" "$src_rel" ) \
+            || echo "warning: boot entry not created for $rel" >&2
     else
-        echo "warning: create_boot_entry not found; no boot entry created for $rel" >&2
+        echo "warning: $lib not found; no boot entry created for $rel" >&2
     fi
 fi
 
