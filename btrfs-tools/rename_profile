@@ -1,0 +1,61 @@
+#!/bin/sh
+# rename_profile <old> <new> - rename a bootable PROFILE at the btrfs top level (as listed by
+# list_profiles) and reissue its BLS boot entry under the new name. Both are top-level names
+# (e.g. @Desktop-2). The profile keeps its contents and btrfs parent; only its name and boot
+# entry change. Cannot rename the currently booted profile (boot into another first).
+# Works via a subvolid=5 (top-level) mount.
+set -eu
+die() { echo "error: $*" >&2; exit 1; }
+[ "$(id -u)" -eq 0 ] || die "must run as root (use sudo)"
+command -v btrfs >/dev/null 2>&1 || die "btrfs-progs not installed"
+
+[ $# -ge 2 ] || die "usage: rename_profile <old> <new>"
+old=$1; new=$2
+for n in "$old" "$new"; do
+    case "$n" in *..*|/*|*/*) die "invalid name: $n (top-level names only, e.g. @Desktop-2)" ;; esac
+done
+[ "$old" = "$new" ] && die "old and new names are the same"
+case "$new" in
+    @|@home|@root|@snapshots|@var-log|@var-cache|boot) die "refusing to use layout name: $new" ;;
+esac
+
+rootdev=$(findmnt -no SOURCE / | sed 's/\[.*//')
+[ -n "$rootdev" ] || die "cannot determine root device"
+cur_id=$(btrfs subvolume show / 2>/dev/null | awk -F':[[:space:]]+' '/Subvolume ID/{print $2; exit}')
+
+top=$(mktemp -d)
+mount -o subvolid=5 "$rootdev" "$top"
+trap 'umount "$top" 2>/dev/null || true; rmdir "$top" 2>/dev/null || true' EXIT
+
+[ -e "$top/$old" ] || die "no such profile: $old (see list_profiles)"
+[ -e "$top/$new" ] && die "target already exists: $new"
+case "$old" in
+    @|@home|@root|@snapshots|@var-log|@var-cache|boot) die "refusing to rename layout subvolume: $old" ;;
+esac
+info=$(btrfs subvolume show "$top/$old" 2>/dev/null) || die "not a profile: $old"
+old_id=$(printf '%s\n' "$info" | awk -F':[[:space:]]+' '/Subvolume ID/{print $2; exit}')
+[ -n "$cur_id" ] && [ "$old_id" = "$cur_id" ] \
+    && die "refusing to rename the currently booted profile ($old); boot into another profile first"
+
+# Rename the subvolume: a top-level directory entry, so mv keeps its UUID and btrfs parent.
+mv "$top/$old" "$top/$new"
+echo "renamed profile '$old' -> '$new'"
+
+# Drop the old BLS entry (by content: rootflags=subvol=<old>), then reissue one for <new> via
+# the image's BLS generator (FLIPPER_BLS_LIB=1). The parent chain is intact after the rename,
+# so the new entry lands in the right menu band on its own.
+for entry in /boot/loader/entries/*.conf; do
+    [ -f "$entry" ] || continue
+    esv=$(awk '$1=="options"{for(i=2;i<=NF;i++) if($i ~ /^rootflags=subvol=/) s=$i}
+               END{sub(/^rootflags=subvol=/,"",s); print s}' "$entry")
+    [ "$esv" = "$old" ] && { rm -f "$entry"; echo "removed old boot entry $entry"; }
+done
+lib=/etc/kernel/install.d/90-loaderentry.install
+if [ -r "$lib" ]; then
+    ( FLIPPER_BLS_LIB=1 . "$lib"; flipper_write_entry "$new" "$top/$new" ) \
+        || echo "warning: boot entry not created for $new" >&2
+else
+    echo "warning: $lib not found; no boot entry created for $new" >&2
+fi
+
+echo "reboot and pick '$new' from the boot menu to use it"

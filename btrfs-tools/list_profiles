@@ -1,8 +1,10 @@
 #!/bin/sh
-# list_snapshots - list the read-only restore-point SNAPSHOTS under @snapshots (made by
-# create_snapshot). PARENT is what each was snapshotted or received from (via Parent UUID);
-# names are top-level paths (what create_profile and delete_snapshot take). For bootable
-# profiles, see list_profiles. Works via a subvolid=5 (top-level) mount.
+# list_profiles - list the bootable PROFILES at the btrfs top level: the profile roots
+# (@Desktop, @Minimal, ...), their _stock golden bases, and @<profile>.old_* leftovers from
+# create_profile. KIND tags each (profile/stock/old); PARENT is what it was snapshotted from
+# (via Parent UUID). Names are top-level paths (what create_profile/rename_profile/delete_profile
+# take). The booted profile is marked  <- booted. For restore points, see list_snapshots.
+# Works via a subvolid=5 (top-level) mount.
 set -eu
 die() { echo "error: $*" >&2; exit 1; }
 [ "$(id -u)" -eq 0 ] || die "must run as root (use sudo)"
@@ -37,20 +39,36 @@ parent_of() {  # $1 = parent uuid -> "name (id)" or "-"
         END   { if (!f) printf "-" }' "$map"
 }
 
-[ -d "$top/@snapshots" ] || die "@snapshots not found at top level"
+cur=$(btrfs subvolume show / 2>/dev/null) || cur=
+cur_id=$(get "$cur" "Subvolume ID")
+cur_path=$(printf '%s\n' "$cur" | head -n1)
+[ -n "$cur_path" ] && echo "booted profile: $cur_path (id ${cur_id:-?})"
+echo
 
 emit() {  # $1=display name  $2=fs path
     info=$(btrfs subvolume show "$2" 2>/dev/null) || return 0
     id=$(get "$info" "Subvolume ID")
     otime=$(get "$info" "Creation time"); otime=${otime% +*}
+    flags=$(get "$info" "Flags"); case "$flags" in *readonly*) flags=ro ;; *) flags=rw ;; esac
     parent=$(parent_of "$(get "$info" "Parent UUID")")
-    printf '%s\t%s\t%s\t%s\n' "$1" "${id:-?}" "${otime:-?}" "$parent" >> "$rows"
+    case "$1" in
+        *_stock) kind=stock ;;
+        *.old_*) kind=old ;;
+        *)       kind=profile ;;
+    esac
+    mark=""; [ -n "$cur_id" ] && [ "$id" = "$cur_id" ] && mark="<- booted"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$kind" "${id:-?}" "${otime:-?}" "$flags" "$parent" "$mark" >> "$rows"
 }
 
-printf 'NAME\tID\tCREATED\tPARENT\n' > "$rows"
-for s in "$top"/@snapshots/*; do
-    [ -e "$s" ] || continue
-    emit "@snapshots/${s##*/}" "$s"
+printf 'NAME\tKIND\tID\tCREATED\tRO\tPARENT\t\n' > "$rows"
+# top level only: bootable roots, _stock bases, @.old_* leftovers.
+# Skip the shared data subvols and the @snapshots container (restore points -> list_snapshots).
+for d in "$top"/@*; do
+    [ -e "$d" ] || continue
+    n=${d##*/}
+    case "$n" in @|@home|@root|@snapshots|@var-log|@var-cache) continue ;; esac
+    btrfs subvolume show "$d" >/dev/null 2>&1 || continue
+    emit "$n" "$d"
 done
 
 # generic aligner: every column padded to its max width, last field unpadded

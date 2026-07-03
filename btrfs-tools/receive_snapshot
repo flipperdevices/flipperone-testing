@@ -1,10 +1,9 @@
 #!/bin/sh
 # receive_snapshot <file|->  - receive a send_snapshot stream into @snapshots.
 # The received subvolume keeps the name it had when sent (the leading '@' too, carried in
-# the stream) and is read-only; put it onto a root with restore_snapshot. For an
-# incremental stream (sent with -p/-i), its parent must already exist on this filesystem
-# -- e.g. the _stock base it was diffed against (found by UUID, wherever it lives) -- so
-# receive the full base first.
+# the stream) and is read-only; put it onto a root with create_profile. For an
+# incremental stream (sent with -p/-i), its parent must already exist here (e.g. the _stock
+# base it was diffed against, found by UUID wherever it lives), so receive the full base first.
 #
 # Examples:
 #   receive_snapshot /mnt/usb/Minimal_2026-..._pack.zst

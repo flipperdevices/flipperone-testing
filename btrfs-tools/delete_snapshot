@@ -1,73 +1,32 @@
 #!/bin/sh
-# delete_snapshot <name|path> - delete a snapshot or other root subvolume.
-# Accepts the forms shown by list_snapshots, e.g.:
-#   @<profile>_<stamp>            writable bootable snapshot at the top level
-#   @snapshots/@<profile>_<stamp> read-only restore point under @snapshots
-#   @<profile>_stock              a profile's read-only golden base
-#   @.old_<stamp>                 top-level leftover from restore_snapshot
-# Confirms before deleting; asks AGAIN if the target is read-only; and a THIRD time,
-# with a warning, if it is a _stock golden base. Also removes a matching BLS entry
-# (/boot/loader/entries/snapshot-<name>.conf).
-# Refuses layout subvolumes (@, @home, ...) and the currently booted root.
+# delete_snapshot <@snapshots/NAME> - delete a read-only restore-point SNAPSHOT under
+# @snapshots (as listed by list_snapshots). For bootable profiles, their _stock bases, or
+# .old leftovers, use delete_profile. Confirms once. Works via a subvolid=5 (top-level) mount.
 set -eu
 die() { echo "error: $*" >&2; exit 1; }
 [ "$(id -u)" -eq 0 ] || die "must run as root (use sudo)"
 command -v btrfs >/dev/null 2>&1 || die "btrfs-progs not installed"
 
-[ $# -ge 1 ] || die "usage: delete_snapshot <name|path>"
+[ $# -ge 1 ] || die "usage: delete_snapshot <@snapshots/NAME>"
 arg=$1
 case "$arg" in *..*|/*) die "invalid name: $arg" ;; esac
+case "$arg" in
+    @snapshots/?*) ;;
+    *) die "delete_snapshot only removes @snapshots restore points; for a profile use: delete_profile $arg" ;;
+esac
 
 rootdev=$(findmnt -no SOURCE / | sed 's/\[.*//')
 [ -n "$rootdev" ] || die "cannot determine root device"
-cur_id=$(btrfs subvolume show / 2>/dev/null | awk -F':[[:space:]]+' '/Subvolume ID/{print $2; exit}')
-
 top=$(mktemp -d)
 mount -o subvolid=5 "$rootdev" "$top"
 trap 'umount "$top" 2>/dev/null || true; rmdir "$top" 2>/dev/null || true' EXIT
 
-# require a full top-level-relative path (e.g. @snapshots/@Minimal, or @Desktop); no guessing
-[ -e "$top/$arg" ] || die "no such subvolume: $arg (give the full path, e.g. @snapshots/@Minimal)"
-rel=$arg
+[ -e "$top/$arg" ] || die "no such snapshot: $arg (see list_snapshots)"
+btrfs subvolume show "$top/$arg" >/dev/null 2>&1 || die "not a snapshot: $arg"
 
-# guards
-case "$rel" in
-    @|@home|@root|@snapshots|@var-log|@var-cache|boot)
-        die "refusing to delete layout subvolume: $rel" ;;
-esac
-btrfs subvolume show "$top/$rel" >/dev/null 2>&1 || die "not a subvolume: $rel"
-tgt_id=$(btrfs subvolume show "$top/$rel" | awk -F':[[:space:]]+' '/Subvolume ID/{print $2; exit}')
-[ -n "$cur_id" ] && [ "$tgt_id" = "$cur_id" ] && die "refusing to delete the currently booted subvolume ($rel)"
+printf "Delete restore-point snapshot '%s'? [y/N] " "$arg" >&2
+read -r a </dev/tty 2>/dev/null || die "no terminal for confirmation; aborted"
+case "$a" in y|Y|yes|YES) ;; *) die "aborted" ;; esac
 
-# Tiered confirmation: once always; AGAIN if read-only; a THIRD time (with a warning)
-# if it is a _stock golden base.
-flags=$(btrfs subvolume show "$top/$rel" | awk -F':[[:space:]]+' '/Flags/{print $2}')
-is_ro=0;    case "$flags" in *readonly*) is_ro=1 ;; esac
-is_stock=0; case "${rel##*/}" in *_stock) is_stock=1 ;; esac
-
-confirm() {  # $1 = prompt; reads the terminal, aborts unless an explicit yes
-    printf '%s [y/N] ' "$1" >&2
-    read -r a </dev/tty 2>/dev/null || die "no terminal for confirmation; aborted"
-    case "$a" in y|Y|yes|YES) ;; *) die "aborted" ;; esac
-}
-
-confirm "Delete subvolume '$rel'?"
-[ "$is_ro" = 1 ] && confirm "'$rel' is READ-ONLY (restore point / stock image) -- delete anyway?"
-if [ "$is_stock" = 1 ]; then
-    echo "WARNING: '$rel' is a _stock GOLDEN BASE -- the factory-reset source for its profile;" >&2
-    echo "         deleting it means that profile can no longer be reset to factory." >&2
-    confirm "Confirm a THIRD time: permanently delete the golden base '$rel'?"
-fi
-
-btrfs subvolume delete "$top/$rel" >/dev/null
-echo "deleted $rel"
-
-# drop this subvol's BLS entries by CONTENT -- any entry whose options select this root
-# (rootflags=subvol=<rel>) -- matching how 90-loaderentry.install removes them. Robust to the
-# NN-<name>-<token>-<ver> filename scheme, where <name> is no longer the trailing field.
-for entry in /boot/loader/entries/*.conf; do
-    [ -f "$entry" ] || continue
-    esv=$(awk '$1=="options"{for(i=2;i<=NF;i++) if($i ~ /^rootflags=subvol=/) s=$i}
-               END{sub(/^rootflags=subvol=/,"",s); print s}' "$entry")
-    [ "$esv" = "$rel" ] && { rm -f "$entry"; echo "removed boot entry $entry"; }
-done
+btrfs subvolume delete "$top/$arg" >/dev/null
+echo "deleted $arg"

@@ -1,12 +1,12 @@
 #!/bin/sh
-# restore_snapshot [-m|--move] <source> [dest] - materialize a WRITABLE, BOOTABLE root
-# named exactly <dest> from <source>. Takes effect after rebooting into <dest>.
+# create_profile [-m|--move] <source> [dest] - materialize a bootable PROFILE (a writable
+# bootable root) named exactly <dest> from <source>. Takes effect after rebooting into <dest>.
 #
 #   <source>  a snapshot or golden base, by its full top-level path: @snapshots/<name>
 #             (RO restore point), @<profile>_<stamp> (top-level snapshot), or
 #             @<profile>_stock (a profile's golden base).
-#   dest      exact name of the bootable root to write (a top-level subvol). Defaults to
-#             the currently booted root. May also be current|booted.
+#   dest      exact name of the profile (a bootable top-level subvol) to write. Defaults to
+#             the currently booted profile. May also be current|booted.
 #   -m,--move MOVE <source> into <dest> (rename) instead of snapshotting it: <source> is
 #             consumed but its parent_uuid is PRESERVED. (A snapshot would re-parent <dest>
 #             onto <source>.) Use to promote a received incremental snapshot back to its
@@ -14,7 +14,7 @@
 #
 # If <dest> does not exist it is created and a BLS boot entry is generated for it. If it
 # already exists it is replaced and the previous copy kept as <dest>.old_<ts> (recoverable;
-# existing roots already have their own boot entry, so none is added). The result is always
+# existing profiles already have their own boot entry, so none is added). The result is always
 # writable, even when <source> is read-only.
 set -eu
 die() { echo "error: $*" >&2; exit 1; }
@@ -29,7 +29,7 @@ while :; do
         *) break ;;
     esac
 done
-[ $# -ge 1 ] || die "usage: restore_snapshot [-m|--move] <source> [<dest-root>|current]"
+[ $# -ge 1 ] || die "usage: create_profile [-m|--move] <source> [<dest-profile>|current]"
 src_name=$1
 dest=${2:-current}
 case "$src_name" in *..*|/*) die "invalid source name: $src_name" ;; esac
@@ -66,10 +66,10 @@ else
     how="with a writable copy of $src_name"
 fi
 if [ "$existed" = 1 ]; then
-    printf 'Replace existing root "%s" %s on %s?\nThe current "%s" is kept as %s.old_<ts>. [y/N] ' \
+    printf 'Replace existing profile "%s" %s on %s?\nThe current "%s" is kept as %s.old_<ts>. [y/N] ' \
         "$rel" "$how" "$rootdev" "$rel" "$rel"
 else
-    printf 'Create writable bootable root "%s" %s on %s? [y/N] ' "$rel" "$how" "$rootdev"
+    printf 'Create bootable profile "%s" %s on %s? [y/N] ' "$rel" "$how" "$rootdev"
 fi
 read -r ans; case "$ans" in y|Y) ;; *) die "aborted" ;; esac
 
@@ -99,10 +99,10 @@ fi
 # but PRESERVES parent_uuid (so e.g. a profile root keeps its _stock parent)
 btrfs property set "$tgt" ro false 2>/dev/null || true
 
-# a newly-created bootable root needs its own BLS entry; existing roots already have one.
-# Generate it via the image's BLS generator sourced as a library (FLIPPER_BLS_LIB=1) -- one
-# source of truth for the entry format / NN band / devicetreedir + DTB fallback. Run in a
-# subshell so its `set -e`/die can't abort us. $tgt is the new root's path on the subvolid=5
+# a newly-created profile needs its own BLS entry; existing profiles already have one.
+# Generate it via the image's BLS generator sourced as a library (FLIPPER_BLS_LIB=1): one
+# source of truth for the entry format, NN band, and devicetreedir/DTB fallback. Run in a
+# subshell so its set -e/die can't abort us. $tgt is the new root's path on the top-level
 # mount, so flipper_write_entry can read its kernel version and btrfs parent.
 if [ "$existed" = 0 ]; then
     lib=/etc/kernel/install.d/90-loaderentry.install
@@ -117,13 +117,13 @@ if [ "$existed" = 0 ]; then
     fi
 fi
 
-if [ "$move" = 1 ]; then verb="moved"; else verb="restored"; fi
+if [ "$move" = 1 ]; then verb="moved"; else verb="created"; fi
 if [ "$existed" = 1 ]; then
-    echo "$verb '$src_name' -> '$rel' (writable); previous kept as ${rel}.old_$ts"
+    echo "profile '$rel' $verb from '$src_name' (writable); previous kept as ${rel}.old_$ts"
     echo "reboot into '$rel' to use it; remove the old copy later with:"
-    echo "  sudo mount -o subvolid=5 $rootdev /mnt && sudo btrfs subvolume delete /mnt/${rel}.old_$ts && sudo umount /mnt"
+    echo "  sudo delete_profile ${rel}.old_$ts"
 else
-    echo "$verb '$src_name' -> '$rel' (writable bootable root, boot entry added)"
+    echo "profile '$rel' $verb from '$src_name' (writable, boot entry added)"
     echo "reboot and pick '$rel' from the boot menu to use it"
 fi
 [ "$move" = 1 ] && echo "(source consumed; parent_uuid preserved)" || true

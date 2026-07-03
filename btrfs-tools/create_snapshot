@@ -1,7 +1,7 @@
 #!/bin/sh
 # create_snapshot [tag...] - read-only snapshot of the running root (/), kept as a restore
 # point inside @snapshots. To turn a snapshot into a writable, bootable root, use
-# restore_snapshot <source> <dest>.
+# create_profile <source> <dest>.
 # naming: @<root>_YYYY-MM-DD_HH-MM-SS[_tag]  e.g. @Minimal_2026-06-29_19-52-31
 #         (<root> = the source subvol of /, e.g. @Desktop/@Minimal; tag slugified)
 # Works via a subvolid=5 (top-level) mount, so /.snapshots need not be mounted.
@@ -11,7 +11,7 @@ die() { echo "error: $*" >&2; exit 1; }
 command -v btrfs >/dev/null 2>&1 || die "btrfs-progs not installed"
 
 case "${1:-}" in
-    -w|--rw) die "create_snapshot is read-only; make a writable bootable root with restore_snapshot <source> <dest>" ;;
+    -w|--rw) die "create_snapshot is read-only; make a writable bootable root with create_profile <source> <dest>" ;;
     -r|--ro) shift ;;   # read-only is the only mode; accept the flag as a no-op
 esac
 

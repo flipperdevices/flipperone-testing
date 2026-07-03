@@ -1,6 +1,6 @@
 #!/bin/sh
 # show_space [-q|--quick] - btrfs usage + per-root-subvolume space.
-# (-q/--quick skips the compsize REFERENCED column -- one less extent-walk per subvol.)
+# (-q/--quick skips the compsize REFERENCED column, one less extent-walk per subvol.)
 # Lists profile roots and _stock bases, every snapshot under @snapshots, and any other
 # top-level @* (e.g. @.old_*). Shared @home/@var-* are not listed.
 #   UNIQUE     - data only this subvolume holds; freed if you delete IT ALONE,
