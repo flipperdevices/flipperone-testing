@@ -99,6 +99,11 @@ fi
 # but PRESERVES parent_uuid (so e.g. a profile root keeps its _stock parent)
 btrfs property set "$tgt" ro false 2>/dev/null || true
 
+# Pin this root's own entry-token (a clone/restore inherited the source's copy) so a runtime
+# apt install here stages under its own /boot/<token>/, matching the image build. No boot service.
+mkdir -p "$tgt/etc/kernel"
+printf 'flipperos-%s\n' "$(printf '%s' "$rel" | tr -d '@')" > "$tgt/etc/kernel/entry-token"
+
 # a newly-created profile needs its own BLS entry; existing profiles already have one.
 # Generate it via the image's BLS generator sourced as a library (FLIPPER_BLS_LIB=1): one
 # source of truth for the entry format, NN band, and devicetreedir/DTB fallback. Run in a
