@@ -31,7 +31,7 @@ cur_id=$(get "$(btrfs subvolume show / 2>/dev/null)" "Subvolume ID")
 top=$(mktemp -d)
 rows=$(mktemp)
 list=$(mktemp)
-mount -o subvolid=5 "$rootdev" "$top"
+err=$(mount -o subvolid=5 "$rootdev" "$top" 2>&1) || die "mount failed: $err"
 trap 'umount "$top" 2>/dev/null || true; rmdir "$top" 2>/dev/null || true; rm -f "$rows" "$list"' EXIT
 
 row() {  # $1=display name  $2=fs path  -> append a TSV row

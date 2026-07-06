@@ -17,7 +17,7 @@ rootdev=$(findmnt -no SOURCE / | sed 's/\[.*//')
 top=$(mktemp -d)
 map=$(mktemp)
 rows=$(mktemp)
-mount -o subvolid=5 "$rootdev" "$top"
+err=$(mount -o subvolid=5 "$rootdev" "$top" 2>&1) || die "mount failed: $err"
 trap 'umount "$top" 2>/dev/null || true; rmdir "$top" 2>/dev/null || true; rm -f "$map" "$rows"' EXIT
 
 # uuid -> "id <tab> path" for every subvolume (to resolve parents by UUID)

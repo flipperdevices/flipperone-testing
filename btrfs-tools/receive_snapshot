@@ -23,7 +23,7 @@ src=$1
 rootdev=$(findmnt -no SOURCE / | sed 's/\[.*//')
 [ -n "$rootdev" ] || die "cannot determine root device"
 top=$(mktemp -d)
-mount -o subvolid=5 "$rootdev" "$top"
+err=$(mount -o subvolid=5 "$rootdev" "$top" 2>&1) || die "mount failed: $err"
 trap 'umount "$top" 2>/dev/null || true; rmdir "$top" 2>/dev/null || true' EXIT
 target="$top/@snapshots"
 [ -d "$target" ] || die "@snapshots not found at top level"

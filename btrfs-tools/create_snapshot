@@ -27,7 +27,7 @@ name="${src}_$(date +%Y-%m-%d_%H-%M-%S)${tag:+_$tag}"
 rootdev=$(findmnt -no SOURCE / | sed 's/\[.*//')
 [ -n "$rootdev" ] || die "cannot determine root device"
 top=$(mktemp -d)
-mount -o subvolid=5 "$rootdev" "$top"
+err=$(mount -o subvolid=5 "$rootdev" "$top" 2>&1) || die "mount failed: $err"
 trap 'umount "$top" 2>/dev/null || true; rmdir "$top" 2>/dev/null || true' EXIT
 
 [ -d "$top/@snapshots" ] || die "@snapshots subvolume not found at top level"

@@ -18,7 +18,7 @@ esac
 rootdev=$(findmnt -no SOURCE / | sed 's/\[.*//')
 [ -n "$rootdev" ] || die "cannot determine root device"
 top=$(mktemp -d)
-mount -o subvolid=5 "$rootdev" "$top"
+err=$(mount -o subvolid=5 "$rootdev" "$top" 2>&1) || die "mount failed: $err"
 trap 'umount "$top" 2>/dev/null || true; rmdir "$top" 2>/dev/null || true' EXIT
 
 [ -e "$top/$arg" ] || die "no such snapshot: $arg (see list_snapshots)"
@@ -29,4 +29,4 @@ read -r a </dev/tty 2>/dev/null || die "no terminal for confirmation; aborted"
 case "$a" in y|Y|yes|YES) ;; *) die "aborted" ;; esac
 
 btrfs subvolume delete "$top/$arg" >/dev/null
-echo "deleted $arg"
+echo "deleted '$arg'"

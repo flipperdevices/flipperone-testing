@@ -22,7 +22,7 @@ rootdev=$(findmnt -no SOURCE / | sed 's/\[.*//')
 cur_id=$(btrfs subvolume show / 2>/dev/null | awk -F':[[:space:]]+' '/Subvolume ID/{print $2; exit}')
 
 top=$(mktemp -d)
-mount -o subvolid=5 "$rootdev" "$top"
+err=$(mount -o subvolid=5 "$rootdev" "$top" 2>&1) || die "mount failed: $err"
 trap 'umount "$top" 2>/dev/null || true; rmdir "$top" 2>/dev/null || true' EXIT
 
 [ -e "$top/$arg" ] || die "no such profile: $arg (see list_profiles)"
@@ -55,12 +55,12 @@ if [ "$is_stock" = 1 ]; then
 fi
 
 btrfs subvolume delete "$top/$rel" >/dev/null
-echo "deleted $rel"
+echo "deleted '$rel'"
 
-# drop this profile's BLS entries by content (rootflags=subvol=<rel>), matching 90-loaderentry.
-for entry in /boot/loader/entries/*.conf; do
-    [ -f "$entry" ] || continue
-    esv=$(awk '$1=="options"{for(i=2;i<=NF;i++) if($i ~ /^rootflags=subvol=/) s=$i}
-               END{sub(/^rootflags=subvol=/,"",s); print s}' "$entry")
-    [ "$esv" = "$rel" ] && { rm -f "$entry"; echo "removed boot entry $entry"; }
-done
+# drop this profile's BLS entries AND their /boot/<token>/ staging trees (shared teardown helper).
+lib=/usr/lib/flipper-bls.sh
+if [ -r "$lib" ]; then
+    ( . "$lib"; remove_root_entries "$rel" ) || echo "warning: entries/staging not fully removed for $rel" >&2
+else
+    echo "warning: $lib not found; boot entry/staging not removed for $rel" >&2
+fi

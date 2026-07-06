@@ -37,7 +37,7 @@ case "$src_name" in *..*|/*) die "invalid source name: $src_name" ;; esac
 rootdev=$(findmnt -no SOURCE / | sed 's/\[.*//')
 [ -n "$rootdev" ] || die "cannot determine root device"
 top=$(mktemp -d)
-mount -o subvolid=5 "$rootdev" "$top"
+err=$(mount -o subvolid=5 "$rootdev" "$top" 2>&1) || die "mount failed: $err"
 trap 'umount "$top" 2>/dev/null || true; rmdir "$top" 2>/dev/null || true' EXIT
 
 # require a full top-level-relative path (e.g. @snapshots/@Minimal, or @Desktop); no guessing
@@ -61,15 +61,15 @@ esac
 
 existed=0; [ -e "$top/$rel" ] && existed=1
 if [ "$move" = 1 ]; then
-    how="by MOVING $src_name into it (source consumed, parent preserved)"
+    how="by MOVING '$src_name' into it (source consumed, parent preserved)"
 else
-    how="with a writable copy of $src_name"
+    how="with a writable copy of '$src_name'"
 fi
 if [ "$existed" = 1 ]; then
-    printf 'Replace existing profile "%s" %s on %s?\nThe current "%s" is kept as %s.old_<ts>. [y/N] ' \
+    printf "Replace existing profile '%s' %s on %s?\nThe current '%s' is kept as %s.old_<ts>. [y/N] " \
         "$rel" "$how" "$rootdev" "$rel" "$rel"
 else
-    printf 'Create bootable profile "%s" %s on %s? [y/N] ' "$rel" "$how" "$rootdev"
+    printf "Create bootable profile '%s' %s on %s? [y/N] " "$rel" "$how" "$rootdev"
 fi
 read -r ans; case "$ans" in y|Y) ;; *) die "aborted" ;; esac
 
