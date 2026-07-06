@@ -99,27 +99,18 @@ fi
 # but PRESERVES parent_uuid (so e.g. a profile root keeps its _stock parent)
 btrfs property set "$tgt" ro false 2>/dev/null || true
 
-# Pin this root's own entry-token (a clone/restore inherited the source's copy) so a runtime
-# apt install here stages under its own /boot/<token>/, matching the image build. No boot service.
-mkdir -p "$tgt/etc/kernel"
-printf 'flipperos-%s\n' "$(printf '%s' "$rel" | tr -d '@')" > "$tgt/etc/kernel/entry-token"
-
-# a newly-created profile needs its own BLS entry; existing profiles already have one.
-# Generate it via the image's BLS generator sourced as a library (FLIPPER_BLS_LIB=1): one
-# source of truth for the entry format, NN band, and devicetreedir/DTB fallback. Run in a
-# subshell so its set -e/die can't abort us. $tgt is the new root's path on the top-level
-# mount, so flipper_write_entry can read its kernel version and btrfs parent.
-if [ "$existed" = 0 ]; then
-    lib=/etc/kernel/install.d/90-loaderentry.install
-    if [ -r "$lib" ]; then
-        # pass the SOURCE as the origin hint -> the new root lands in that profile's band even
-        # if a move/receive left its parent_uuid dangling (flipper_write_entry falls back to a
-        # btrfs parent-chain walk when the hint doesn't map).
-        ( FLIPPER_BLS_LIB=1 . "$lib"; flipper_write_entry "$rel" "$tgt" "$src_rel" ) \
-            || echo "warning: boot entry not created for $rel" >&2
-    else
-        echo "warning: $lib not found; no boot entry created for $rel" >&2
-    fi
+# Give the root its BLS entry and its own /etc/kernel/entry-token. Both come from flipper-bls.sh's
+# flipper_write_entry (one source of truth: it computes the <NN>-flipperos-<name> token, pins it in
+# the root, and writes the entry with the devicetreedir/DTB fallback). Run in a subshell so its die
+# can't abort us. $tgt is the new root's path on the top-level mount, so it can read the kernel
+# version + btrfs parent. Pass the SOURCE as the origin hint so the root lands in that profile's
+# band even if a move/receive left its parent_uuid dangling.
+lib=/usr/lib/flipper-bls.sh
+if [ -r "$lib" ]; then
+    ( . "$lib"; flipper_write_entry "$rel" "$tgt" "$src_rel" ) \
+        || echo "warning: boot entry not created for $rel" >&2
+else
+    echo "warning: $lib not found; no boot entry created for $rel" >&2
 fi
 
 if [ "$move" = 1 ]; then verb="moved"; else verb="created"; fi

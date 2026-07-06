@@ -41,18 +41,18 @@ old_id=$(printf '%s\n' "$info" | awk -F':[[:space:]]+' '/Subvolume ID/{print $2;
 mv "$top/$old" "$top/$new"
 echo "renamed profile '$old' -> '$new'"
 
-# Drop the old BLS entry (by content: rootflags=subvol=<old>), then reissue one for <new> via
-# the image's BLS generator (FLIPPER_BLS_LIB=1). The parent chain is intact after the rename,
-# so the new entry lands in the right menu band on its own.
+# Drop the old BLS entry (by content: rootflags=subvol=<old>), then reissue one for <new> by
+# sourcing the shared BLS library. The parent chain is intact after the rename, so the new
+# entry lands in the right menu band on its own.
 for entry in /boot/loader/entries/*.conf; do
     [ -f "$entry" ] || continue
     esv=$(awk '$1=="options"{for(i=2;i<=NF;i++) if($i ~ /^rootflags=subvol=/) s=$i}
                END{sub(/^rootflags=subvol=/,"",s); print s}' "$entry")
     [ "$esv" = "$old" ] && { rm -f "$entry"; echo "removed old boot entry $entry"; }
 done
-lib=/etc/kernel/install.d/90-loaderentry.install
+lib=/usr/lib/flipper-bls.sh
 if [ -r "$lib" ]; then
-    ( FLIPPER_BLS_LIB=1 . "$lib"; flipper_write_entry "$new" "$top/$new" ) \
+    ( . "$lib"; flipper_write_entry "$new" "$top/$new" ) \
         || echo "warning: boot entry not created for $new" >&2
 else
     echo "warning: $lib not found; no boot entry created for $new" >&2
