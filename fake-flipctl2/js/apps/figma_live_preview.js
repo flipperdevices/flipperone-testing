@@ -1,5 +1,5 @@
 var FigmaLivePreviewScene = (function() {
-    var FIGMA_URL = 'https://embed.figma.com/proto/PhlEqdtgjFfcizdVV0qNSR/Flipper-One-UI---Main-board?node-id=768-758&starting-point-node-id=768-758&scaling=fill&content-scaling=responsive&footer=false&viewport-controls=false&hotspot-hints=0&device-frame=false&hide-ui=1&embed-host=share';
+    var FIGMA_URL = 'https://embed.figma.com/proto/PhlEqdtgjFfcizdVV0qNSR/Flipper-One-UI---Main-board?node-id=768-100&starting-point-node-id=768-100&scaling=fill&content-scaling=responsive&footer=false&viewport-controls=false&hotspot-hints=0&device-frame=false&hide-ui=1&embed-host=share';
 
     function FigmaLivePreviewScene(sceneManager) {
         this.sceneManager = sceneManager;
