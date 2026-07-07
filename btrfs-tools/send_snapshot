@@ -43,8 +43,9 @@ fi
 rootdev=$(findmnt -no SOURCE / | sed 's/\[.*//')
 [ -n "$rootdev" ] || die "cannot determine root device"
 top=$(mktemp -d)
+send_stat=$(mktemp)
 err=$(mount -o subvolid=5 "$rootdev" "$top" 2>&1) || die "mount failed: $err"
-trap 'umount "$top" 2>/dev/null || true; rmdir "$top" 2>/dev/null || true' EXIT
+trap 'umount "$top" 2>/dev/null || true; rmdir "$top" 2>/dev/null || true; rm -f "$send_stat"' EXIT
 
 resolve() {  # full top-level-relative path -> echoed back if it exists (no guessing)
     [ -e "$top/$1" ] && printf '%s' "$1"
@@ -102,9 +103,10 @@ if [ -n "$parent" ]; then
     is_ro "$parentpath" || die "parent $parent must be read-only"
 fi
 
-do_send() {
+do_send() {  # record btrfs send's real exit; the pipe would hide it (POSIX sh has no pipefail)
     if [ -n "$parentpath" ]; then btrfs send -p "$parentpath" "$srcpath"
     else btrfs send "$srcpath"; fi
+    echo $? >"$send_stat"
 }
 emit() {  # pv (when present) shows progress, so silence zstd's to avoid two bars on one line
     pg=""; [ "$have_pv" = 1 ] && pg="--no-progress"
@@ -122,8 +124,22 @@ if [ "$have_pv" = 1 ]; then
 fi
 
 echo "sending $srel${parentpath:+ (incremental from $prel)}${dest:+ -> $dest}" >&2
+# No pipefail in POSIX sh, so run the pipe under `set +e` and check BOTH ends: btrfs send's
+# recorded exit (do_send -> $send_stat) and the compressor's. A failed send must not pass as
+# a complete backup, so on any failure discard the partial output.
+set +e
 if   [ "$have_pv" = 1 ] && [ "$sz" -gt 0 ]; then do_send | pv -pterb -s "$sz" | emit
 elif [ "$have_pv" = 1 ];                    then do_send | pv -btr | emit
 else                                              do_send | emit
+fi
+emit_rc=$?
+set -e
+send_rc=$(cat "$send_stat" 2>/dev/null || echo 1)
+if [ "${send_rc:-1}" != 0 ] || [ "$emit_rc" != 0 ]; then
+    if [ "$dest" != "-" ] && [ -f "$dest" ]; then
+        rm -f "$dest"
+        die "send failed (btrfs send=${send_rc:-?}, compress=$emit_rc); removed incomplete $dest"
+    fi
+    die "send failed (btrfs send=${send_rc:-?}, compress=$emit_rc)"
 fi
 [ "$dest" = "-" ] || echo "done: $dest ($(du -h "$dest" | cut -f1))" >&2

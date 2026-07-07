@@ -18,6 +18,10 @@ done
 case "$new" in
     @|@home|@root|@snapshots|@var-log|@var-cache|boot) die "refusing to use layout name: $new" ;;
 esac
+case "$new" in
+    @?*) ;;
+    *) die "new profile name must start with '@' (e.g. @Desktop-2): $new" ;;
+esac
 
 rootdev=$(findmnt -no SOURCE / | sed 's/\[.*//')
 [ -n "$rootdev" ] || die "cannot determine root device"

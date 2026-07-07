@@ -57,6 +57,10 @@ esac
 case "$rel" in
     @home|@root|@snapshots|@var-log|@var-cache) die "refusing to write layout subvolume: $rel" ;;
 esac
+case "$rel" in
+    @?*) ;;
+    *) die "profile name must start with '@' (e.g. @Desktop-2): $rel" ;;
+esac
 [ "$rel" = "$src_rel" ] && die "dest and source are the same subvolume"
 
 existed=0; [ -e "$top/$rel" ] && existed=1
