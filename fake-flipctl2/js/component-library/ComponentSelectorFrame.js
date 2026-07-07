@@ -96,17 +96,17 @@ var ComponentSelectorFrame = (function() {
                 if (barW > 0) ctx.fillRect(x + barStart, y + cy, barW, 1);
             }
 
-            // ">" glyph centred in the bar. HaxrcorpFont16 glyphs render
+            // ">" glyph centred in the bar. HaxrCorp4090FlipCTL glyphs render
             // inside an 11-row frame with the visible cap at row 2, so
             // shift the draw y by −2 so the cap top lands at the bar's
             // visual centre. No horizontal nudge — geometric centre
             // works once the bar widened to 7 px.
-            if (typeof HaxrcorpFont16 !== 'undefined') {
+            if (typeof HaxrCorp4090FlipCTL !== 'undefined') {
                 var glyph = '>';
-                var glyphW = HaxrcorpFont16.textWidth(glyph);
+                var glyphW = HaxrCorp4090FlipCTL.textWidth(glyph);
                 var glyphX = x + (w - cw) + Math.floor((cw - glyphW) / 2);
                 var glyphY = y + Math.floor((h - 7) / 2) - 2;
-                HaxrcorpFont16.draw(canvas.ctx, glyph, glyphX, glyphY, this.chevronGlyphColor);
+                HaxrCorp4090FlipCTL.draw(canvas.ctx, glyph, glyphX, glyphY, this.chevronGlyphColor);
             }
         }
 

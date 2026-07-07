@@ -19,7 +19,7 @@ var PowerMenuUIDemoScene = (function() {
     // and the Settings submenu (via SubMenuScene.setHeaderRenderer)
     // so the two pages match.
     function drawDemoChrome(canvas) {
-        HaxrcorpFont16.draw(canvas.ctx, VERSION_LABEL, 4, 3, '#696969');
+        HaxrCorp4090FlipCTL.draw(canvas.ctx, VERSION_LABEL, 4, 3, '#696969');
         if (typeof UI !== 'undefined' && typeof UI.drawBattery === 'function') {
             UI.drawBattery(canvas, '#000');
         }
@@ -30,7 +30,7 @@ var PowerMenuUIDemoScene = (function() {
     var HELP_LINE_H = 11;
 
     // Greedy word-wrap into lines no wider than `maxW` in
-    // HaxrcorpFont16. Newlines in the source split paragraphs —
+    // HaxrCorp4090FlipCTL. Newlines in the source split paragraphs —
     // each is wrapped independently, and a blank "\n\n" in the
     // source yields an empty spacer line between paragraphs. Long
     // single words that exceed maxW alone are left intact (placed
@@ -45,7 +45,7 @@ var PowerMenuUIDemoScene = (function() {
             var cur = '';
             for (var i = 0; i < words.length; i++) {
                 var test = cur ? (cur + ' ' + words[i]) : words[i];
-                if (cur && HaxrcorpFont16.textWidth(test) > maxW) {
+                if (cur && HaxrCorp4090FlipCTL.textWidth(test) > maxW) {
                     lines.push(cur);
                     cur = words[i];
                 } else {
@@ -511,8 +511,8 @@ var PowerMenuUIDemoScene = (function() {
                 UI.drawStatusBar(canvas, '');
             }
             var lt = 'Linux mode';
-            var lw = HaxrcorpFont16.textWidth(lt);
-            HaxrcorpFont16.draw(canvas.ctx, lt,
+            var lw = HaxrCorp4090FlipCTL.textWidth(lt);
+            HaxrCorp4090FlipCTL.draw(canvas.ctx, lt,
                 Math.floor((canvas.w - lw) / 2),
                 Math.floor((canvas.h - 9) / 2), '#000');
             if (this._modalOpen) this._renderPowerModal(canvas);
@@ -580,7 +580,7 @@ var PowerMenuUIDemoScene = (function() {
         // covers its lower portion, leaving the rounded top
         // peeking out above the panel like a folder tab.
         var tabTitle = 'Help - Flipper One';
-        var ttW   = HaxrcorpFont16.textWidth(tabTitle);
+        var ttW   = HaxrCorp4090FlipCTL.textWidth(tabTitle);
         var TAB_W = ttW + 12;   // 6 px padding left + right
         var TAB_H = 26;
         new ResponsiveFrame({
@@ -592,12 +592,12 @@ var PowerMenuUIDemoScene = (function() {
             showStroke:  false,
             cornerRadius: 4
         }).render(canvas);
-        // Tab title — white HaxrcorpFont16, 6 px in from the tab's
+        // Tab title — white HaxrCorp4090FlipCTL, 6 px in from the tab's
         // left edge, vertically centred in the tab's visible strip
         // (the part above the panel's top edge, y = 1 .. panel top).
         var ttX = x + 6;
         var ttY = 1 + Math.floor(((y - 1) - 9) / 2);   // centre 9px glyph in the strip
-        HaxrcorpFont16.draw(canvas.ctx, tabTitle, ttX, ttY, '#fff');
+        HaxrCorp4090FlipCTL.draw(canvas.ctx, tabTitle, ttX, ttY, '#fff');
 
         // Panel frame on top.
         new ResponsiveFrame({
@@ -613,7 +613,7 @@ var PowerMenuUIDemoScene = (function() {
 
         // ── Scrollable body text (pixel-granular) ───────────────
         // Content area: 6 px pad on the left/top, room on the
-        // right for the scrollbar. Lines are HaxrcorpFont16 at
+        // right for the scrollbar. Lines are HaxrCorp4090FlipCTL at
         // HELP_LINE_H pitch; the whole block scrolls by
         // `_helpScrollPx` pixels, so partial lines show at the
         // top/bottom of the viewport (clipped). Wrap is cached
@@ -646,7 +646,7 @@ var PowerMenuUIDemoScene = (function() {
             var lineY = textTop + li * HELP_LINE_H - this._helpScrollPx;
             if (lineY + HELP_LINE_H <= textTop) continue;   // above viewport
             if (lineY >= textTop + viewH) break;            // below viewport
-            HaxrcorpFont16.draw(ctx, lines[li], textX, lineY, '#000');
+            HaxrCorp4090FlipCTL.draw(ctx, lines[li], textX, lineY, '#000');
         }
         ctx.restore();
 
@@ -664,7 +664,7 @@ var PowerMenuUIDemoScene = (function() {
     // count × line-height + 5 (a small top/bottom gap). The
     // highlighted row gets a MenuSelectorFrame inset 2 px from
     // the box's left and right edges. Items are centered in
-    // Born2bSportyV2Medium (matching the mockup).
+    // Born2bSportyV2FlipCTL (matching the mockup).
     var MODAL_SEL_H = 14;   // highlight frame height
     var MODAL_GAP   = 9;    // white gap between consecutive lines
     PowerMenuUIDemoScene.prototype._renderPowerModal = function(canvas) {
@@ -673,11 +673,11 @@ var PowerMenuUIDemoScene = (function() {
         var n     = items.length;
 
         // Longest item drives the box width. Every row — selected
-        // or not — uses HaxrcorpFont16; selection is shown by the
+        // or not — uses HaxrCorp4090FlipCTL; selection is shown by the
         // frame alone, no font swap.
         var maxW = 0;
         for (var i = 0; i < n; i++) {
-            var w = HaxrcorpFont16.textWidth(items[i]);
+            var w = HaxrCorp4090FlipCTL.textWidth(items[i]);
             if (w > maxW) maxW = w;
         }
         // 10 px from the longest text to the modal's left edge and
@@ -690,7 +690,7 @@ var PowerMenuUIDemoScene = (function() {
         //     text top, and from the last line's text bottom to
         //     the modal's bottom edge.
         //   • MODAL_GAP px of white between consecutive text lines.
-        // HaxrcorpFont16's visible glyph starts 1 px below its
+        // HaxrCorp4090FlipCTL's visible glyph starts 1 px below its
         // draw-y and is ~9 px tall (cell rows 1..9).
         var TOP_GAP      = 6;   // text top → modal top edge
         var BOTTOM_GAP   = 7;   // text bottom → modal bottom edge
@@ -717,7 +717,7 @@ var PowerMenuUIDemoScene = (function() {
         }).render(canvas);
 
         // Items + selector. Text lines are spaced by their visible
-        // height + MODAL_GAP; every row is HaxrcorpFont16, the
+        // height + MODAL_GAP; every row is HaxrCorp4090FlipCTL, the
         // selected one also gets the frame (centred on its text).
         var linePitch = TEXT_VIS_H + MODAL_GAP;
         for (var j = 0; j < n; j++) {
@@ -725,9 +725,9 @@ var PowerMenuUIDemoScene = (function() {
             // the modal top for line 0, then steps by linePitch.
             var drawY      = modalY + TOP_GAP - TEXT_VIS_TOP + j * linePitch;
             var isSel      = (j === this._modalIndex);
-            var tw         = HaxrcorpFont16.textWidth(items[j]);
+            var tw         = HaxrCorp4090FlipCTL.textWidth(items[j]);
             var tx         = modalX + Math.floor((modalW - tw) / 2);
-            HaxrcorpFont16.draw(ctx, items[j], tx, drawY, '#000');
+            HaxrCorp4090FlipCTL.draw(ctx, items[j], tx, drawY, '#000');
             if (isSel) {
                 // Fixed-width selector: 3 px in from the modal's
                 // left and right edges, same size for every row so

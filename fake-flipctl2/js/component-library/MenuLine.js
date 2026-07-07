@@ -3,7 +3,7 @@
  *
  * Layout (relative to the line's top-left):
  *   - Icon at (3, 3); 3px L/T/B padding. Icon expected to be 14×14.
- *   - BusyFont9 label 4px to the right of the icon, with the capital
+ *   - Busy9pxFlipCTL label 4px to the right of the icon, with the capital
  *     letter top at y = 5 (so text is drawn at y = 2 given the glyph
  *     frame places cap tops at row 3).
  *   - Optional right-aligned `status` text (3px from the right edge).
@@ -43,7 +43,7 @@ var MenuLine = (function() {
         this.state         = options.state || STATE_DEFAULT;
         // Optional per-instance override for the vertical nudge
         // applied to the ACTIVE (selected / pressed) label so it
-        // optically aligns with the BusyFont9 default underneath.
+        // optically aligns with the Busy9pxFlipCTL default underneath.
         // Stock value is +1 to compensate for Born2bSporty's
         // high cap line — consumers whose selector frame sits
         // higher (e.g. file-list scenes that use the smaller
@@ -144,16 +144,16 @@ var MenuLine = (function() {
             textLeft = iconX + iconSource.w + TEXT_GAP;
         }
 
-        // Label font swaps: BusyFont9 in DEFAULT, Born2bSportyV2Medium
+        // Label font swaps: Busy9pxFlipCTL in DEFAULT, Born2bSportyV2FlipCTL
         // in SELECTED/PRESSED. Status text is different — it always
-        // stays on BusyFont9 so the row's right-side info keeps the
+        // stays on Busy9pxFlipCTL so the row's right-side info keeps the
         // same typographic weight across states; only its *colour*
         // changes with the state. The active font also nudges 1 px
         // down — Born2bSporty's cap baseline sits visually high
         // against the selector frame, so + 1 puts it on the same
-        // optical row as the BusyFont9 default.
-        var font       = active ? Born2bSportyV2Medium : BusyFont9;
-        var statusFont = BusyFont9;
+        // optical row as the Busy9pxFlipCTL default.
+        var font       = active ? Born2bSportyV2FlipCTL : Busy9pxFlipCTL;
+        var statusFont = Busy9pxFlipCTL;
         var textY = y + TEXT_DRAW_Y;
         var labelY = active ? (textY + this.activeLabelYNudge) : textY;
         font.draw(canvas.ctx, this.text, textLeft, labelY, textColor);

@@ -313,7 +313,7 @@ var DesktopScene = (function() {
     // drawn either way and the temperature string is omitted.
     function drawThermalCard(canvas, labelX, labelY, iconX, iconY, label, icon, tempC) {
         if (label) {
-            HaxrcorpFont16.draw(canvas.ctx, label, labelX, labelY, '#6D6D6D');
+            HaxrCorp4090FlipCTL.draw(canvas.ctx, label, labelX, labelY, '#6D6D6D');
         }
         canvas.drawSprite(icon, iconX, iconY, '#000');
 
@@ -325,16 +325,16 @@ var DesktopScene = (function() {
         var textX = iconX + icon.w + 3;
         // Vertical centering of 7px glyph against icon, shifted 1px up.
         var textY = iconY + Math.floor((icon.h - 7) / 2) - 1;
-        HaxrcorpFont16.draw(canvas.ctx, tempStr, textX, textY, '#000');
+        HaxrCorp4090FlipCTL.draw(canvas.ctx, tempStr, textX, textY, '#000');
 
-        var numWidth = HaxrcorpFont16.textWidth(tempStr);
+        var numWidth = HaxrCorp4090FlipCTL.textWidth(tempStr);
         var degX = textX + numWidth + 1;
         // Degree glyph sits 2 px below the digit baseline so it visually
         // hangs at the top-right of the number, like a true superscript ring.
         canvas.drawSprite(Icons.degree_symbol, degX, textY + 2, '#000');
 
         var cX = degX + Icons.degree_symbol.w + 1;
-        HaxrcorpFont16.draw(canvas.ctx, 'C', cX, textY, '#000');
+        HaxrCorp4090FlipCTL.draw(canvas.ctx, 'C', cX, textY, '#000');
     }
 
     // Renders a power-flow block: optional label, power_usage icon, and
@@ -348,7 +348,7 @@ var DesktopScene = (function() {
     // → W, formatted via `awk '{printf "%.2f W"}' …`).
     function drawPowerCard(canvas, labelX, labelY, iconX, iconY, label, icon, watts) {
         if (label) {
-            HaxrcorpFont16.draw(canvas.ctx, label, labelX, labelY, '#6D6D6D');
+            HaxrCorp4090FlipCTL.draw(canvas.ctx, label, labelX, labelY, '#6D6D6D');
         }
         canvas.drawSprite(icon, iconX, iconY, '#000');
         if (watts === null) return;
@@ -357,7 +357,7 @@ var DesktopScene = (function() {
         var str  = sign + Math.abs(watts).toFixed(2) + ' W';
         var textX = iconX + icon.w + 3;
         var textY = iconY + Math.floor((icon.h - 7) / 2) - 1;
-        HaxrcorpFont16.draw(canvas.ctx, str, textX, textY, '#000');
+        HaxrCorp4090FlipCTL.draw(canvas.ctx, str, textX, textY, '#000');
     }
 
     // Pixel-precise x at which the CPU temperature module ends — i.e. the
@@ -367,9 +367,9 @@ var DesktopScene = (function() {
         var tempStr = (cpuTempC !== null) ? cpuTempC.toFixed(1) : '55.5';
         var textX = 82 + Icons.cpu_15px.w + 3;  // CPU icon at x=82, value text starts here
         return textX
-            + HaxrcorpFont16.textWidth(tempStr)
+            + HaxrCorp4090FlipCTL.textWidth(tempStr)
             + 1 + Icons.degree_symbol.w
-            + 1 + HaxrcorpFont16.textWidth('C');
+            + 1 + HaxrCorp4090FlipCTL.textWidth('C');
     }
 
     DesktopScene.prototype.render = function(canvas) {
@@ -421,39 +421,39 @@ var DesktopScene = (function() {
         // before /api/target/current resolves.
         if (this.currentTargetProfile) {
             var tgtLabel  = 'Current target:';
-            var tgtLabelW = HaxrcorpFont16.textWidth(tgtLabel);
+            var tgtLabelW = HaxrCorp4090FlipCTL.textWidth(tgtLabel);
             var tgtGap    = 4;
-            var tgtValueW = HaxrcorpFont16.textWidth(this.currentTargetProfile);
+            var tgtValueW = HaxrCorp4090FlipCTL.textWidth(this.currentTargetProfile);
             var tgtLabelX = Math.floor((canvas.w - (tgtLabelW + tgtGap + tgtValueW)) / 2);
-            HaxrcorpFont16.draw(canvas.ctx, tgtLabel, tgtLabelX, targetY, '#6D6D6D');
-            HaxrcorpFont16.draw(canvas.ctx, this.currentTargetProfile,
+            HaxrCorp4090FlipCTL.draw(canvas.ctx, tgtLabel, tgtLabelX, targetY, '#6D6D6D');
+            HaxrCorp4090FlipCTL.draw(canvas.ctx, this.currentTargetProfile,
                 tgtLabelX + tgtLabelW + tgtGap, targetY, '#000');
         }
 
         if (hostnameWraps) {
             // Two-line layout: label on top, value below, both centered.
-            var lblW = HaxrcorpFont16.textWidth(hostnameLabel);
-            HaxrcorpFont16.draw(canvas.ctx, hostnameLabel,
+            var lblW = HaxrCorp4090FlipCTL.textWidth(hostnameLabel);
+            HaxrCorp4090FlipCTL.draw(canvas.ctx, hostnameLabel,
                 Math.floor((canvas.w - lblW) / 2), hostnameLabelY, '#6D6D6D');
-            var valW = HaxrcorpFont16.textWidth(this.hostnameRaw);
-            HaxrcorpFont16.draw(canvas.ctx, this.hostnameRaw,
+            var valW = HaxrCorp4090FlipCTL.textWidth(this.hostnameRaw);
+            HaxrCorp4090FlipCTL.draw(canvas.ctx, this.hostnameRaw,
                 Math.floor((canvas.w - valW) / 2),
                 hostnameY + HOSTNAME_LINE_H, '#000');
         } else {
             // Single-line layout: label + gap + value, treated as one
             // block centered on the canvas.
-            var hostnameLabelW = HaxrcorpFont16.textWidth(hostnameLabel);
+            var hostnameLabelW = HaxrCorp4090FlipCTL.textWidth(hostnameLabel);
             var hostnameGap = 4;
             var hostnameValueW = this.hostnameRaw
-                ? HaxrcorpFont16.textWidth(this.hostnameRaw)
+                ? HaxrCorp4090FlipCTL.textWidth(this.hostnameRaw)
                 : 0;
             var hostnameTotalW = hostnameLabelW
                 + (this.hostnameRaw ? hostnameGap + hostnameValueW : 0);
             var hostnameLabelX = Math.floor((canvas.w - hostnameTotalW) / 2);
-            HaxrcorpFont16.draw(canvas.ctx, hostnameLabel, hostnameLabelX, hostnameLabelY, '#6D6D6D');
+            HaxrCorp4090FlipCTL.draw(canvas.ctx, hostnameLabel, hostnameLabelX, hostnameLabelY, '#6D6D6D');
             if (this.hostnameRaw) {
                 var hostValueX = hostnameLabelX + hostnameLabelW + hostnameGap;
-                HaxrcorpFont16.draw(canvas.ctx, this.hostnameRaw, hostValueX, hostnameY, '#000');
+                HaxrCorp4090FlipCTL.draw(canvas.ctx, this.hostnameRaw, hostValueX, hostnameY, '#000');
             }
         }
 
@@ -532,33 +532,33 @@ var DesktopScene = (function() {
     function drawEthCard(canvas, eth, line1Y, line2Y) {
         var v4Label  = 'IPv4:';
         var v6Label  = 'IPv6:';
-        var v4LabelW = HaxrcorpFont16.textWidth(v4Label);
-        var v6LabelW = HaxrcorpFont16.textWidth(v6Label);
-        var nameW    = HaxrcorpFont16.textWidth(eth.name);
+        var v4LabelW = HaxrCorp4090FlipCTL.textWidth(v4Label);
+        var v6LabelW = HaxrCorp4090FlipCTL.textWidth(v6Label);
+        var nameW    = HaxrCorp4090FlipCTL.textWidth(eth.name);
         var GAP_NAME = 4;
         var GAP_LBL  = 3;
 
         // Line 1 — interface name + "IPv4:" + addr, centered.
-        var ip4W   = eth.ip4 ? HaxrcorpFont16.textWidth(eth.ip4) : 0;
+        var ip4W   = eth.ip4 ? HaxrCorp4090FlipCTL.textWidth(eth.ip4) : 0;
         var line1W = nameW + GAP_NAME + v4LabelW + (eth.ip4 ? GAP_LBL + ip4W : 0);
         var nameX  = Math.floor((canvas.w - line1W) / 2);
 
-        HaxrcorpFont16.draw(canvas.ctx, eth.name, nameX, line1Y, '#000');
+        HaxrCorp4090FlipCTL.draw(canvas.ctx, eth.name, nameX, line1Y, '#000');
         var v4LabelX = nameX + nameW + GAP_NAME;
-        HaxrcorpFont16.draw(canvas.ctx, v4Label, v4LabelX, line1Y, '#6D6D6D');
+        HaxrCorp4090FlipCTL.draw(canvas.ctx, v4Label, v4LabelX, line1Y, '#6D6D6D');
         if (eth.ip4) {
-            HaxrcorpFont16.draw(canvas.ctx, eth.ip4,
+            HaxrCorp4090FlipCTL.draw(canvas.ctx, eth.ip4,
                 v4LabelX + v4LabelW + GAP_LBL, line1Y, '#000');
         }
 
         // Line 2 — "IPv6:" + addr, centered.
-        var ip6W   = eth.ip6 ? HaxrcorpFont16.textWidth(eth.ip6) : 0;
+        var ip6W   = eth.ip6 ? HaxrCorp4090FlipCTL.textWidth(eth.ip6) : 0;
         var line2W = v6LabelW + (eth.ip6 ? GAP_LBL + ip6W : 0);
         var v6LabelX = Math.floor((canvas.w - line2W) / 2);
 
-        HaxrcorpFont16.draw(canvas.ctx, v6Label, v6LabelX, line2Y, '#6D6D6D');
+        HaxrCorp4090FlipCTL.draw(canvas.ctx, v6Label, v6LabelX, line2Y, '#6D6D6D');
         if (eth.ip6) {
-            HaxrcorpFont16.draw(canvas.ctx, eth.ip6,
+            HaxrCorp4090FlipCTL.draw(canvas.ctx, eth.ip6,
                 v6LabelX + v6LabelW + GAP_LBL, line2Y, '#000');
         }
     }

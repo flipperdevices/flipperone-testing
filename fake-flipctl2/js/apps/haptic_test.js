@@ -225,7 +225,7 @@ var HapticTestScene = (function() {
         var TITLE_Y = UI.STATUS_BAR_H;
         ctx.fillStyle = TITLE_FILL;
         ctx.fillRect(0, TITLE_Y, canvas.w, TITLE_H);
-        Born2bSportyV2Medium.draw(ctx, this.displayName,
+        Born2bSportyV2FlipCTL.draw(ctx, this.displayName,
             TITLE_TEXT_X, UI.STATUS_BAR_H + 1, '#000');
         // Status in the title bar, right-aligned (mirrors Internet
         // radio's "Playing: …" suffix). "No haptic device" when none
@@ -233,8 +233,8 @@ var HapticTestScene = (function() {
         // when idle.
         var status = !this._available ? 'No haptic device' : this._statusMsg;
         if (status) {
-            var statusW = HaxrcorpFont16.textWidth(status);
-            HaxrcorpFont16.draw(ctx, status, canvas.w - 4 - statusW,
+            var statusW = HaxrCorp4090FlipCTL.textWidth(status);
+            HaxrCorp4090FlipCTL.draw(ctx, status, canvas.w - 4 - statusW,
                 UI.STATUS_BAR_H + 3, '#000');
         }
 

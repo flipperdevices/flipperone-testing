@@ -339,8 +339,8 @@ var EthernetScene = (function() {
         var iface = this._currentIface();
         if (!iface) {
             var msg = 'Interface unavailable';
-            var w = HaxrcorpFont16.textWidth(msg);
-            HaxrcorpFont16.draw(canvas.ctx, msg,
+            var w = HaxrCorp4090FlipCTL.textWidth(msg);
+            HaxrCorp4090FlipCTL.draw(canvas.ctx, msg,
                 MODAL_X + Math.floor((MODAL_W - w) / 2),
                 MODAL_Y + Math.floor((MODAL_H - 7) / 2),
                 '#999');
@@ -384,24 +384,24 @@ var EthernetScene = (function() {
                 canvas.drawHLine(contentX, y + Math.floor(rh / 2),
                                  contentRight - contentX, MODAL_DIVIDER_COLOR);
             } else if (row.kind === 'header') {
-                // Header uses Born2bSportyV2Medium for the same chunky
+                // Header uses Born2bSportyV2FlipCTL for the same chunky
                 // OS-chrome weight the App Switcher / menu selectors
                 // use, so the interface name + state reads as a card
                 // title rather than just another body line. Drawn 2 px
                 // higher than the row's nominal y — the font's cap row
-                // sits 2 px lower in its frame than HaxrcorpFont16's,
+                // sits 2 px lower in its frame than HaxrCorp4090FlipCTL's,
                 // so without the nudge the title would look bottom-
                 // heavy against the divider beneath it.
-                Born2bSportyV2Medium.draw(ctx, row.text, contentX, y - 2, '#000');
+                Born2bSportyV2FlipCTL.draw(ctx, row.text, contentX, y - 2, '#000');
             } else if (row.kind === 'kv') {
-                HaxrcorpFont16.draw(ctx, row.label, contentX, y, '#6D6D6D');
-                var lblW = HaxrcorpFont16.textWidth(row.label);
-                HaxrcorpFont16.draw(ctx, row.value,
+                HaxrCorp4090FlipCTL.draw(ctx, row.label, contentX, y, '#6D6D6D');
+                var lblW = HaxrCorp4090FlipCTL.textWidth(row.label);
+                HaxrCorp4090FlipCTL.draw(ctx, row.value,
                     contentX + lblW + MODAL_LABEL_GAP, y, '#000');
             } else if (row.kind === 'sub') {
-                HaxrcorpFont16.draw(ctx, row.text, contentX, y, '#6D6D6D');
+                HaxrCorp4090FlipCTL.draw(ctx, row.text, contentX, y, '#6D6D6D');
             } else if (row.kind === 'value') {
-                HaxrcorpFont16.draw(ctx, row.text, contentX + MODAL_INDENT, y, '#000');
+                HaxrCorp4090FlipCTL.draw(ctx, row.text, contentX + MODAL_INDENT, y, '#000');
             } else if (row.kind === 'metrics') {
                 drawMetricsRow(canvas, contentX, y, row);
             }
@@ -426,7 +426,7 @@ var EthernetScene = (function() {
     // here too — a poll that returns half a metric won't break us).
     //
     // Arrow icons sit 2 px below the text baseline so the 7-px sprite
-    // reads as visually centred against the 7-px HaxrcorpFont16 cap
+    // reads as visually centred against the 7-px HaxrCorp4090FlipCTL cap
     // row (the font rasterises with two empty top rows; the icons
     // don't, so without the nudge the arrows ride high).
     var ARROW_DY = 2;
@@ -434,19 +434,19 @@ var EthernetScene = (function() {
         var ctx = canvas.ctx;
         var cursor = x;
         if (row.speed) {
-            HaxrcorpFont16.draw(ctx, row.speed, cursor, y, '#000');
-            cursor += HaxrcorpFont16.textWidth(row.speed) + MODAL_METRIC_GAP;
+            HaxrCorp4090FlipCTL.draw(ctx, row.speed, cursor, y, '#000');
+            cursor += HaxrCorp4090FlipCTL.textWidth(row.speed) + MODAL_METRIC_GAP;
         }
         if (row.rx && Icons && Icons.arrow_down) {
             canvas.drawSprite(Icons.arrow_down, cursor, y + ARROW_DY, '#000');
             cursor += Icons.arrow_down.w + MODAL_ICON_GAP;
-            HaxrcorpFont16.draw(ctx, row.rx, cursor, y, '#000');
-            cursor += HaxrcorpFont16.textWidth(row.rx) + MODAL_METRIC_GAP;
+            HaxrCorp4090FlipCTL.draw(ctx, row.rx, cursor, y, '#000');
+            cursor += HaxrCorp4090FlipCTL.textWidth(row.rx) + MODAL_METRIC_GAP;
         }
         if (row.tx && Icons && Icons.arrow_up) {
             canvas.drawSprite(Icons.arrow_up, cursor, y + ARROW_DY, '#000');
             cursor += Icons.arrow_up.w + MODAL_ICON_GAP;
-            HaxrcorpFont16.draw(ctx, row.tx, cursor, y, '#000');
+            HaxrCorp4090FlipCTL.draw(ctx, row.tx, cursor, y, '#000');
         }
     }
 
@@ -528,7 +528,7 @@ var EthernetScene = (function() {
         // Breadcrumb.
         var titles = this.sceneManager.breadcrumb();
         var breadcrumb = '> ' + titles.join(' > ');
-        HaxrcorpFont16.draw(canvas.ctx, breadcrumb, BREADCRUMB_X, UI.STATUS_BAR_H + 2, '#999999');
+        HaxrCorp4090FlipCTL.draw(canvas.ctx, breadcrumb, BREADCRUMB_X, UI.STATUS_BAR_H + 2, '#999999');
 
         if (loading && !data) {
             var phColor = placeholderColor();

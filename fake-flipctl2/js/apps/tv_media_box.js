@@ -1361,15 +1361,15 @@ var TVMediaBoxScene = (function() {
             // the App Switcher + Apps-menu row.)
             canvas.drawSprite(Icons.media, 2, TITLE_Y + 1, '#000');
         }
-        Born2bSportyV2Medium.draw(ctx, this.displayName, 18, UI.STATUS_BAR_H, '#000');
+        Born2bSportyV2FlipCTL.draw(ctx, this.displayName, 18, UI.STATUS_BAR_H, '#000');
 
-        // "Running Kodi" status on the title line — HaxrcorpFont16,
+        // "Running Kodi" status on the title line — HaxrCorp4090FlipCTL,
         // right-aligned 4 px from the right edge. Shown only while a
         // Kodi process is actually running (pgrep-backed poll).
         if (this._kodiRunning) {
             var statusLabel = 'Running Kodi';
-            var statusX = canvas.w - 4 - HaxrcorpFont16.textWidth(statusLabel);
-            HaxrcorpFont16.draw(ctx, statusLabel, statusX, UI.STATUS_BAR_H + 3, '#000');
+            var statusX = canvas.w - 4 - HaxrCorp4090FlipCTL.textWidth(statusLabel);
+            HaxrCorp4090FlipCTL.draw(ctx, statusLabel, statusX, UI.STATUS_BAR_H + 3, '#000');
         }
 
         var TV_FRAME_X = 45;
@@ -1405,17 +1405,17 @@ var TVMediaBoxScene = (function() {
         if (!this._hdmiLoaded)       infoText = '...';
         else if (this._hdmiConnected) infoText = this._hdmiResolution || 'Connected';
         else                          infoText = 'No screen detected';
-        var infoW = HaxrcorpFont16.textWidth(infoText);
+        var infoW = HaxrCorp4090FlipCTL.textWidth(infoText);
         // 5 px horizontal padding each side; 11 px tall = text + 1 px
         // top + 1 px bottom (pill top sits at y=49, see constructor).
         this._screenInfoFrame.setSize(infoW + 10, 11);
         this._screenInfoFrame.render(canvas);
         var infoX = 175 - Math.floor(infoW / 2);
         // Text baseline kept at y=49 (the pill grew symmetrically
-        // around it). The 11-row HaxrcorpFont16 cell leaves blank rows
+        // around it). The 11-row HaxrCorp4090FlipCTL cell leaves blank rows
         // below the caps, so this keeps the glyph optically centred.
         var infoY = 49;
-        HaxrcorpFont16.draw(ctx, infoText, infoX, infoY, '#fff');
+        HaxrCorp4090FlipCTL.draw(ctx, infoText, infoX, infoY, '#fff');
 
         // Per-state screen content on the TV's screen area. ON / Off
         // show a centred glyph (tv_screen_on / tv_screen_off), Checking
@@ -1445,10 +1445,10 @@ var TVMediaBoxScene = (function() {
             var ckY = TV_FRAME_Y + Math.floor((TV_FRAME_H - ckFrameH) / 2) - 5;
             canvas.drawSpriteFrame(ck, ckX, ckY, ckFrame, '#000');
         } else if (tvLabel && !sleepFull) {
-            var tvLw = HaxrcorpFont16.textWidth(tvLabel);
+            var tvLw = HaxrCorp4090FlipCTL.textWidth(tvLabel);
             var tvLx = TV_FRAME_X + Math.floor((TV_FRAME_W - tvLw) / 2);
             var tvLy = TV_FRAME_Y + Math.floor((TV_FRAME_H - 7) / 2);
-            HaxrcorpFont16.draw(ctx, tvLabel, tvLx, tvLy, '#000');
+            HaxrCorp4090FlipCTL.draw(ctx, tvLabel, tvLx, tvLy, '#000');
         }
 
         // CEC status line, positioned directly below the screen-info
@@ -1463,17 +1463,17 @@ var TVMediaBoxScene = (function() {
                 cecLine = 'CEC: not enabled';
             } else {
                 // Trail 'checking' with 0..3 dots padded with spaces
-                // so HaxrcorpFont16.textWidth stays stable across
+                // so HaxrCorp4090FlipCTL.textWidth stays stable across
                 // frames — otherwise the centered line wobbles
                 // left/right as the dot count changes.
                 var dotCount = Math.floor(Date.now() / CEC_ANIM_PERIOD_MS) % 4;
                 var dots     = '...'.slice(0, dotCount) + '   '.slice(dotCount);
                 cecLine = 'CEC: checking' + dots;
             }
-            var cecW = HaxrcorpFont16.textWidth(cecLine);
+            var cecW = HaxrCorp4090FlipCTL.textWidth(cecLine);
             var cecX = 175 - Math.floor(cecW / 2);
             var cecY = 61;  // 2 px gap below the 9 px pill at y=50
-            HaxrcorpFont16.draw(ctx, cecLine, cecX, cecY, '#000');
+            HaxrCorp4090FlipCTL.draw(ctx, cecLine, cecX, cecY, '#000');
         }
 
         // ── Settings rows ───────────────────────────────────────
@@ -1487,7 +1487,7 @@ var TVMediaBoxScene = (function() {
             if (rows[ri].plain) {
                 // Plain label — same title metrics as MenuDropdownLine
                 // (x = 6, y + TOP_PAD, black) but no value chip.
-                HaxrcorpFont16.draw(canvas.ctx, rows[ri].title,
+                HaxrCorp4090FlipCTL.draw(canvas.ctx, rows[ri].title,
                     6, rows[ri].y + MenuDropdownLine.TOP_PAD, '#000');
             } else {
                 new MenuDropdownLine({
@@ -1603,10 +1603,10 @@ var TVMediaBoxScene = (function() {
         // when the panel lands and disappears as soon as it closes.
         if (this._openProgress < 1) return;
 
-        // Headline at the panel top — Born2bSportyV2Medium, centred.
+        // Headline at the panel top — Born2bSportyV2FlipCTL, centred.
         var hl  = 'Kodi remote';
-        var hlW = Born2bSportyV2Medium.textWidth(hl);
-        Born2bSportyV2Medium.draw(canvas.ctx, hl,
+        var hlW = Born2bSportyV2FlipCTL.textWidth(hl);
+        Born2bSportyV2FlipCTL.draw(canvas.ctx, hl,
             r.x + Math.floor((r.w - hlW) / 2), r.y + 4, '#000');
 
         if (typeof Icons === 'undefined' || !Icons.d_pad_tv_remote) return;
@@ -1662,11 +1662,11 @@ var TVMediaBoxScene = (function() {
             this._drawDpad(canvas, FX + FW - 15 - dp.w, FY + 13);
         }
 
-        // Left: 2-line instruction (Born2bSportyV2Medium), top line
+        // Left: 2-line instruction (Born2bSportyV2FlipCTL), top line
         // 22 px from the frame's top edge.
         var lx = FX + 12;
-        Born2bSportyV2Medium.draw(ctx, 'Use D-Pad', lx, FY + 22, '#000');
-        Born2bSportyV2Medium.draw(ctx, 'to adjust', lx, FY + 38, '#000');
+        Born2bSportyV2FlipCTL.draw(ctx, 'Use D-Pad', lx, FY + 22, '#000');
+        Born2bSportyV2FlipCTL.draw(ctx, 'to adjust', lx, FY + 38, '#000');
 
         // Bottom: back button (black-filled while pressed) + "to apply"
         // to its right.
@@ -1677,7 +1677,7 @@ var TVMediaBoxScene = (function() {
             var bx = lx;
             var by = FY + FH - bb.h - 21;   // 21 px from icon bottom to frame edge
             canvas.drawSprite(bb, bx, by, '#000');
-            HaxrcorpFont16.draw(ctx, 'to apply',
+            HaxrCorp4090FlipCTL.draw(ctx, 'to apply',
                 bx + bb.w + 5, by + 5, '#000');
         }
     };
@@ -1715,12 +1715,12 @@ var TVMediaBoxScene = (function() {
         var btn2Y  = Y + 52;
 
         function centerSporty(text, y) {
-            var tw = Born2bSportyV2Medium.textWidth(text);
-            Born2bSportyV2Medium.draw(ctx, text, X + Math.floor((W - tw) / 2), y, '#000');
+            var tw = Born2bSportyV2FlipCTL.textWidth(text);
+            Born2bSportyV2FlipCTL.draw(ctx, text, X + Math.floor((W - tw) / 2), y, '#000');
         }
         function centerHaxrcorp(text, y, color) {
-            var tw = HaxrcorpFont16.textWidth(text);
-            HaxrcorpFont16.draw(ctx, text, X + Math.floor((W - tw) / 2), y, color || '#000');
+            var tw = HaxrCorp4090FlipCTL.textWidth(text);
+            HaxrCorp4090FlipCTL.draw(ctx, text, X + Math.floor((W - tw) / 2), y, color || '#000');
         }
 
         if (m.state === 'installing') {
@@ -1761,9 +1761,9 @@ var TVMediaBoxScene = (function() {
     // outline when selected (same idiom as the page chrome).
     TVMediaBoxScene.prototype._drawStackedButton = function(canvas, x, y, w, h, label, selected) {
         var ctx = canvas.ctx;
-        var lw  = HaxrcorpFont16.textWidth(label);
+        var lw  = HaxrCorp4090FlipCTL.textWidth(label);
         var labelY = y + Math.floor((h - 11) / 2);
-        HaxrcorpFont16.draw(ctx, label, x + Math.floor((w - lw) / 2), labelY, '#000');
+        HaxrCorp4090FlipCTL.draw(ctx, label, x + Math.floor((w - lw) / 2), labelY, '#000');
         if (selected) {
             if (!this._installBtnSelector) {
                 this._installBtnSelector = new MenuSelectorFrame({
@@ -1821,7 +1821,7 @@ var TVMediaBoxScene = (function() {
 
         // Re-draw the row's title in crisp black so the user knows
         // which row they're editing (MenuDropdownLine's TITLE_X = 6).
-        HaxrcorpFont16.draw(ctx, rowsAll[dropIdx].title, 6, chipY, '#000');
+        HaxrCorp4090FlipCTL.draw(ctx, rowsAll[dropIdx].title, 6, chipY, '#000');
 
         // Body. Same chip fill, 3 px corners, no stroke — reads as
         // the chip growing into the option list.
@@ -1840,8 +1840,8 @@ var TVMediaBoxScene = (function() {
         for (var i2 = 0; i2 < n; i2++) {
             var itemY  = bodyY + 1 + i2 * (ITEM_H + DIV_H);
             var label  = String(picker.options[i2]);
-            var labelW = HaxrcorpFont16.textWidth(label);
-            HaxrcorpFont16.draw(ctx, label,
+            var labelW = HaxrCorp4090FlipCTL.textWidth(label);
+            HaxrCorp4090FlipCTL.draw(ctx, label,
                 chipX + Math.floor((W - labelW) / 2),
                 itemY + 1, '#000');
             if (i2 === this._dropdownIndex) selectedItemY = itemY;
@@ -1900,12 +1900,12 @@ var TVMediaBoxScene = (function() {
         var btn2Y  = Y + 64;
 
         function centerSporty(text, y) {
-            var tw = Born2bSportyV2Medium.textWidth(text);
-            Born2bSportyV2Medium.draw(ctx, text, X + Math.floor((W - tw) / 2), y, '#000');
+            var tw = Born2bSportyV2FlipCTL.textWidth(text);
+            Born2bSportyV2FlipCTL.draw(ctx, text, X + Math.floor((W - tw) / 2), y, '#000');
         }
         function centerHaxrcorp(text, y, color) {
-            var tw = HaxrcorpFont16.textWidth(text);
-            HaxrcorpFont16.draw(ctx, text, X + Math.floor((W - tw) / 2), y, color || '#000');
+            var tw = HaxrCorp4090FlipCTL.textWidth(text);
+            HaxrCorp4090FlipCTL.draw(ctx, text, X + Math.floor((W - tw) / 2), y, color || '#000');
         }
 
         centerSporty('Switch source?', titleY);

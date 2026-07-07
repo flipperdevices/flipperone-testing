@@ -665,25 +665,25 @@ var TVMediaKeyboard = (function() {
     //   4. Otherwise truncate on BOTH sides ("<.text.>"), expanding
     //      the visible window outward from the cursor.
     TVMediaKeyboard.prototype._fitInputText = function(text, cursor, innerW) {
-        var fullW = HaxrcorpFont16.textWidth(text);
+        var fullW = HaxrCorp4090FlipCTL.textWidth(text);
         if (fullW <= innerW) {
             return { left: 0, right: text.length, leftMarker: false, rightMarker: false };
         }
-        // HaxrcorpFont16.textWidth subtracts one inter-char unit
+        // HaxrCorp4090FlipCTL.textWidth subtracts one inter-char unit
         // from the tail, so per-char widths can't be summed —
         // they'd under-count the actual concat. Always measure
         // the rendered substring (with any markers attached) to
         // decide whether it fits. Markers are `<...` (left side
         // truncated) and `...>` (right side truncated) — an
         // arrow + three concatenated periods, since
-        // HaxrcorpFont16 ships no triple-dot glyph.
+        // HaxrCorp4090FlipCTL ships no triple-dot glyph.
         var LEFT_MARKER  = '<...';
         var RIGHT_MARKER = '...>';
         function fitsAt(left, right, leftMarker, rightMarker) {
             var s = (leftMarker ? LEFT_MARKER : '')
                 + text.slice(left, right)
                 + (rightMarker ? RIGHT_MARKER : '');
-            return HaxrcorpFont16.textWidth(s) <= innerW;
+            return HaxrCorp4090FlipCTL.textWidth(s) <= innerW;
         }
         // 2. Largest left-aligned prefix that fits with `.>` suffix.
         var leftEnd = 0;
@@ -716,8 +716,8 @@ var TVMediaKeyboard = (function() {
 
     // Discard-confirmation modal renderer. Mirrors the install
     // modal from Internet Radio: a 150×70 centred frame on top
-    // of a translucent white wash, title in Born2bSportyV2Medium,
-    // a single-line body in HaxrcorpFont16, and two stacked
+    // of a translucent white wash, title in Born2bSportyV2FlipCTL,
+    // a single-line body in HaxrCorp4090FlipCTL, and two stacked
     // buttons (Cancel / Discard) with the highlighted one
     // wrapped by MenuSelectorFrame.
     TVMediaKeyboard.prototype._renderDiscardModal = function(canvas) {
@@ -751,13 +751,13 @@ var TVMediaKeyboard = (function() {
         var btn2Y  = Y + 52;
 
         var title = 'Discard changes?';
-        var titleW = Born2bSportyV2Medium.textWidth(title);
-        Born2bSportyV2Medium.draw(ctx, title,
+        var titleW = Born2bSportyV2FlipCTL.textWidth(title);
+        Born2bSportyV2FlipCTL.draw(ctx, title,
             X + Math.floor((W - titleW) / 2), titleY, '#000');
 
         var body = "Your text won't be saved.";
-        var bodyW = HaxrcorpFont16.textWidth(body);
-        HaxrcorpFont16.draw(ctx, body,
+        var bodyW = HaxrCorp4090FlipCTL.textWidth(body);
+        HaxrCorp4090FlipCTL.draw(ctx, body,
             X + Math.floor((W - bodyW) / 2), bodyY, '#666');
 
         this._drawDiscardModalButton(canvas, BTN_X, btn1Y, BTN_W, BTN_H,
@@ -772,9 +772,9 @@ var TVMediaKeyboard = (function() {
     // install modal uses).
     TVMediaKeyboard.prototype._drawDiscardModalButton = function(canvas, x, y, w, h, label, selected) {
         var ctx = canvas.ctx;
-        var lw = HaxrcorpFont16.textWidth(label);
+        var lw = HaxrCorp4090FlipCTL.textWidth(label);
         var labelY = y + Math.floor((h - 11) / 2);
-        HaxrcorpFont16.draw(ctx, label,
+        HaxrCorp4090FlipCTL.draw(ctx, label,
             x + Math.floor((w - lw) / 2), labelY, '#000');
         if (selected) {
             if (!this._discardBtnSelector) {

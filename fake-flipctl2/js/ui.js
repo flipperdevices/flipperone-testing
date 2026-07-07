@@ -342,8 +342,8 @@ var UI = (function() {
         if (modemAvailable) {
             drawSignalBars(canvas, leftX, top, signalQuality, fg, dim);
             leftX += 10;  // 5 bars × 1px + 4 gaps × 1px + 1px trailing gap
-            HaxrcorpFont16.draw(canvas.ctx, accessTech, leftX, top, fg);
-            leftX += HaxrcorpFont16.textWidth(accessTech) + 2;
+            HaxrCorp4090FlipCTL.draw(canvas.ctx, accessTech, leftX, top, fg);
+            leftX += HaxrCorp4090FlipCTL.textWidth(accessTech) + 2;
         }
         if (wifiConnected) {
             canvas.drawSprite(wifiIcon(wifiQuality), leftX, top, fg);
@@ -402,9 +402,9 @@ var UI = (function() {
         var pctStr   = batteryLevel >= 0 ? batteryLevel + '%' : '--%';
         var batteryW = StatusBarBattery.sprite.w;
         var batteryX = canvas.w - 2 - batteryW;
-        var textX    = batteryX - 1 - HaxrcorpFont16.textWidth(pctStr);
+        var textX    = batteryX - 1 - HaxrCorp4090FlipCTL.textWidth(pctStr);
 
-        HaxrcorpFont16.draw(canvas.ctx, pctStr, textX, top - 2, fg);
+        HaxrCorp4090FlipCTL.draw(canvas.ctx, pctStr, textX, top - 2, fg);
         var batteryY = top - 1;
         canvas.drawSprite(StatusBarBattery.sprite, batteryX, batteryY, fg);
 
@@ -702,7 +702,7 @@ var UI = (function() {
         // Calculate body width: longest item text + left/right padding (7px each)
         var maxItemWidth = 0;
         for (var i = 0; i < items.length; i++) {
-            var w = HaxrcorpFont16.textWidth(items[i]);
+            var w = HaxrCorp4090FlipCTL.textWidth(items[i]);
             if (w > maxItemWidth) maxItemWidth = w;
         }
         var contentWidth = maxItemWidth + 7 + 7;  // 7px left + 7px right padding
@@ -737,14 +737,14 @@ var UI = (function() {
 
             // Draw item text (4px + 3px padding from left edge)
             var textColor = (i === this.pressedIndex) ? '#fff' : '#000';
-            HaxrcorpFont16.draw(canvas.ctx, this.items[i], this.x + 7, iy + 1, textColor);
+            HaxrCorp4090FlipCTL.draw(canvas.ctx, this.items[i], this.x + 7, iy + 1, textColor);
         }
 
         // Draw tab label (button text — centered in tab)
-        var tw = HaxrcorpFont16.textWidth(this.btnText);
+        var tw = HaxrCorp4090FlipCTL.textWidth(this.btnText);
         var ttx = this.x + Math.floor((this.tabW - tw) / 2);
         var tty = this.y + this.bodyH + Math.floor((17 - 11) / 2);
-        HaxrcorpFont16.draw(canvas.ctx, this.btnText, ttx, tty, '#000');
+        HaxrCorp4090FlipCTL.draw(canvas.ctx, this.btnText, ttx, tty, '#000');
     };
 
     PopupMenuLeft.prototype.handleInput = function(action) {
@@ -1236,7 +1236,7 @@ var UI = (function() {
         this.text = text || '';
         this.h = 16;         // Height of tab
         // Width: text width + 3px padding on each side
-        this.w = HaxrcorpFont16.textWidth(this.text) + 6;
+        this.w = HaxrCorp4090FlipCTL.textWidth(this.text) + 6;
     }
 
     TabHeader.prototype.render = function(canvas) {
@@ -1244,7 +1244,7 @@ var UI = (function() {
         canvas.drawTabHeader(this.x, this.y, this.w, this.h);
         // Draw white text (centered vertically)
         var textY = this.y + Math.floor((this.h - 11) / 2);  // 11 is font height
-        HaxrcorpFont16.draw(canvas.ctx, this.text, this.x + 3, textY, '#fff');
+        HaxrCorp4090FlipCTL.draw(canvas.ctx, this.text, this.x + 3, textY, '#fff');
     };
 
     // ── TextInputBox ──────────────────────────────────────────────────────
@@ -1303,10 +1303,10 @@ var UI = (function() {
 
         // Draw text (centered)
         var messageText = this.action + ' "' + this.profileName + '"?';
-        var messageWidth = HaxrcorpFont16.textWidth(messageText);
+        var messageWidth = HaxrCorp4090FlipCTL.textWidth(messageText);
         var messageX = boxX + Math.floor((boxW - messageWidth) / 2);
         var messageY = boxY + Math.floor((boxH - 11) / 2);
-        HaxrcorpFont16.draw(canvas.ctx, messageText, messageX, messageY, '#000');
+        HaxrCorp4090FlipCTL.draw(canvas.ctx, messageText, messageX, messageY, '#000');
     };
 
     DeleteConfirmDialog.prototype.handleInput = function(action) {

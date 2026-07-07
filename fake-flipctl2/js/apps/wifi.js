@@ -13,7 +13,7 @@
  * Differences from SubMenuScene that warranted a custom scene:
  *   - Breadcrumb shows the full path "> Network > Wi-Fi" (two
  *     levels) rather than the generic single-title breadcrumb.
- *   - Rows render in HaxrcorpFont16 throughout — no font swap on
+ *   - Rows render in HaxrCorp4090FlipCTL throughout — no font swap on
  *     selection — and carry no icons.
  *   - Compact two-row layout, no scrollbar.
  *
@@ -67,13 +67,13 @@ var WifiScene = (function() {
     // Appends an ellipsis when truncation actually happens.
     function ellipsizeTo(text, maxW) {
         if (maxW <= 0) return '';
-        if (HaxrcorpFont16.textWidth(text) <= maxW) return text;
+        if (HaxrCorp4090FlipCTL.textWidth(text) <= maxW) return text;
         var ell = '…';
-        var ellW = HaxrcorpFont16.textWidth(ell);
+        var ellW = HaxrCorp4090FlipCTL.textWidth(ell);
         if (ellW > maxW) return '';
         var s = text;
         while (s.length > 0 &&
-               HaxrcorpFont16.textWidth(s) + ellW > maxW) {
+               HaxrCorp4090FlipCTL.textWidth(s) + ellW > maxW) {
             s = s.slice(0, -1);
         }
         return s + ell;
@@ -735,8 +735,8 @@ var WifiScene = (function() {
                 }
                 if (!nets.length) {
                     var placeholder = 'No networks';
-                    var phW = HaxrcorpFont16.textWidth(placeholder);
-                    HaxrcorpFont16.draw(ctx, placeholder,
+                    var phW = HaxrCorp4090FlipCTL.textWidth(placeholder);
+                    HaxrCorp4090FlipCTL.draw(ctx, placeholder,
                         FRAME_X + Math.floor((FRAME_W - phW) / 2),
                         L.innerTop + Math.floor((L.innerH - 11) / 2),
                         '#999999');
@@ -745,8 +745,8 @@ var WifiScene = (function() {
 
                 // Scrollable, selectable list. Render only the
                 // visible window. Each row carries:
-                //   - SSID  (left, HaxrcorpFont16 black)
-                //   - sec   (small text right of SSID, HaxrcorpFont16
+                //   - SSID  (left, HaxrCorp4090FlipCTL black)
+                //   - sec   (small text right of SSID, HaxrCorp4090FlipCTL
                 //            gray, only when network is encrypted)
                 //   - icon  (right edge, status-bar wifi sprite
                 //            picked from quality 0-100 the same
@@ -790,8 +790,8 @@ var WifiScene = (function() {
                     var secLabel = securityLabel(net.security);
                     var secEndX = iconX - 4;
                     if (secLabel) {
-                        var secW = HaxrcorpFont16.textWidth(secLabel);
-                        HaxrcorpFont16.draw(ctx, secLabel,
+                        var secW = HaxrCorp4090FlipCTL.textWidth(secLabel);
+                        HaxrCorp4090FlipCTL.draw(ctx, secLabel,
                             secEndX - secW, rowY + 1, fgDim);
                         secEndX = secEndX - secW - 4;
                     }
@@ -802,7 +802,7 @@ var WifiScene = (function() {
                     var ssidStartX = INNER_X + 5;
                     var ssidMaxW   = secEndX - ssidStartX;
                     var ssidText   = ellipsizeTo(net.ssid, ssidMaxW);
-                    HaxrcorpFont16.draw(ctx, ssidText,
+                    HaxrCorp4090FlipCTL.draw(ctx, ssidText,
                         ssidStartX, rowY + 1, fg);
 
                     rowY += ROW_H;
@@ -862,13 +862,13 @@ var WifiScene = (function() {
                 // modal so it doesn't fight the list above.
                 if (self._modalToast && Date.now() < self._modalToastUntil) {
                     var toastTxt = self._modalToast;
-                    var toastW   = HaxrcorpFont16.textWidth(toastTxt);
+                    var toastW   = HaxrCorp4090FlipCTL.textWidth(toastTxt);
                     var pillH    = 14;
                     var pillW    = toastW + 14;
                     var pillX    = FRAME_X + Math.floor((FRAME_W - pillW) / 2);
                     var pillY    = L.frameY + L.frameH - pillH - 4;
                     canvas.drawRoundRect(pillX, pillY, pillW, pillH, 3, '#000');
-                    HaxrcorpFont16.draw(ctx, toastTxt,
+                    HaxrCorp4090FlipCTL.draw(ctx, toastTxt,
                         pillX + 7,
                         pillY + Math.floor((pillH - 11) / 2),
                         '#fff');
@@ -1039,8 +1039,8 @@ var WifiScene = (function() {
                     var emsg = errorMsg.length > 36
                         ? errorMsg.substring(0, 35) + '…'
                         : errorMsg;
-                    var ew = HaxrcorpFont16.textWidth(emsg);
-                    HaxrcorpFont16.draw(ctx, emsg,
+                    var ew = HaxrCorp4090FlipCTL.textWidth(emsg);
+                    HaxrCorp4090FlipCTL.draw(ctx, emsg,
                         Math.floor((canvas.w - ew) / 2), 60, '#999999');
                 }
             }
@@ -1100,7 +1100,7 @@ var WifiScene = (function() {
         var CANVAS_H         = 144;
         var TAB_TEXT         = 'Saved networks';
         var FRAME_W_MAX      = 256 - SCREEN_PAD * 2;
-        var FRAME_W_MIN      = HaxrcorpFont16.textWidth(TAB_TEXT) + 6 + 20;
+        var FRAME_W_MIN      = HaxrCorp4090FlipCTL.textWidth(TAB_TEXT) + 6 + 20;
 
         // Fetch state.
         var loaded   = false;
@@ -1187,7 +1187,7 @@ var WifiScene = (function() {
             var maxSsidW = 0;
             for (var i = 0; i < networks.length; i++) {
                 var ssid = (networks[i] && (networks[i].ssid || networks[i].name)) || '';
-                var w = HaxrcorpFont16.textWidth(ssid);
+                var w = HaxrCorp4090FlipCTL.textWidth(ssid);
                 if (w > maxSsidW) maxSsidW = w;
             }
             var contentDrivenW = maxSsidW + (willScroll ? 22 : 16);
@@ -1322,10 +1322,10 @@ var WifiScene = (function() {
                 ctx.clip();
 
                 if (!loaded) {
-                    HaxrcorpFont16.draw(ctx, 'Loading…',
+                    HaxrCorp4090FlipCTL.draw(ctx, 'Loading…',
                         INNER_X + 5, L.innerTop + 4, '#999999');
                 } else if (networks.length === 0) {
-                    HaxrcorpFont16.draw(ctx, 'No saved networks',
+                    HaxrCorp4090FlipCTL.draw(ctx, 'No saved networks',
                         INNER_X + 5, L.innerTop + 4, '#999999');
                 } else {
                     var selectedY = -1;
@@ -1348,7 +1348,7 @@ var WifiScene = (function() {
                         // security flavour where it's actionable.
                         var ssidMaxW = dynInnerW - 10;
                         var ssidTxt  = ellipsizeTo(net.ssid || net.name, ssidMaxW);
-                        HaxrcorpFont16.draw(ctx, ssidTxt,
+                        HaxrCorp4090FlipCTL.draw(ctx, ssidTxt,
                             INNER_X + 5, rowY + 1, fg);
                     }
                     if (selectedY >= 0 && self._savedPressed !== self._savedSelected) {
@@ -2085,7 +2085,7 @@ var WifiScene = (function() {
                         canvas.drawHLine(INNER_X + 3, rowAbsY + 1,
                             dynInnerW - 6, '#CCCCCC');
                     } else if (row.kind === 'action') {
-                        HaxrcorpFont16.draw(ctx, row.text,
+                        HaxrCorp4090FlipCTL.draw(ctx, row.text,
                             INNER_X + 5, rowAbsY + 1, fg);
                         if (row.isToggle && row.getStatus) {
                             self._drawToggleStatus(canvas, row, isSelected,
@@ -2093,9 +2093,9 @@ var WifiScene = (function() {
                                 isSelected ? '#000' : '#999999');
                         } else if (row.chevron) {
                             var ch  = '>';
-                            var cw  = HaxrcorpFont16.textWidth(ch);
+                            var cw  = HaxrCorp4090FlipCTL.textWidth(ch);
                             var col = isSelected ? fg : fgDim;
-                            HaxrcorpFont16.draw(ctx, ch,
+                            HaxrCorp4090FlipCTL.draw(ctx, ch,
                                 INNER_X + dynInnerW - cw - 2,
                                 rowAbsY + 1, col);
                         }
@@ -2111,7 +2111,7 @@ var WifiScene = (function() {
                         var RIGHT_PAD = 2;
 
                         // Label.
-                        HaxrcorpFont16.draw(ctx, row.text,
+                        HaxrCorp4090FlipCTL.draw(ctx, row.text,
                             INNER_X + 5, rowAbsY + 1, fg);
 
                         // Reveal trigger: hold the OK action
@@ -2145,7 +2145,7 @@ var WifiScene = (function() {
                             for (var pmk = 0; pmk < maskN; pmk++) pwText += '*';
                             pwColor = isPressed ? '#fff' : '#000';
                             // The `*` glyph sits high in
-                            // HaxrcorpFont16 (cap near the ascender)
+                            // HaxrCorp4090FlipCTL (cap near the ascender)
                             // — push it 2 px down so the dots read
                             // as visually centred against the row.
                             pwTextDy = 2;
@@ -2158,34 +2158,34 @@ var WifiScene = (function() {
                         // "Password" label and the right edge.
                         var rightAnchor = INNER_X + dynInnerW - RIGHT_PAD;
                         var labelEnd = INNER_X + 5
-                            + HaxrcorpFont16.textWidth(row.text) + 6;
+                            + HaxrCorp4090FlipCTL.textWidth(row.text) + 6;
                         var maxTextW = rightAnchor - labelEnd;
                         if (maxTextW < 0) maxTextW = 0;
                         var fitText = pwText;
                         while (fitText.length > 0
-                               && HaxrcorpFont16.textWidth(fitText) > maxTextW) {
+                               && HaxrCorp4090FlipCTL.textWidth(fitText) > maxTextW) {
                             fitText = fitText.substring(1);
                         }
-                        var pwTextX = rightAnchor - HaxrcorpFont16.textWidth(fitText);
-                        HaxrcorpFont16.draw(ctx, fitText,
+                        var pwTextX = rightAnchor - HaxrCorp4090FlipCTL.textWidth(fitText);
+                        HaxrCorp4090FlipCTL.draw(ctx, fitText,
                             pwTextX, rowAbsY + 1 + pwTextDy, pwColor);
                     } else if (row.kind === 'unavailable') {
-                        HaxrcorpFont16.draw(ctx, row.text,
+                        HaxrCorp4090FlipCTL.draw(ctx, row.text,
                             INNER_X + 5, rowAbsY + 1, '#999999');
                     } else if (row.kind === 'kv') {
                         var lblColor = isPressed ? '#fff' : '#6D6D6D';
-                        HaxrcorpFont16.draw(ctx, row.label,
+                        HaxrCorp4090FlipCTL.draw(ctx, row.label,
                             INNER_X + 5, rowAbsY + 1, lblColor);
-                        var lblW = HaxrcorpFont16.textWidth(row.label);
-                        HaxrcorpFont16.draw(ctx, String(row.value),
+                        var lblW = HaxrCorp4090FlipCTL.textWidth(row.label);
+                        HaxrCorp4090FlipCTL.draw(ctx, String(row.value),
                             INNER_X + 5 + lblW + INNER_LABEL_GAP,
                             rowAbsY + 1, fg);
                     } else if (row.kind === 'sub') {
-                        HaxrcorpFont16.draw(ctx, row.text,
+                        HaxrCorp4090FlipCTL.draw(ctx, row.text,
                             INNER_X + 5, rowAbsY + 1,
                             isPressed ? '#fff' : '#6D6D6D');
                     } else if (row.kind === 'value') {
-                        HaxrcorpFont16.draw(ctx, row.text,
+                        HaxrCorp4090FlipCTL.draw(ctx, row.text,
                             INNER_X + 14, rowAbsY + 1,
                             isPressed ? '#fff' : '#000');
                     } else if (row.kind === 'pad') {
@@ -2218,21 +2218,21 @@ var WifiScene = (function() {
                                     ly + 1,
                                     BLOCK_INNER_W - 6, '#E5E5E5');
                             } else if (ln.kind === 'unavailable') {
-                                HaxrcorpFont16.draw(ctx, ln.text,
+                                HaxrCorp4090FlipCTL.draw(ctx, ln.text,
                                     BLOCK_INNER_X + 1, ly + 1, '#999999');
                             } else if (ln.kind === 'kv') {
-                                HaxrcorpFont16.draw(ctx, ln.label,
+                                HaxrCorp4090FlipCTL.draw(ctx, ln.label,
                                     BLOCK_INNER_X + 1, ly + 1, lnLbl);
-                                var lnLblW = HaxrcorpFont16.textWidth(ln.label);
-                                HaxrcorpFont16.draw(ctx, String(ln.value),
+                                var lnLblW = HaxrCorp4090FlipCTL.textWidth(ln.label);
+                                HaxrCorp4090FlipCTL.draw(ctx, String(ln.value),
                                     BLOCK_INNER_X + 1 + lnLblW + INNER_LABEL_GAP,
                                     ly + 1, lnFg);
                             } else if (ln.kind === 'sub') {
-                                HaxrcorpFont16.draw(ctx, ln.text,
+                                HaxrCorp4090FlipCTL.draw(ctx, ln.text,
                                     BLOCK_INNER_X + 1, ly + 1,
                                     isPressed ? '#fff' : '#6D6D6D');
                             } else if (ln.kind === 'value') {
-                                HaxrcorpFont16.draw(ctx, ln.text,
+                                HaxrCorp4090FlipCTL.draw(ctx, ln.text,
                                     BLOCK_INNER_X + 10, ly + 1,
                                     isPressed ? '#fff' : '#000');
                             }
@@ -2364,26 +2364,26 @@ var WifiScene = (function() {
         var rightX  = x + w - STATUS_RIGHT_PAD;
         if (!isSelected) {
             // Idle: just the value, right-aligned.
-            var dimW = HaxrcorpFont16.textWidth(midTxt);
-            HaxrcorpFont16.draw(ctx, midTxt, rightX - dimW, y, color);
+            var dimW = HaxrCorp4090FlipCTL.textWidth(midTxt);
+            HaxrCorp4090FlipCTL.draw(ctx, midTxt, rightX - dimW, y, color);
             return;
         }
         // Selected: "< value >" with chevrons spaced like MenuLine
         // does. Width is laid out from the right edge backwards so
         // the > sticks to STATUS_RIGHT_PAD and the rest follows.
-        var ltW   = HaxrcorpFont16.textWidth('<');
-        var midW  = HaxrcorpFont16.textWidth('OFF');
-        var gtW   = HaxrcorpFont16.textWidth('>');
+        var ltW   = HaxrCorp4090FlipCTL.textWidth('<');
+        var midW  = HaxrCorp4090FlipCTL.textWidth('OFF');
+        var gtW   = HaxrCorp4090FlipCTL.textWidth('>');
         var gtX   = rightX - gtW;
         var ltX   = gtX - TOGGLE_SPACING - midW - TOGGLE_SPACING - ltW;
         var midBase = ltX + ltW + TOGGLE_SPACING;
-        var midTxtW = HaxrcorpFont16.textWidth(midTxt);
+        var midTxtW = HaxrCorp4090FlipCTL.textWidth(midTxt);
         var midX    = Math.floor(midBase + (midW - midTxtW) / 2);
         var ltCol = (this._arrowPressed === 'left')  ? '#222222' : color;
         var gtCol = (this._arrowPressed === 'right') ? '#222222' : color;
-        HaxrcorpFont16.draw(ctx, '<',     ltX,  y, ltCol);
-        HaxrcorpFont16.draw(ctx, midTxt,  midX, y, color);
-        HaxrcorpFont16.draw(ctx, '>',     gtX,  y, gtCol);
+        HaxrCorp4090FlipCTL.draw(ctx, '<',     ltX,  y, ltCol);
+        HaxrCorp4090FlipCTL.draw(ctx, midTxt,  midX, y, color);
+        HaxrCorp4090FlipCTL.draw(ctx, '>',     gtX,  y, gtCol);
     };
 
     WifiScene.prototype.render = function(canvas) {
@@ -2404,7 +2404,7 @@ var WifiScene = (function() {
             : (this.breadcrumbTitle ? [this.breadcrumbTitle] : []);
         var trail = titles.length ? '> ' + titles.join(' > ') : '';
         if (trail) {
-            HaxrcorpFont16.draw(canvas.ctx, trail,
+            HaxrCorp4090FlipCTL.draw(canvas.ctx, trail,
                 BREADCRUMB_X, BREADCRUMB_Y, '#CCCCCC');
         }
 
@@ -2420,7 +2420,7 @@ var WifiScene = (function() {
         // 1 px above + 1 px line + 1 px below balances the gap on
         // either side of the rule.
         var DIVIDER_ROW_H = 3;
-        // Text y inside a row: HaxrcorpFont16's cap top sits 1 px
+        // Text y inside a row: HaxrCorp4090FlipCTL's cap top sits 1 px
         // below the row's top → centred vertically against the
         // 13 px row (font is ~11 px tall, leaving 1 px margin
         // above and below).
@@ -2442,14 +2442,14 @@ var WifiScene = (function() {
                 // The prefix narrates state; the SSID is the
                 // actionable label, which should pop visually.
                 var connPrefix = 'Connected to: ';
-                var connPrefixW = HaxrcorpFont16.textWidth(connPrefix);
-                HaxrcorpFont16.draw(canvas.ctx, connPrefix,
+                var connPrefixW = HaxrCorp4090FlipCTL.textWidth(connPrefix);
+                HaxrCorp4090FlipCTL.draw(canvas.ctx, connPrefix,
                     SELECTOR_X + TEXT_LEFT_PAD, y + TEXT_DY, '#999999');
-                HaxrcorpFont16.draw(canvas.ctx, item.text,
+                HaxrCorp4090FlipCTL.draw(canvas.ctx, item.text,
                     SELECTOR_X + TEXT_LEFT_PAD + connPrefixW,
                     y + TEXT_DY, labelColor);
             } else {
-                HaxrcorpFont16.draw(canvas.ctx, item.text,
+                HaxrCorp4090FlipCTL.draw(canvas.ctx, item.text,
                     SELECTOR_X + TEXT_LEFT_PAD, y + TEXT_DY, labelColor);
             }
 

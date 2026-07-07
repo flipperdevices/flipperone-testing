@@ -73,8 +73,8 @@ var MenuDropdownLine = (function() {
         var ctx = canvas.ctx;
 
         // Title — flush with the row's top inset, left aligned
-        // 6 px from the canvas edge, HaxrcorpFont16 black.
-        HaxrcorpFont16.draw(ctx, this.title,
+        // 6 px from the canvas edge, HaxrCorp4090FlipCTL black.
+        HaxrCorp4090FlipCTL.draw(ctx, this.title,
             TITLE_X, this.y + TOP_PAD, TITLE_FG);
 
         // Right-anchored chip. Width is fixed at 180 px, so its
@@ -111,8 +111,8 @@ var MenuDropdownLine = (function() {
         var ARROW_PAD = 4;
         var ltW = 0, gtW = 0;
         if (this.selected) {
-            ltW = HaxrcorpFont16.textWidth('<');
-            gtW = HaxrcorpFont16.textWidth('>');
+            ltW = HaxrCorp4090FlipCTL.textWidth('<');
+            gtW = HaxrCorp4090FlipCTL.textWidth('>');
         }
 
         if (this.value) {
@@ -124,21 +124,21 @@ var MenuDropdownLine = (function() {
             var maxW = CHIP_W - 4
                      - (this.selected ? (ltW + gtW + ARROW_PAD * 2) : 0);
             while (valStr.length > 0
-                   && HaxrcorpFont16.textWidth(valStr) > maxW) {
+                   && HaxrCorp4090FlipCTL.textWidth(valStr) > maxW) {
                 valStr = valStr.substring(0, valStr.length - 1);
             }
             if (valStr.length < String(this.value).length && valStr.length > 1) {
                 valStr = valStr.substring(0, valStr.length - 1) + '…';
             }
-            var valW = HaxrcorpFont16.textWidth(valStr);
-            HaxrcorpFont16.draw(ctx, valStr,
+            var valW = HaxrCorp4090FlipCTL.textWidth(valStr);
+            HaxrCorp4090FlipCTL.draw(ctx, valStr,
                 chipX + Math.floor((CHIP_W - valW) / 2), chipY, '#000');
         }
 
         if (this.selected) {
-            HaxrcorpFont16.draw(ctx, '<',
+            HaxrCorp4090FlipCTL.draw(ctx, '<',
                 chipX + ARROW_PAD, chipY, '#000');
-            HaxrcorpFont16.draw(ctx, '>',
+            HaxrCorp4090FlipCTL.draw(ctx, '>',
                 chipX + CHIP_W - gtW - ARROW_PAD, chipY, '#000');
         }
     };
@@ -210,13 +210,13 @@ var MenuDropdownLine = (function() {
         var maxW   = CHIP_W - 4;
         var valStr = valRaw;
         while (valStr.length > 0
-               && HaxrcorpFont16.textWidth(valStr) > maxW) {
+               && HaxrCorp4090FlipCTL.textWidth(valStr) > maxW) {
             valStr = valStr.substring(0, valStr.length - 1);
         }
         if (valStr.length < valRaw.length && valStr.length > 1) {
             valStr = valStr.substring(0, valStr.length - 1) + '…';
         }
-        var valW = HaxrcorpFont16.textWidth(valStr);
+        var valW = HaxrCorp4090FlipCTL.textWidth(valStr);
         var textX = chipX + Math.floor((CHIP_W - valW) / 2);
         var textY = chipY;
 
@@ -229,7 +229,7 @@ var MenuDropdownLine = (function() {
                 ctx.beginPath();
                 ctx.rect(chipX, chipY, filledW, CHIP_H);
                 ctx.clip();
-                HaxrcorpFont16.draw(ctx, text, x, y, '#FFFFFF');
+                HaxrCorp4090FlipCTL.draw(ctx, text, x, y, '#FFFFFF');
                 ctx.restore();
             }
             if (filledW < CHIP_W) {
@@ -238,7 +238,7 @@ var MenuDropdownLine = (function() {
                 ctx.rect(chipX + filledW, chipY,
                          CHIP_W - filledW, CHIP_H);
                 ctx.clip();
-                HaxrcorpFont16.draw(ctx, text, x, y, '#000000');
+                HaxrCorp4090FlipCTL.draw(ctx, text, x, y, '#000000');
                 ctx.restore();
             }
         }
@@ -256,9 +256,9 @@ var MenuDropdownLine = (function() {
             var ARROW_PAD = 4;
             var lt   = '<';
             var gt   = '>';
-            var ltW  = HaxrcorpFont16.textWidth(lt);
+            var ltW  = HaxrCorp4090FlipCTL.textWidth(lt);
             var ltX  = chipX + ARROW_PAD;
-            var gtW  = HaxrcorpFont16.textWidth(gt);
+            var gtW  = HaxrCorp4090FlipCTL.textWidth(gt);
             var gtX  = chipX + CHIP_W - gtW - ARROW_PAD;
             drawSplit(lt, ltX, textY);
             drawSplit(gt, gtX, textY);

@@ -1109,13 +1109,13 @@ var VoiceRecorderScene = (function() {
         var btn1Y  = Y + 36;
         var btn2Y  = Y + 52;
         function centerSporty(text, y) {
-            var tw = Born2bSportyV2Medium.textWidth(text);
-            Born2bSportyV2Medium.draw(ctx, text,
+            var tw = Born2bSportyV2FlipCTL.textWidth(text);
+            Born2bSportyV2FlipCTL.draw(ctx, text,
                 X + Math.floor((W - tw) / 2), y, '#000');
         }
         function centerHaxrcorp(text, y, color) {
-            var tw = HaxrcorpFont16.textWidth(text);
-            HaxrcorpFont16.draw(ctx, text,
+            var tw = HaxrCorp4090FlipCTL.textWidth(text);
+            HaxrCorp4090FlipCTL.draw(ctx, text,
                 X + Math.floor((W - tw) / 2), y, color || '#000');
         }
         var fmtLabel = (m.formatId || '').toUpperCase() || 'codec';
@@ -1158,9 +1158,9 @@ var VoiceRecorderScene = (function() {
     };
     VoiceRecorderScene.prototype._drawStackedButton = function(canvas, x, y, w, h, label, selected) {
         var ctx = canvas.ctx;
-        var lw  = HaxrcorpFont16.textWidth(label);
+        var lw  = HaxrCorp4090FlipCTL.textWidth(label);
         var labelY = y + Math.floor((h - 11) / 2);
-        HaxrcorpFont16.draw(ctx, label,
+        HaxrCorp4090FlipCTL.draw(ctx, label,
             x + Math.floor((w - lw) / 2), labelY, '#000');
         if (selected) {
             if (!this._installBtnSelector) {
@@ -1223,8 +1223,8 @@ var VoiceRecorderScene = (function() {
         // Title — same Born2bSportyV2 face the install modal
         // uses for its top line, so the type weight matches.
         var titleStr = m.title || '';
-        var tw       = Born2bSportyV2Medium.textWidth(titleStr);
-        Born2bSportyV2Medium.draw(ctx, titleStr,
+        var tw       = Born2bSportyV2FlipCTL.textWidth(titleStr);
+        Born2bSportyV2FlipCTL.draw(ctx, titleStr,
             X + Math.floor((W - tw) / 2), titleY, '#000');
         // OK button — always focused since it's the only button.
         this._drawStackedButton(canvas, BTN_X, btnY, BTN_W, BTN_H,
@@ -1711,7 +1711,7 @@ var VoiceRecorderScene = (function() {
     // screens share the same chrome. Status bar stays as the
     // top strip; immediately under it sits a 16-px-tall light-
     // gray header carrying the app icon + name in
-    // Born2bSportyV2Medium.
+    // Born2bSportyV2FlipCTL.
     var TITLE_H        = 16;
     var TITLE_FILL     = '#D9D9D9';
     var ICON_X         = 2;     // 2 px in from the left edge
@@ -1740,10 +1740,10 @@ var VoiceRecorderScene = (function() {
         if (this.icon) {
             canvas.drawSprite(this.icon, ICON_X, titleY + 1, '#000');
         }
-        // (4) Title text — Born2bSportyV2Medium, 18 px in from
+        // (4) Title text — Born2bSportyV2FlipCTL, 18 px in from
         // the left, 1 px below the status bar so the cap line
         // is tight against the strip's top edge.
-        Born2bSportyV2Medium.draw(ctx, this.displayName,
+        Born2bSportyV2FlipCTL.draw(ctx, this.displayName,
             TITLE_TEXT_X, UI.STATUS_BAR_H + TITLE_TEXT_DY, '#000');
 
         // (5) Input level — single non-focusable readout for the
@@ -1778,7 +1778,7 @@ var VoiceRecorderScene = (function() {
         // rather than its midline. The Input-level row isn't a
         // selectable picker, so it doesn't need the same
         // baseline as the rows below it.
-        HaxrcorpFont16.draw(ctx, 'Input level',
+        HaxrCorp4090FlipCTL.draw(ctx, 'Input level',
             6, INPUT_LEVEL_Y, '#000');
         // Transparent base with a black outline. At level 0 the
         // bar reads as an empty rounded rectangle; as the peak
@@ -1935,7 +1935,7 @@ var VoiceRecorderScene = (function() {
                 showStroke:   false,
                 cornerRadius: 4
             }).render(canvas);
-            // File name in Born2bSportyV2Medium, 7 px in from
+            // File name in Born2bSportyV2FlipCTL, 7 px in from
             // the rectangle's left edge and 1 px down from its
             // top edge — labels the current take so the user
             // sees what file is being written while the rows
@@ -1957,10 +1957,10 @@ var VoiceRecorderScene = (function() {
             } else {
                 fnText = this._recordingDisplayName || this._fileName;
             }
-            Born2bSportyV2Medium.draw(canvas.ctx, fnText,
+            Born2bSportyV2FlipCTL.draw(canvas.ctx, fnText,
                 FN_TEXT_X, FN_TEXT_Y, '#FFFFFF');
             // Horizontal white hairline 6 px below the visible
-            // bottom of the file-name text. Born2bSportyV2Medium's
+            // bottom of the file-name text. Born2bSportyV2FlipCTL's
             // visible glyph spans rows 2..11 of its 18-row
             // bitmap, so the visible bottom sits at draw-y + 11.
             // Divider at draw-y + 11 + 6 = draw-y + 17 →
@@ -2024,22 +2024,22 @@ var VoiceRecorderScene = (function() {
             // rows 2..11 (centre at draw-y + 6.5); to centre on
             // the lamp's centre y (100) the draw-y lands at
             // 100 - 7 (1-px nudge to balance optical centring).
-            Born2bSportyV2Medium.draw(canvas.ctx, tcText,
+            Born2bSportyV2FlipCTL.draw(canvas.ctx, tcText,
                 lampX + LAMP_W + 4, lampY + (LAMP_H / 2) - 7, '#FFFFFF');
 
             // Format + Folder annotations along the bottom edge
             // of the recording rectangle. Format on the left, 6
             // px in from the rect's left edge; Folder follows
-            // with 7 px padding. Both in HaxrcorpFont16. The y
+            // with 7 px padding. Both in HaxrCorp4090FlipCTL. The y
             // anchor (bottom - 3 - 11) places the bitmap's
             // bottom row 3 px above the rect's bottom edge.
             var BOTTOM_TEXT_Y = REC_RECT_Y + REC_RECT_H - 3 - 11;
             var formatText    = this._pickers.format.current || '';
             var formatTextX   = REC_RECT_X + 6;
-            HaxrcorpFont16.draw(canvas.ctx, formatText,
+            HaxrCorp4090FlipCTL.draw(canvas.ctx, formatText,
                 formatTextX, BOTTOM_TEXT_Y, '#FFFFFF');
-            var formatW       = HaxrcorpFont16.textWidth(formatText);
-            HaxrcorpFont16.draw(canvas.ctx, this._folderName,
+            var formatW       = HaxrCorp4090FlipCTL.textWidth(formatText);
+            HaxrCorp4090FlipCTL.draw(canvas.ctx, this._folderName,
                 formatTextX + formatW + 7, BOTTOM_TEXT_Y, '#FFFFFF');
 
             // Right-aligned stack of three labels along the
@@ -2049,15 +2049,15 @@ var VoiceRecorderScene = (function() {
             //                  with Format / Folder on the left).
             //   2. free GB  — 2-px gap above (1).
             //   3. "Available:" label — 2-px gap above (2).
-            // Spacing maths use HaxrcorpFont16's 11-row bitmap
+            // Spacing maths use HaxrCorp4090FlipCTL's 11-row bitmap
             // height and a 2-row inter-line gap.
             var RIGHT_PAD     = 5;
             var LINE_H        = 11;
             var LINE_GAP      = 2;
             var rightTextX    = REC_RECT_X + REC_RECT_W - RIGHT_PAD;
             function drawRightAligned(ctx, text, y) {
-                var w = HaxrcorpFont16.textWidth(text);
-                HaxrcorpFont16.draw(ctx, text, rightTextX - w, y, '#FFFFFF');
+                var w = HaxrCorp4090FlipCTL.textWidth(text);
+                HaxrCorp4090FlipCTL.draw(ctx, text, rightTextX - w, y, '#FFFFFF');
             }
 
             // Pick a bytes-per-second rate: prefer the
@@ -2272,7 +2272,7 @@ var VoiceRecorderScene = (function() {
         }
         var titleStr = openRowIdx >= 0 ? this._rowTitle(openRowIdx) : '';
         if (titleStr) {
-            HaxrcorpFont16.draw(ctx, titleStr, 6, chipY, '#000');
+            HaxrCorp4090FlipCTL.draw(ctx, titleStr, 6, chipY, '#000');
         }
 
         // (3) Body. Same fill colour as the closed chip so the
@@ -2288,7 +2288,7 @@ var VoiceRecorderScene = (function() {
             corners: { tl: true, tr: true, bl: true, br: true }
         }).render(canvas);
 
-        // (4) Items + dividers. Items are centred HaxrcorpFont16;
+        // (4) Items + dividers. Items are centred HaxrCorp4090FlipCTL;
         // each item block is ITEM_H tall with a 1-px divider
         // after it (except the last). Top stroke = body row 0;
         // first item sits at body row 1. Item order (top = first
@@ -2298,8 +2298,8 @@ var VoiceRecorderScene = (function() {
         for (var i = 0; i < n; i++) {
             var itemY = bodyY + 1 + i * (ITEM_H + DIV_H);
             var label = String(options[i]);
-            var labelW = HaxrcorpFont16.textWidth(label);
-            HaxrcorpFont16.draw(ctx, label,
+            var labelW = HaxrCorp4090FlipCTL.textWidth(label);
+            HaxrCorp4090FlipCTL.draw(ctx, label,
                 chipX + Math.floor((W - labelW) / 2),
                 itemY + 1, '#000');
             if (i === this._dropdownIndex) selectedItemY = itemY;

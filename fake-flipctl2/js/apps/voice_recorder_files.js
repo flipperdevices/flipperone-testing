@@ -48,7 +48,7 @@ var VoiceRecorderFilesScene = (function() {
     var SCROLLBAR_X         = 253;
     // Breadcrumb row sits between the gray app-title bar and the
     // list. Mirrors SubMenuScene's `> Title` pattern in
-    // HaxrcorpFont16 gray — a thin contextual subtitle that
+    // HaxrCorp4090FlipCTL gray — a thin contextual subtitle that
     // tells the user which folder they're inside without
     // shoving the folder name into the app-name slot.
     var BREADCRUMB_X        = 4;
@@ -306,8 +306,8 @@ var VoiceRecorderFilesScene = (function() {
             corners: { tl: true, tr: true, bl: true, br: true }
         }).render(canvas);
         var titleStr = this._infoModal.title || '';
-        var tw = Born2bSportyV2Medium.textWidth(titleStr);
-        Born2bSportyV2Medium.draw(ctx, titleStr,
+        var tw = Born2bSportyV2FlipCTL.textWidth(titleStr);
+        Born2bSportyV2FlipCTL.draw(ctx, titleStr,
             X + Math.floor((W - tw) / 2), Y + 8, '#000');
         // OK button — single, always focused.
         var BTN_H  = 14;
@@ -317,8 +317,8 @@ var VoiceRecorderFilesScene = (function() {
         ctx.fillStyle = '#000';
         ctx.fillRect(BTN_X, btnY, BTN_W, BTN_H);
         var okStr = 'OK';
-        var okW = HaxrcorpFont16.textWidth(okStr);
-        HaxrcorpFont16.draw(ctx, okStr,
+        var okW = HaxrCorp4090FlipCTL.textWidth(okStr);
+        HaxrCorp4090FlipCTL.draw(ctx, okStr,
             BTN_X + Math.floor((BTN_W - okW) / 2),
             btnY + Math.floor((BTN_H - 11) / 2), '#fff');
     };
@@ -347,17 +347,17 @@ var VoiceRecorderFilesScene = (function() {
         var CHIP_VALUE_PAD = 15;
         var longestOptW = 0;
         for (var li = 0; li < SORT_OPTIONS.length; li++) {
-            var lw = HaxrcorpFont16.textWidth(SORT_OPTIONS[li].label);
+            var lw = HaxrCorp4090FlipCTL.textWidth(SORT_OPTIONS[li].label);
             if (lw > longestOptW) longestOptW = lw;
         }
         var CHIP_W = longestOptW + CHIP_VALUE_PAD * 2;
         var CHIP_H = MenuDropdownLine.CHIP_HEIGHT;
-        var sortLabelW = HaxrcorpFont16.textWidth('Sort');
+        var sortLabelW = HaxrCorp4090FlipCTL.textWidth('Sort');
         // Modal width hosts the longest row. The Sort row is
         // widest: label + gap + chip + side paddings.
         var rowMaxW = MODAL_SIDE + sortLabelW + ROW_LABEL_GAP + CHIP_W + MODAL_SIDE;
         // Title contest in case it ever ends up wider than the row.
-        var titleW  = Born2bSportyV2Medium.textWidth('Edit');
+        var titleW  = Born2bSportyV2FlipCTL.textWidth('Edit');
         var W = Math.max(rowMaxW, titleW + MODAL_SIDE * 2);
         var H = MODAL_PAD + MODAL_TITLE_H
               + EDIT_MAIN_ITEMS.length * MODAL_OPT_H + MODAL_PAD;
@@ -387,7 +387,7 @@ var VoiceRecorderFilesScene = (function() {
     // ── Delete-confirmation modal ───────────────────────────
     // Same chrome as TextInputScreen's "Discard changes?"
     // modal: white frame with black stroke on a translucent
-    // wash, Born2bSportyV2 title, HaxrcorpFont16 detail line
+    // wash, Born2bSportyV2 title, HaxrCorp4090FlipCTL detail line
     // below, two stacked buttons. Cancel is the safe default
     // (buttonIndex 0); Delete is the destructive option
     // (buttonIndex 1). Up / down toggles between them; OK
@@ -438,8 +438,8 @@ var VoiceRecorderFilesScene = (function() {
         // floored at the same 150 px the discard modal uses so
         // short names don't get a comically narrow modal.
         var SIDE   = 15;
-        var titleW = Born2bSportyV2Medium.textWidth('Delete');
-        var fnW    = HaxrcorpFont16.textWidth(fname);
+        var titleW = Born2bSportyV2FlipCTL.textWidth('Delete');
+        var fnW    = HaxrCorp4090FlipCTL.textWidth(fname);
         var contentW = Math.max(titleW, fnW);
         var W = Math.max(150, contentW + SIDE * 2);
         // Height: title (14) + filename row (14) + 2 buttons of
@@ -466,15 +466,15 @@ var VoiceRecorderFilesScene = (function() {
             cornerRadius: 4,
             corners: { tl: true, tr: true, bl: true, br: true }
         }).render(canvas);
-        // Title "Delete" — Born2bSportyV2Medium, centred.
-        Born2bSportyV2Medium.draw(ctx, 'Delete',
+        // Title "Delete" — Born2bSportyV2FlipCTL, centred.
+        Born2bSportyV2FlipCTL.draw(ctx, 'Delete',
             X + Math.floor((W - titleW) / 2), Y + TOP_PAD, '#000');
-        // Filename — HaxrcorpFont16 dim gray, centred on the
+        // Filename — HaxrCorp4090FlipCTL dim gray, centred on the
         // next line. Long names will overflow the 150-px floor
         // case; W auto-grows above, so in practice the row
         // always fits without truncation.
         var fnY = Y + TOP_PAD + TITLE_H;
-        HaxrcorpFont16.draw(ctx, fname,
+        HaxrCorp4090FlipCTL.draw(ctx, fname,
             X + Math.floor((W - fnW) / 2), fnY + 2, '#666');
         // Stacked buttons — Cancel on top (safe default),
         // Delete below.
@@ -492,9 +492,9 @@ var VoiceRecorderFilesScene = (function() {
     // the highlighted one (same idiom the discard modal uses).
     VoiceRecorderFilesScene.prototype._drawDeleteBtn = function(canvas, x, y, w, h, label, selected) {
         var ctx = canvas.ctx;
-        var lw  = HaxrcorpFont16.textWidth(label);
+        var lw  = HaxrCorp4090FlipCTL.textWidth(label);
         var labelY = y + Math.floor((h - 11) / 2);
-        HaxrcorpFont16.draw(ctx, label,
+        HaxrCorp4090FlipCTL.draw(ctx, label,
             x + Math.floor((w - lw) / 2), labelY, '#000');
         if (selected) {
             this._deleteBtnSelector.setPosition(x, y);
@@ -537,7 +537,7 @@ var VoiceRecorderFilesScene = (function() {
         var ss = s % 60;
         return mm + ':' + (ss < 10 ? '0' + ss : ss);
     }
-    // Hand-rolled play / pause glyphs — HaxrcorpFont16 doesn't
+    // Hand-rolled play / pause glyphs — HaxrCorp4090FlipCTL doesn't
     // carry ▶ / ‖, so we draw them ourselves with fillRect.
     function _drawPlayIcon(ctx, x, y, h, color) {
         ctx.fillStyle = color || '#000';
@@ -861,13 +861,13 @@ var VoiceRecorderFilesScene = (function() {
         var fnStr  = p.filename || '';
         var maxFNW = REC_W - 14;
         while (fnStr.length > 0
-               && Born2bSportyV2Medium.textWidth(fnStr) > maxFNW) {
+               && Born2bSportyV2FlipCTL.textWidth(fnStr) > maxFNW) {
             fnStr = fnStr.slice(0, -1);
         }
         if (fnStr.length < (p.filename || '').length && fnStr.length > 1) {
             fnStr = fnStr.slice(0, -1) + '.';
         }
-        Born2bSportyV2Medium.draw(ctx, fnStr, REC_X + 7, REC_Y + 2, '#000');
+        Born2bSportyV2FlipCTL.draw(ctx, fnStr, REC_X + 7, REC_Y + 2, '#000');
         // (2) Progress bar centred vertically inside the rect.
         var PROG_PAD = 6;
         var PROG_X = REC_X + PROG_PAD;
@@ -904,11 +904,11 @@ var VoiceRecorderFilesScene = (function() {
         // keeps the row from hugging the rectangle's bottom
         // stroke.
         var BOT_Y = REC_Y + REC_H - 16;
-        HaxrcorpFont16.draw(ctx, _fmtPlayerTime(p.positionMs),
+        HaxrCorp4090FlipCTL.draw(ctx, _fmtPlayerTime(p.positionMs),
             REC_X + 6, BOT_Y, '#000');
         var rightText = _fmtPlayerTime(p.durationMs);
-        var rightW    = HaxrcorpFont16.textWidth(rightText);
-        HaxrcorpFont16.draw(ctx, rightText,
+        var rightW    = HaxrCorp4090FlipCTL.textWidth(rightText);
+        HaxrCorp4090FlipCTL.draw(ctx, rightText,
             REC_X + REC_W - 6 - rightW, BOT_Y, '#000');
         // Layout uses the WORST-CASE `< -60s` / `+60s >` widths
         // so the play/pause icon stays centred regardless of
@@ -917,9 +917,9 @@ var VoiceRecorderFilesScene = (function() {
         // the icon off-centre.
         var leftWorst  = '< -60s';
         var rightWorst = '+60s >';
-        var leftWorstW  = HaxrcorpFont16.textWidth(leftWorst);
-        var rightWorstW = HaxrcorpFont16.textWidth(rightWorst);
-        var gtW         = HaxrcorpFont16.textWidth('>');
+        var leftWorstW  = HaxrCorp4090FlipCTL.textWidth(leftWorst);
+        var rightWorstW = HaxrCorp4090FlipCTL.textWidth(rightWorst);
+        var gtW         = HaxrCorp4090FlipCTL.textWidth('>');
         var ICON_W   = 7;
         var GAP      = 7;
         var midW     = leftWorstW + GAP + ICON_W + GAP + rightWorstW;
@@ -930,11 +930,11 @@ var VoiceRecorderFilesScene = (function() {
         // gray `<` at the same anchor — quiet hint that left
         // is available without shouting "-10" all the time.
         if (p.seekFlash && p.seekFlash.dir === '-') {
-            HaxrcorpFont16.draw(ctx,
+            HaxrCorp4090FlipCTL.draw(ctx,
                 '< -' + p.seekFlash.step + 's',
                 midX, BOT_Y, '#000');
         } else {
-            HaxrcorpFont16.draw(ctx, '<', midX, BOT_Y, '#999');
+            HaxrCorp4090FlipCTL.draw(ctx, '<', midX, BOT_Y, '#999');
         }
         var iconX = midX + leftWorstW + GAP;
         if (p.playing) {
@@ -947,11 +947,11 @@ var VoiceRecorderFilesScene = (function() {
         // `+<N>s >` form.
         var rightAnchor = iconX + ICON_W + GAP;
         if (p.seekFlash && p.seekFlash.dir === '+') {
-            HaxrcorpFont16.draw(ctx,
+            HaxrCorp4090FlipCTL.draw(ctx,
                 '+' + p.seekFlash.step + 's >',
                 rightAnchor, BOT_Y, '#000');
         } else {
-            HaxrcorpFont16.draw(ctx, '>',
+            HaxrCorp4090FlipCTL.draw(ctx, '>',
                 rightAnchor + rightWorstW - gtW, BOT_Y, '#999');
         }
 
@@ -1119,8 +1119,8 @@ var VoiceRecorderFilesScene = (function() {
         }).render(canvas);
         // Title centred.
         var titleStr = 'Edit';
-        var tw = Born2bSportyV2Medium.textWidth(titleStr);
-        Born2bSportyV2Medium.draw(ctx, titleStr,
+        var tw = Born2bSportyV2FlipCTL.textWidth(titleStr);
+        Born2bSportyV2FlipCTL.draw(ctx, titleStr,
             X + Math.floor((W - tw) / 2), Y + MODAL_PAD, '#000');
         // Rows.
         //   Row 0 Sort  — laid out as a MenuDropdownLine: label
@@ -1139,7 +1139,7 @@ var VoiceRecorderFilesScene = (function() {
                 // a stock MenuDropdownLine title so its cap line
                 // sits flush with the chip's value text, instead
                 // of riding a row below it.
-                HaxrcorpFont16.draw(ctx, 'Sort',
+                HaxrCorp4090FlipCTL.draw(ctx, 'Sort',
                     X + MODAL_SIDE, rowY + 1, '#000');
                 // Gray chip.
                 new ResponsiveFrame({
@@ -1156,8 +1156,8 @@ var VoiceRecorderFilesScene = (function() {
                 // centred string; they're painted separately
                 // below, anchored to the chip's own edges.
                 var val  = _sortLabel(this._sortMode);
-                var valW = HaxrcorpFont16.textWidth(val);
-                HaxrcorpFont16.draw(ctx, val,
+                var valW = HaxrCorp4090FlipCTL.textWidth(val);
+                HaxrCorp4090FlipCTL.draw(ctx, val,
                     L.chipX + Math.floor((L.CHIP_W - valW) / 2),
                     L.chipY, '#000');
                 // Focused row: `<` flush-left and `>` flush-right
@@ -1166,10 +1166,10 @@ var VoiceRecorderFilesScene = (function() {
                 // arrows. Tells the user left / right cycles.
                 if (m.selectedIndex === i) {
                     var ARROW_PAD = 4;
-                    var gtW = HaxrcorpFont16.textWidth('>');
-                    HaxrcorpFont16.draw(ctx, '<',
+                    var gtW = HaxrCorp4090FlipCTL.textWidth('>');
+                    HaxrCorp4090FlipCTL.draw(ctx, '<',
                         L.chipX + ARROW_PAD, L.chipY, '#000');
-                    HaxrcorpFont16.draw(ctx, '>',
+                    HaxrCorp4090FlipCTL.draw(ctx, '>',
                         L.chipX + L.CHIP_W - gtW - ARROW_PAD,
                         L.chipY, '#000');
                 }
@@ -1177,8 +1177,8 @@ var VoiceRecorderFilesScene = (function() {
                 // Same +1 vertical inset as the Sort label so
                 // all three rows share an optical baseline.
                 var lbl = item.label;
-                var lblW = HaxrcorpFont16.textWidth(lbl);
-                HaxrcorpFont16.draw(ctx, lbl,
+                var lblW = HaxrCorp4090FlipCTL.textWidth(lbl);
+                HaxrCorp4090FlipCTL.draw(ctx, lbl,
                     X + Math.floor((W - lblW) / 2), rowY + 1, '#000');
             }
         }
@@ -1280,7 +1280,7 @@ var VoiceRecorderFilesScene = (function() {
             cornerRadius: 3,
             corners: { tl: true, tr: true, bl: true, br: true }
         }).render(canvas);
-        // Option items — centred HaxrcorpFont16, 1-px gray
+        // Option items — centred HaxrCorp4090FlipCTL, 1-px gray
         // dividers between them. Top stroke at row 0; first
         // item sits at row 1. Same layout the recorder's
         // dropdown overlay uses.
@@ -1288,8 +1288,8 @@ var VoiceRecorderFilesScene = (function() {
         for (var i = 0; i < n; i++) {
             var itemY  = bodyY + 1 + i * (ITEM_H + DIV_H);
             var label  = SORT_OPTIONS[i].label;
-            var labelW = HaxrcorpFont16.textWidth(label);
-            HaxrcorpFont16.draw(ctx, label,
+            var labelW = HaxrCorp4090FlipCTL.textWidth(label);
+            HaxrCorp4090FlipCTL.draw(ctx, label,
                 bodyX + Math.floor((W - labelW) / 2),
                 itemY + 1, '#000');
             if (i === m.selectedIndex) selectedItemY = itemY;
@@ -1673,11 +1673,11 @@ var VoiceRecorderFilesScene = (function() {
         if (this.icon) {
             canvas.drawSprite(this.icon, ICON_X, titleY + 1, '#000');
         }
-        Born2bSportyV2Medium.draw(ctx, this.displayName,
+        Born2bSportyV2FlipCTL.draw(ctx, this.displayName,
             TITLE_TEXT_X, UI.STATUS_BAR_H + TITLE_TEXT_DY, '#000');
 
         // Inline breadcrumb — full filesystem path to the
-        // current folder, HaxrcorpFont16 in gray. No leading
+        // current folder, HaxrCorp4090FlipCTL in gray. No leading
         // "> " marker on this screen; the gray app-title bar
         // above already tells the user they're inside the Voice
         // recorder, so the breadcrumb is purely the path
@@ -1689,22 +1689,22 @@ var VoiceRecorderFilesScene = (function() {
         var crumbPath = this.folderPath || this.folderName;
         var crumbStr  = crumbPath;
         var maxW      = canvas.w - BREADCRUMB_X - 2;
-        if (HaxrcorpFont16.textWidth(crumbStr) > maxW) {
+        if (HaxrCorp4090FlipCTL.textWidth(crumbStr) > maxW) {
             var stripped = crumbPath;
             while (stripped.length > 1
-                   && HaxrcorpFont16.textWidth('…' + stripped) > maxW) {
+                   && HaxrCorp4090FlipCTL.textWidth('…' + stripped) > maxW) {
                 stripped = stripped.slice(1);
             }
             crumbStr = '…' + stripped;
         }
-        HaxrcorpFont16.draw(ctx, crumbStr,
+        HaxrCorp4090FlipCTL.draw(ctx, crumbStr,
             BREADCRUMB_X, BREADCRUMB_Y, '#999999');
 
         // Empty state.
         if (this.items.length === 0) {
             var msg = '(no recordings yet)';
-            var w   = HaxrcorpFont16.textWidth(msg);
-            HaxrcorpFont16.draw(ctx, msg,
+            var w   = HaxrCorp4090FlipCTL.textWidth(msg);
+            HaxrCorp4090FlipCTL.draw(ctx, msg,
                 Math.floor((canvas.w - w) / 2),
                 this.containerY + 18, '#999');
             return;

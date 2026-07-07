@@ -899,8 +899,8 @@ var InternetRadioScene = (function() {
         // ── Title header ─────────────────────────────────────
         // Full-width, 16 px tall, #D9D9D9 fill, anchored
         // immediately below the status bar (no gap). Carries
-        // the app's name in Born2bSportyV2Medium — bigger /
-        // chunkier than the standard HaxrcorpFont16 the rest
+        // the app's name in Born2bSportyV2FlipCTL — bigger /
+        // chunkier than the standard HaxrCorp4090FlipCTL the rest
         // of the system uses, gives the app screen its own
         // "title bar" look.
         var ctx     = canvas.ctx;
@@ -938,9 +938,9 @@ var InternetRadioScene = (function() {
         var TITLE_X = 18;
         var TITLE_TEXT_Y = UI.STATUS_BAR_H + 1;
         var appName = 'Internet radio';
-        Born2bSportyV2Medium.draw(ctx, appName,
+        Born2bSportyV2FlipCTL.draw(ctx, appName,
             TITLE_X, TITLE_TEXT_Y, '#000');
-        // "Playing: <name>" suffix rides in HaxrcorpFont16
+        // "Playing: <name>" suffix rides in HaxrCorp4090FlipCTL
         // (smaller / lighter than the Sporty app-name) so it
         // reads as a secondary annotation rather than part of
         // the app's title proper. Drawn 4 px after the Sporty
@@ -951,8 +951,8 @@ var InternetRadioScene = (function() {
             var suffix = 'Playing: ' + this._playingStation;
             // Right-aligned with 2 px padding from the screen's
             // right edge.
-            var suffixW = HaxrcorpFont16.textWidth(suffix);
-            HaxrcorpFont16.draw(ctx, suffix,
+            var suffixW = HaxrCorp4090FlipCTL.textWidth(suffix);
+            HaxrCorp4090FlipCTL.draw(ctx, suffix,
                 canvas.w - 2 - suffixW,
                 TITLE_TEXT_Y + 2, '#000');
         }
@@ -1110,7 +1110,7 @@ var InternetRadioScene = (function() {
         // (TITLE_X = 6, draw-y = chipY since chipY already
         // equals row.y + TOP_PAD).
         if (rowTitle) {
-            HaxrcorpFont16.draw(ctx, rowTitle, 6, chipY, '#000');
+            HaxrCorp4090FlipCTL.draw(ctx, rowTitle, 6, chipY, '#000');
         }
 
         // Body. Same fill colour as the original chip so the
@@ -1132,7 +1132,7 @@ var InternetRadioScene = (function() {
         body.render(canvas);
 
         // Items + per-row dividers. Items render as black
-        // HaxrcorpFont16 centred horizontally; each item's
+        // HaxrCorp4090FlipCTL centred horizontally; each item's
         // block is ITEM_H tall, with a 1-px divider after it
         // (except the last). Top stroke = row 0; first item
         // sits at row 1.
@@ -1141,10 +1141,10 @@ var InternetRadioScene = (function() {
             var itemY = chipY + 1 + i * (ITEM_H + DIV_H);
             // Centred label.
             var label = String(options[i]);
-            var labelW = HaxrcorpFont16.textWidth(label);
+            var labelW = HaxrCorp4090FlipCTL.textWidth(label);
             // 13-tall row with 11-tall font: cap top sits 1 px
             // from the row top.
-            HaxrcorpFont16.draw(ctx, label,
+            HaxrCorp4090FlipCTL.draw(ctx, label,
                 chipX + Math.floor((W - labelW) / 2),
                 itemY + 1, '#000');
             if (i === this._dropdownIndex) selectedItemY = itemY;
@@ -1224,8 +1224,8 @@ var InternetRadioScene = (function() {
     // visually jitter between transitions.
     //
     // Stack:
-    //   • Title    (Born2bSportyV2Medium, chunky)  — y +  6
-    //   • Body     (HaxrcorpFont16, single line)   — y + 23
+    //   • Title    (Born2bSportyV2FlipCTL, chunky)  — y +  6
+    //   • Body     (HaxrCorp4090FlipCTL, single line)   — y + 23
     //   • Button 1 (Install / Retry, 14 tall)      — y + 36
     //   • Button 2 (Cancel,          14 tall)      — y + 52
     //
@@ -1267,13 +1267,13 @@ var InternetRadioScene = (function() {
         var btn2Y  = Y + 52;
 
         function centerSporty(text, y) {
-            var tw = Born2bSportyV2Medium.textWidth(text);
-            Born2bSportyV2Medium.draw(ctx, text,
+            var tw = Born2bSportyV2FlipCTL.textWidth(text);
+            Born2bSportyV2FlipCTL.draw(ctx, text,
                 X + Math.floor((W - tw) / 2), y, '#000');
         }
         function centerHaxrcorp(text, y, color) {
-            var tw = HaxrcorpFont16.textWidth(text);
-            HaxrcorpFont16.draw(ctx, text,
+            var tw = HaxrCorp4090FlipCTL.textWidth(text);
+            HaxrCorp4090FlipCTL.draw(ctx, text,
                 X + Math.floor((W - tw) / 2), y, color || '#000');
         }
 
@@ -1329,12 +1329,12 @@ var InternetRadioScene = (function() {
     // visual idiom carries over from the page chrome to the modal.
     InternetRadioScene.prototype._drawStackedButton = function(canvas, x, y, w, h, label, selected) {
         var ctx = canvas.ctx;
-        var lw  = HaxrcorpFont16.textWidth(label);
-        // HaxrcorpFont16's cap top sits 1 px below its anchor y;
+        var lw  = HaxrCorp4090FlipCTL.textWidth(label);
+        // HaxrCorp4090FlipCTL's cap top sits 1 px below its anchor y;
         // centring the 11-px tall glyph cell inside an h-tall
         // button means y + (h - 11) / 2.
         var labelY = y + Math.floor((h - 11) / 2);
-        HaxrcorpFont16.draw(ctx, label,
+        HaxrCorp4090FlipCTL.draw(ctx, label,
             x + Math.floor((w - lw) / 2), labelY, '#000');
         if (selected) {
             // Lazy single-shared selector — re-positioned per
@@ -1442,13 +1442,13 @@ var InternetRadioScene = (function() {
         var btnY   = Y + 38;
 
         function centerSporty(text, y) {
-            var tw = Born2bSportyV2Medium.textWidth(text);
-            Born2bSportyV2Medium.draw(ctx, text,
+            var tw = Born2bSportyV2FlipCTL.textWidth(text);
+            Born2bSportyV2FlipCTL.draw(ctx, text,
                 X + Math.floor((W - tw) / 2), y, '#000');
         }
         function centerHaxrcorp(text, y, color) {
-            var tw = HaxrcorpFont16.textWidth(text);
-            HaxrcorpFont16.draw(ctx, text,
+            var tw = HaxrCorp4090FlipCTL.textWidth(text);
+            HaxrCorp4090FlipCTL.draw(ctx, text,
                 X + Math.floor((W - tw) / 2), y, color || '#000');
         }
 

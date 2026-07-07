@@ -72,7 +72,7 @@ var UIDemoScene = (function() {
         // Draw text (offset if icon is present)
         var textX = this.icon ? x + PAD_X + 14 + 4 : x + PAD_X;  // 14px icon + 4px gap
         var textY = y + verticalPadding;
-        HaxrcorpFont16.draw(canvas.ctx, this.text, textX, textY, textColor);
+        HaxrCorp4090FlipCTL.draw(canvas.ctx, this.text, textX, textY, textColor);
     };
 
     // ---
@@ -596,9 +596,9 @@ var UIDemoScene = (function() {
 
         // Draw header (centered)
         var headerText = 'FlipperOS Boot profiles | U-BOOT';
-        var headerWidth = HaxrcorpFont16.textWidth(headerText);
+        var headerWidth = HaxrCorp4090FlipCTL.textWidth(headerText);
         var headerX = Math.floor((canvas.w - headerWidth) / 2);
-        HaxrcorpFont16.draw(canvas.ctx, headerText, headerX, 5, '#000');
+        HaxrCorp4090FlipCTL.draw(canvas.ctx, headerText, headerX, 5, '#000');
 
         var startX = Math.floor((canvas.w - this.items[0].w) / 2);
         var startY = 20;  // Leave space for header (moved up to fit all 5 items)
@@ -676,15 +676,15 @@ var UIDemoScene = (function() {
 
                     // Draw input text and cursor inside the field (10px padding left + 3px padding)
                     if (this.cursor) this.cursor.update();
-                    HaxrcorpFont16.draw(canvas.ctx, this.inputText, 25, 27, '#000');
+                    HaxrCorp4090FlipCTL.draw(canvas.ctx, this.inputText, 25, 27, '#000');
                     if (this.cursor && this.cursor.isVisible()) {
-                        var cursorX = 25 + HaxrcorpFont16.textWidth(this.inputText) + 1;
+                        var cursorX = 25 + HaxrCorp4090FlipCTL.textWidth(this.inputText) + 1;
                         canvas.drawCursor(cursorX, 28, 1, 10, '#000');
                     }
 
                     // Draw error message if exists
                     if (this._inputError) {
-                        HaxrcorpFont16.draw(canvas.ctx, this._inputError, 25, 42, '#000');
+                        HaxrCorp4090FlipCTL.draw(canvas.ctx, this._inputError, 25, 42, '#000');
                     }
                 }
             }

@@ -724,7 +724,7 @@ var WalkieTalkieScene = (function() {
         // captured before the rotation transform applies, so it
         // stays axis-aligned with the chip's actual bounds.
         var valStr  = String(Math.round(this._volume || 0));
-        var valW    = HaxrcorpFont16.textWidth(valStr);
+        var valW    = HaxrCorp4090FlipCTL.textWidth(valStr);
         var valHCap = 9;                 // visible glyph height
         // All four anchor values are floored to integers so the
         // glyph pixels land on whole-pixel screen positions after
@@ -753,7 +753,7 @@ var WalkieTalkieScene = (function() {
             ctx2.clip();
             ctx2.translate(cx, cy);
             ctx2.rotate(-Math.PI / 2);
-            HaxrcorpFont16.draw(ctx2, valStr, -halfW, -halfH, '#FFFFFF');
+            HaxrCorp4090FlipCTL.draw(ctx2, valStr, -halfW, -halfH, '#FFFFFF');
             ctx2.restore();
         }
         // Black text clipped to the gray remainder.
@@ -764,7 +764,7 @@ var WalkieTalkieScene = (function() {
             ctx2.clip();
             ctx2.translate(cx, cy);
             ctx2.rotate(-Math.PI / 2);
-            HaxrcorpFont16.draw(ctx2, valStr, -halfW, -halfH, '#000000');
+            HaxrCorp4090FlipCTL.draw(ctx2, valStr, -halfW, -halfH, '#000000');
             ctx2.restore();
         }
         // Horizontal sliver + sampler tape for every channel.

@@ -1,36 +1,35 @@
 /**
- * DesktopComputerScene
+ * SatelliteSOSScene
  *
- * Placeholder app for the Desktop (graphical) target. Surfaced as the
- * main-menu's first item when that target is active. Empty for now —
- * just the standard app chrome (status bar + gray title strip with the
- * desktop_computer icon and the app name). Back / Esc pops.
+ * Satellite SOS app. Empty for now — just the standard app chrome
+ * (status bar + gray title strip with the satllite icon and the app
+ * name). Back / Esc pops.
  */
-var DesktopComputerScene = (function() {
+var SatelliteSOSScene = (function() {
     var TITLE_H = 16;
 
-    function DesktopComputerScene(sceneManager) {
+    function SatelliteSOSScene(sceneManager) {
         this.sceneManager = sceneManager || null;
-        this.displayName  = 'Desktop Computer';
+        this.displayName  = 'Satellite SOS';
         this.imagePath    = null;
-        this.icon = (typeof Icons !== 'undefined') ? Icons.desktop_computer : null;
+        this.icon = (typeof Icons !== 'undefined') ? Icons.satllite : null;
     }
 
-    DesktopComputerScene.prototype.enter = function() {
+    SatelliteSOSScene.prototype.enter = function() {
         if (typeof RunningApps !== 'undefined') {
             RunningApps.open(this.displayName, this.imagePath, this.icon,
-                function(sm) { return new DesktopComputerScene(sm); });
+                function(sm) { return new SatelliteSOSScene(sm); });
         }
         if (window.requestRender) window.requestRender();
     };
 
-    DesktopComputerScene.prototype.exit = function() {};
+    SatelliteSOSScene.prototype.exit = function() {};
 
-    DesktopComputerScene.prototype.handleInput = function(action) {
+    SatelliteSOSScene.prototype.handleInput = function(action) {
         if (action === 'back' || action === 'esc') return 'pop';
     };
 
-    DesktopComputerScene.prototype.render = function(canvas) {
+    SatelliteSOSScene.prototype.render = function(canvas) {
         canvas.clear('#fff');
         var ctx = canvas.ctx;
         if (typeof UI !== 'undefined' && UI.drawStatusBar) {
@@ -52,5 +51,5 @@ var DesktopComputerScene = (function() {
             Math.floor((canvas.h - 11) / 2), '#666');
     };
 
-    return DesktopComputerScene;
+    return SatelliteSOSScene;
 })();

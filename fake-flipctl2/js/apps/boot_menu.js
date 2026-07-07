@@ -4,7 +4,7 @@
  * Main-menu "Boot Menu" entry. Same content as the Boot menu UI
  * demo (the U-BOOT header + the five boot profiles, with their
  * icons), but rendered in the project's standard menu style —
- * MenuLine rows (Born2bSportyV2Medium when selected, BusyFont9
+ * MenuLine rows (Born2bSportyV2FlipCTL when selected, Busy9pxFlipCTL
  * otherwise) under a MenuSelectorFrame, like the Network / Apps /
  * Testing submenus. No app-defined buttons.
  *
@@ -447,8 +447,8 @@ var BootMenuScene = (function() {
 
         // U-BOOT header (centred), kept from the demo.
         var headerText  = 'FlipperOS Boot profiles | U-BOOT';
-        var headerWidth = HaxrcorpFont16.textWidth(headerText);
-        HaxrcorpFont16.draw(canvas.ctx, headerText,
+        var headerWidth = HaxrCorp4090FlipCTL.textWidth(headerText);
+        HaxrCorp4090FlipCTL.draw(canvas.ctx, headerText,
             Math.floor((canvas.w - headerWidth) / 2), HEADER_Y, '#000');
 
         // Selector width tracks scrollbar visibility; divider
@@ -530,7 +530,7 @@ var BootMenuScene = (function() {
         var spFrameH = Math.floor(sp.h / sp.frames);
 
         var PAD = 12, GAP = 8, TEXT_H = 9;
-        var tw   = HaxrcorpFont16.textWidth(label);
+        var tw   = HaxrCorp4090FlipCTL.textWidth(label);
         var boxW = Math.max(tw, sp.w) + PAD * 2;
         var boxH = PAD + TEXT_H + GAP + spFrameH + PAD;
         var boxX = Math.floor((canvas.w - boxW) / 2);
@@ -549,7 +549,7 @@ var BootMenuScene = (function() {
         }).render(canvas);
 
         // Label (centred).
-        HaxrcorpFont16.draw(ctx, label,
+        HaxrCorp4090FlipCTL.draw(ctx, label,
             boxX + Math.floor((boxW - tw) / 2), boxY + PAD, '#000');
 
         // Spinner (centred) below the label, frame off wall-clock.
@@ -560,14 +560,14 @@ var BootMenuScene = (function() {
     };
 
     // Centred modal launched by Edit — same styling as the Power-
-    // menu demo's modal: HaxrcorpFont16 rows, 7 px bottom / 6 px
+    // menu demo's modal: HaxrCorp4090FlipCTL rows, 7 px bottom / 6 px
     // top gap, 9 px between lines, and a fixed-width selector
     // (3 px in from each side, 14 px tall, centred on the text).
     var MODAL_SEL_H   = 14;
     var MODAL_GAP     = 9;
     var MODAL_TOP_GAP = 6;
     var MODAL_BOT_GAP = 7;
-    var MODAL_VIS_TOP = 1;   // HaxrcorpFont16 visible glyph starts 1 px below draw-y
+    var MODAL_VIS_TOP = 1;   // HaxrCorp4090FlipCTL visible glyph starts 1 px below draw-y
     var MODAL_VIS_H   = 9;   // ~9 px tall
 
     BootMenuScene.prototype._renderEditModal = function(canvas) {
@@ -580,7 +580,7 @@ var BootMenuScene = (function() {
         var label = isDef ? 'Selected as default' : 'Select as default';
         var color = isDef ? '#AAAAAA' : '#000';
 
-        var maxW   = HaxrcorpFont16.textWidth(label);
+        var maxW   = HaxrCorp4090FlipCTL.textWidth(label);
         var modalW = maxW + 21;   // 10 px left / 11 px right of the text
         var modalH = MODAL_TOP_GAP + MODAL_BOT_GAP + MODAL_VIS_H;
         var modalX = Math.floor((canvas.w - modalW) / 2);
@@ -599,7 +599,7 @@ var BootMenuScene = (function() {
         }).render(canvas);
 
         var drawY = modalY + MODAL_TOP_GAP - MODAL_VIS_TOP;
-        var tw = HaxrcorpFont16.textWidth(label);
+        var tw = HaxrCorp4090FlipCTL.textWidth(label);
         var tx = modalX + Math.floor((modalW - tw) / 2);
         // Selector only when the option is actionable.
         if (!isDef) {
@@ -609,7 +609,7 @@ var BootMenuScene = (function() {
             this._editSelectorFrame.setSize(modalW - 7, MODAL_SEL_H);
             this._editSelectorFrame.render(canvas);
         }
-        HaxrcorpFont16.draw(ctx, label, tx, drawY, color);
+        HaxrCorp4090FlipCTL.draw(ctx, label, tx, drawY, color);
     };
 
     return BootMenuScene;

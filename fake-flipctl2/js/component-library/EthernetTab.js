@@ -3,9 +3,9 @@
  *
  * Layout (relative to the tab's top-left):
  *   - Icon (`Icons.ethernet`, 14×14) at (8, 3).
- *   - Port number "0" / "1" in Born2bSportyV2Medium, 4px after the icon.
- *   - When connected: "IPv4: <ip>" in HaxrcorpFont16 after the port
- *     number; right-aligned status "Connected" in HaxrcorpFont16, 8px
+ *   - Port number "0" / "1" in Born2bSportyV2FlipCTL, 4px after the icon.
+ *   - When connected: "IPv4: <ip>" in HaxrCorp4090FlipCTL after the port
+ *     number; right-aligned status "Connected" in HaxrCorp4090FlipCTL, 8px
  *     from the right.
  *   - When disconnected: only the icon, port number, and a right-aligned
  *     "Disconnected" status. The whole tab renders greyed out (#888).
@@ -30,9 +30,9 @@ var EthernetTab = (function() {
     var TEXT_GAP        = 4;
     var STATUS_PAD_R    = 10;
     // Vertical draw offsets inside the tab. Name (Born2bSporty) sits
-    // 3px higher than the HaxrcorpFont16 IP / status text.
+    // 3px higher than the HaxrCorp4090FlipCTL IP / status text.
     var NAME_DRAW_Y     = 3;   // Born2bSporty "ETHn"
-    var INFO_DRAW_Y     = 4;   // HaxrcorpFont16 role + speed/disconnected
+    var INFO_DRAW_Y     = 4;   // HaxrCorp4090FlipCTL role + speed/disconnected
     var DIM_COLOR       = '#888888';
 
     // Expansion: the top row keeps its collapsed layout; additional
@@ -193,8 +193,8 @@ var EthernetTab = (function() {
         var nameX = iconX + Icons.ethernet.w + TEXT_GAP;
         var nameY = this.y + NAME_DRAW_Y;
         var nameStr = this.displayName || ('ETH' + this.portNumber);
-        Born2bSportyV2Medium.draw(canvas.ctx, nameStr, nameX, nameY, fg);
-        var nameW = Born2bSportyV2Medium.textWidth(nameStr);
+        Born2bSportyV2FlipCTL.draw(canvas.ctx, nameStr, nameX, nameY, fg);
+        var nameW = Born2bSportyV2FlipCTL.textWidth(nameStr);
 
         // Top-row layout:
         //   [icon] [ETHn]    [IPv4]            [speed  ↓ RX  ↑ TX]
@@ -208,7 +208,7 @@ var EthernetTab = (function() {
         if (this.connected && this.ipv4) {
             var ipX = nameX + nameW + TEXT_GAP + 4;
             var ipY = infoY + 2;
-            HaxrcorpFont16.draw(canvas.ctx, this.ipv4, ipX, ipY, fg);
+            HaxrCorp4090FlipCTL.draw(canvas.ctx, this.ipv4, ipX, ipY, fg);
         }
 
         // Measure the top-right cluster first (right-to-left) so the
@@ -221,20 +221,20 @@ var EthernetTab = (function() {
         var arrowUpW   = Icons.arrow_up   ? Icons.arrow_up.w   : 0;
         if (this.connected) {
             if (this.speed) {
-                measureR -= HaxrcorpFont16.textWidth(this.speed);
+                measureR -= HaxrCorp4090FlipCTL.textWidth(this.speed);
                 measureR -= BOTTOM_INFO_COL_GAP;
             }
             if (this.txLabel && Icons.arrow_up) {
-                measureR -= HaxrcorpFont16.textWidth(this.txLabel);
+                measureR -= HaxrCorp4090FlipCTL.textWidth(this.txLabel);
                 measureR -= BOTTOM_INFO_GAP + arrowUpW;
                 measureR -= BOTTOM_INFO_COL_GAP;
             }
             if (this.rxLabel && Icons.arrow_down) {
-                measureR -= HaxrcorpFont16.textWidth(this.rxLabel);
+                measureR -= HaxrCorp4090FlipCTL.textWidth(this.rxLabel);
                 measureR -= BOTTOM_INFO_GAP + arrowDownW;
             }
         } else {
-            measureR -= HaxrcorpFont16.textWidth('Disconnected');
+            measureR -= HaxrCorp4090FlipCTL.textWidth('Disconnected');
         }
         var topRightLeftEdge = measureR;
 
@@ -277,35 +277,35 @@ var EthernetTab = (function() {
         // is pure white, keeping them readable on the gray pill.
         var drawR = rightEdge;
         // Align each icon's bottom with the text's visible bottom
-        // (infoY + 8 for HaxrcorpFont16). Icons are 7 tall → top row
+        // (infoY + 8 for HaxrCorp4090FlipCTL). Icons are 7 tall → top row
         // at infoY + 2.
         var arrowTop = infoY + 2;
         if (this.connected) {
             if (this.speed) {
-                var spdW = HaxrcorpFont16.textWidth(this.speed);
+                var spdW = HaxrCorp4090FlipCTL.textWidth(this.speed);
                 drawR -= spdW;
-                HaxrcorpFont16.draw(canvas.ctx, this.speed, drawR, infoY, fg);
+                HaxrCorp4090FlipCTL.draw(canvas.ctx, this.speed, drawR, infoY, fg);
                 drawR -= BOTTOM_INFO_COL_GAP;
             }
             if (this.txLabel && Icons.arrow_up) {
-                var txW = HaxrcorpFont16.textWidth(this.txLabel);
+                var txW = HaxrCorp4090FlipCTL.textWidth(this.txLabel);
                 drawR -= txW;
-                HaxrcorpFont16.draw(canvas.ctx, this.txLabel, drawR, infoY, fg);
+                HaxrCorp4090FlipCTL.draw(canvas.ctx, this.txLabel, drawR, infoY, fg);
                 drawR -= BOTTOM_INFO_GAP + arrowUpW;
                 drawSolidSprite(canvas, Icons.arrow_up, drawR, arrowTop, arrowWhite);
                 drawR -= BOTTOM_INFO_COL_GAP;
             }
             if (this.rxLabel && Icons.arrow_down) {
-                var rxW = HaxrcorpFont16.textWidth(this.rxLabel);
+                var rxW = HaxrCorp4090FlipCTL.textWidth(this.rxLabel);
                 drawR -= rxW;
-                HaxrcorpFont16.draw(canvas.ctx, this.rxLabel, drawR, infoY, fg);
+                HaxrCorp4090FlipCTL.draw(canvas.ctx, this.rxLabel, drawR, infoY, fg);
                 drawR -= BOTTOM_INFO_GAP + arrowDownW;
                 drawSolidSprite(canvas, Icons.arrow_down, drawR, arrowTop, arrowWhite);
             }
         } else {
             var discStr = 'Disconnected';
-            var discW   = HaxrcorpFont16.textWidth(discStr);
-            HaxrcorpFont16.draw(canvas.ctx, discStr, rightEdge - discW, infoY, fg);
+            var discW   = HaxrCorp4090FlipCTL.textWidth(discStr);
+            HaxrCorp4090FlipCTL.draw(canvas.ctx, discStr, rightEdge - discW, infoY, fg);
         }
 
         // Bottom row (connected only, on the tall 40px frame):
@@ -317,21 +317,21 @@ var EthernetTab = (function() {
             // IPv6 on the left — 2px further right than the rest of
             // the BOTTOM_INFO_PAD_L inset.
             if (this.ipv6) {
-                HaxrcorpFont16.draw(canvas.ctx, this.ipv6, this.x + BOTTOM_INFO_PAD_L + 2, rowY, fg);
+                HaxrCorp4090FlipCTL.draw(canvas.ctx, this.ipv6, this.x + BOTTOM_INFO_PAD_L + 2, rowY, fg);
             }
 
             // portRole + DHCP label, right-aligned.
             var brCursor = this.x + this.w - STATUS_PAD_R;
             if (this.dhcpLabel) {
-                var dhcpW = HaxrcorpFont16.textWidth(this.dhcpLabel);
+                var dhcpW = HaxrCorp4090FlipCTL.textWidth(this.dhcpLabel);
                 brCursor -= dhcpW;
-                HaxrcorpFont16.draw(canvas.ctx, this.dhcpLabel, brCursor, rowY, fg);
+                HaxrCorp4090FlipCTL.draw(canvas.ctx, this.dhcpLabel, brCursor, rowY, fg);
                 brCursor -= STATUS_ROLE_GAP;
             }
             if (this.portRole) {
-                var roleW2 = HaxrcorpFont16.textWidth(this.portRole);
+                var roleW2 = HaxrCorp4090FlipCTL.textWidth(this.portRole);
                 brCursor -= roleW2;
-                HaxrcorpFont16.draw(canvas.ctx, this.portRole, brCursor, rowY, fg);
+                HaxrCorp4090FlipCTL.draw(canvas.ctx, this.portRole, brCursor, rowY, fg);
             }
         }
 
@@ -340,7 +340,7 @@ var EthernetTab = (function() {
             var extras = this._extraLines();
             var extraY = this.y + this.h + EXTRA_PAD_T;
             for (var i = 0; i < extras.length; i++) {
-                HaxrcorpFont16.draw(canvas.ctx, extras[i], this.x + EXTRA_PAD_L, extraY + i * EXTRA_LINE_H, fg);
+                HaxrCorp4090FlipCTL.draw(canvas.ctx, extras[i], this.x + EXTRA_PAD_L, extraY + i * EXTRA_LINE_H, fg);
             }
         }
     };

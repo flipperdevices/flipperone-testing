@@ -54,7 +54,7 @@ var MessageBox = (function() {
      * Called after text changes or when canvas dimensions change
      */
     MessageBox.prototype._update = function() {
-        var maxContentWidth = HaxrcorpFont16.textWidth('A'.repeat(this.maxLineLength));
+        var maxContentWidth = HaxrCorp4090FlipCTL.textWidth('A'.repeat(this.maxLineLength));
 
         // Wrap text into lines
         this.lines = this._wrapText(this.text, maxContentWidth);
@@ -62,7 +62,7 @@ var MessageBox = (function() {
         // Calculate box dimensions
         var contentWidth = 0;
         for (var i = 0; i < this.lines.length; i++) {
-            var lineWidth = HaxrcorpFont16.textWidth(this.lines[i]);
+            var lineWidth = HaxrCorp4090FlipCTL.textWidth(this.lines[i]);
             if (lineWidth > contentWidth) contentWidth = lineWidth;
         }
 
@@ -217,7 +217,7 @@ var MessageBox = (function() {
         var textX = this.boxX + this.padding;
         var textY = this.boxY + this.padding;
         for (var i = 0; i < this.lines.length; i++) {
-            HaxrcorpFont16.draw(ctx, this.lines[i], textX, textY + i * 12, '#000');
+            HaxrCorp4090FlipCTL.draw(ctx, this.lines[i], textX, textY + i * 12, '#000');
         }
     };
 
@@ -239,7 +239,7 @@ var MessageBox = (function() {
             for (var i = 0; i < words.length; i++) {
                 var word = words[i];
                 var testLine = currentLine + (currentLine ? ' ' : '') + word;
-                var width = HaxrcorpFont16.textWidth(testLine);
+                var width = HaxrCorp4090FlipCTL.textWidth(testLine);
 
                 if (width <= maxWidth) {
                     currentLine = testLine;

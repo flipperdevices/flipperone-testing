@@ -90,7 +90,7 @@ var MenuScene = (function() {
                 });
                 frame.render(canvas);
 
-                // Message (HaxrcorpFont16, centred).
+                // Message (HaxrCorp4090FlipCTL, centred).
                 var lines = [
                     'To use 5G Modem you need',
                     'to turn off Airplane mode'
@@ -99,9 +99,9 @@ var MenuScene = (function() {
                 var totalH = lines.length * lineH;
                 var startY = FRAME_Y + Math.floor((FRAME_H - totalH) / 2);
                 for (var i = 0; i < lines.length; i++) {
-                    var w = HaxrcorpFont16.textWidth(lines[i]);
+                    var w = HaxrCorp4090FlipCTL.textWidth(lines[i]);
                     var x = Math.floor((canvas.w - w) / 2);
-                    HaxrcorpFont16.draw(canvas.ctx, lines[i], x, startY + i * lineH, '#000');
+                    HaxrCorp4090FlipCTL.draw(canvas.ctx, lines[i], x, startY + i * lineH, '#000');
                 }
 
                 // Buttons.
@@ -432,7 +432,11 @@ var MenuScene = (function() {
                 text: this.menuNames[i],
                 width: CONTAINER_W,
                 icon: iconMap[this.menuNames[i]] || null,
-                iconAnimated: animatedIconMap[this.menuNames[i]] || null
+                iconAnimated: animatedIconMap[this.menuNames[i]] || null,
+                // New Born2bSportyV2FlipCTL conversion sits 2 px lower
+                // than the old Medium — lift the selected label back up
+                // (stock nudge +1 → -1).
+                activeLabelYNudge: -1
             }));
         }
 

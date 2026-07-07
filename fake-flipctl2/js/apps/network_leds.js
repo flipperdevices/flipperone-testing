@@ -7,9 +7,9 @@
  *
  *   [LED NAME]  R:NNN  G:NNN  B:NNN  ON
  *
- * The LED name on the left is rendered in `Born2bSportyV2Medium`
+ * The LED name on the left is rendered in `Born2bSportyV2FlipCTL`
  * (chunky bitmap font); the value fields use the standard
- * `HaxrcorpFont16`. Five selectable fields total, in this order:
+ * `HaxrCorp4090FlipCTL`. Five selectable fields total, in this order:
  *   0: LED name     (up/down cycles WIFI → ETH 0 → ETH 1 → LINK)
  *   1: R value      (up/down adjusts 0–255)
  *   2: G value      (up/down adjusts 0–255)
@@ -69,7 +69,7 @@ var NetworkLedsScene = (function() {
     // LED registry. Order matters — drives the "next LED" cycle.
     // `key` matches the server's /api/led/set vocabulary.
     // `nameDy` is a per-name vertical-render offset reserved
-    // for glyph-alignment tweaks in Born2bSportyV2Medium. All
+    // for glyph-alignment tweaks in Born2bSportyV2FlipCTL. All
     // four LEDs currently share the same baseline (=0) so the
     // row's y position stays identical regardless of which LED
     // is selected. Bump a value here if a future label glyph
@@ -294,19 +294,19 @@ var NetworkLedsScene = (function() {
         //   3. RGB triplet    (idx 2-4: R, G, B)
         var fields = [
             { font: 'born2b', text: name,
-              w: Born2bSportyV2Medium.textWidth(name),
+              w: Born2bSportyV2FlipCTL.textWidth(name),
               dy: led.nameDy || 0 },
             { font: 'haxr',   text: onTxt,
-              w: HaxrcorpFont16.textWidth(onTxt),
+              w: HaxrCorp4090FlipCTL.textWidth(onTxt),
               groupBreakBefore: true },
             { font: 'haxr',   text: rTxt,
-              w: HaxrcorpFont16.textWidth(rTxt),
+              w: HaxrCorp4090FlipCTL.textWidth(rTxt),
               groupBreakBefore: true },
             { font: 'haxr',   text: gTxt,
-              w: HaxrcorpFont16.textWidth(gTxt),
+              w: HaxrCorp4090FlipCTL.textWidth(gTxt),
               groupBreakBefore: true },
             { font: 'haxr',   text: bTxt,
-              w: HaxrcorpFont16.textWidth(bTxt),
+              w: HaxrCorp4090FlipCTL.textWidth(bTxt),
               groupBreakBefore: true }
         ];
 
@@ -414,10 +414,10 @@ var NetworkLedsScene = (function() {
             var f  = fields[fj];
             var fg = (fj === this._fieldIdx) ? '#fff' : '#000';
             if (f.font === 'born2b') {
-                Born2bSportyV2Medium.draw(ctx, f.text,
+                Born2bSportyV2FlipCTL.draw(ctx, f.text,
                     f.x, FRAME_Y + 1 + (f.dy || 0), fg);
             } else {
-                HaxrcorpFont16.draw(ctx, f.text, f.x, textY, fg);
+                HaxrCorp4090FlipCTL.draw(ctx, f.text, f.x, textY, fg);
             }
         }
 

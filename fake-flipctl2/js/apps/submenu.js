@@ -376,7 +376,7 @@ var SubMenuScene = (function() {
                 : [this.title]);
         if (!crumbTitles || !crumbTitles.length) crumbTitles = [this.title];
         var crumbTrail = '> ' + crumbTitles.join(' > ');
-        HaxrcorpFont16.draw(canvas.ctx, crumbTrail, this.breadcrumbX, this.breadcrumbY, '#CCCCCC');
+        HaxrCorp4090FlipCTL.draw(canvas.ctx, crumbTrail, this.breadcrumbX, this.breadcrumbY, '#CCCCCC');
 
         // Selector width tracks scrollbar visibility; the gray divider
         // matches the selector's straight edge (width − 2×radius).

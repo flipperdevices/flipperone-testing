@@ -1882,7 +1882,34 @@ var Icons = (function() {
         ]
     };
 
+    // satllite icon (auto-generated from PNG)
+    var satllite = {
+        w: 14,
+        h: 14,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xf0,            0x3f,            0xff,            0xf0,  // row 0
+            0x00,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xfc,            0x09,            0xc0,            0xff,  // row 1
+            0xf0,            0x00,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0x02,            0x7d,            0xa7,  // row 2
+            0x03,            0xf0,            0x00,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0x03,            0x69,  // row 3
+            0xf6,            0x9c,            0x00,            0x00,            0xff,            0xff,            0xff,            0xfc,            0x00,            0x3f,            0x02,  // row 4
+            0x7d,            0xa7,            0x03,            0xf0,            0x00,            0xff,            0xff,            0xff,            0x00,            0x00,            0x1e,  // row 5
+            0xfc,            0x00,            0x00,            0xff,            0xf0,            0x00,            0xff,            0xff,            0xff,            0x00,            0x07,  // row 6
+            0x80,            0x7b,            0xff,            0xff,            0xff,            0xf0,            0x00,            0xff,            0xff,            0xff,            0xfd,  // row 7
+            0xe0,            0x1e,            0x00,            0x0f,            0xff,            0xff,            0xf0,            0x00,            0xff,            0xf0,            0x00,  // row 8
+            0x03,            0xf7,            0x80,            0x00,            0x0f,            0xff,            0xff,            0xf0,            0x00,            0xfc,            0x09,  // row 9
+            0xf6,            0x9c,            0x0f,            0xc0,            0x00,            0x0f,            0xc0,            0x00,            0x00,            0x00,            0x02,  // row 10
+            0x7d,            0xa7,            0xd8,            0x0f,            0xff,            0xff,            0xf0,            0x3f,            0xff,            0xf0,            0x00,  // row 11
+            0xfc,            0x09,            0xf6,            0x9c,            0x0f,            0xff,            0xfc,            0x0f,            0xc0,            0xff,            0xf0,  // row 12
+            0x00,            0xff,            0xf0,            0x27,            0x03,            0xff,            0xff,            0xfc,            0x0f,            0xff,            0xff,  // row 13
+            0xf0,            0x00,            0xff,            0xff,            0xc0,            0xff,            0xff,            0xff,            0xfc,            0x0f,            0xff,  // row 14
+            0xff,            0xf0,            0x00 
+        ]
+    };
+
     return {
+        satllite: satllite,
         desktop_computer: desktop_computer,
         desktop_small_icon: desktop_small_icon,
         ptt_small_icon: ptt_small_icon,

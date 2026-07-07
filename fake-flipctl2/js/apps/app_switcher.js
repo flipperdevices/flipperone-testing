@@ -175,7 +175,7 @@ var AppSwitcherScene = (function() {
     // -1, +1, -2 render as tabs (white card via the TAB_CONFIG
     // path) rather than via this colored bar map.
     var TITLE_BAR_FG = '#FFF';
-    // Title-bar typeface — Born2bSportyV2Medium for that chunky,
+    // Title-bar typeface — Born2bSportyV2FlipCTL for that chunky,
     // OS-chrome look. Mathematical centering gives 0 for a 14-px
     // bar and 1 for a 16-px bar, but the design calls for the text
     // riding 2 px higher than that, so we subtract 2:
@@ -186,7 +186,7 @@ var AppSwitcherScene = (function() {
     }
 
     // Per-position config for slots that render in the "tab" style
-    // (white body, gray 3-sided stroke, HaxrcorpFont16 gray label
+    // (white body, gray 3-sided stroke, HaxrCorp4090FlipCTL gray label
     // left-aligned). The `openEdge` is the side that abuts the
     // focused stack and therefore omits its stroke. `labelDx /
     // labelDy` are pixel nudges applied to the label position.
@@ -410,7 +410,7 @@ var AppSwitcherScene = (function() {
             // the label sits 3 px after it; when there isn't, 3 px
             // in from the frame's left edge — no centered fallback.
             var tx = (labelStartX !== null) ? labelStartX : (s.x + 3);
-            Born2bSportyV2Medium.draw(canvas.ctx, name, tx, ty, TITLE_BAR_FG);
+            Born2bSportyV2FlipCTL.draw(canvas.ctx, name, tx, ty, TITLE_BAR_FG);
         }
     }
 
@@ -730,7 +730,7 @@ var AppSwitcherScene = (function() {
                 var dragTabColor = dragTabCfg.color || '#666666';
                 if (card.name) {
                     var dragLabelDy = dragTabCfg.labelDy + (isWrapHint ? 1 : 0);
-                    HaxrcorpFont16.draw(canvas.ctx, card.name,
+                    HaxrCorp4090FlipCTL.draw(canvas.ctx, card.name,
                         state.x + 3 + dragTabCfg.labelDx,
                         state.y + dragLabelDy,
                         dragTabColor);
@@ -793,7 +793,7 @@ var AppSwitcherScene = (function() {
             ctx.restore();
         }
 
-        // Tab style: white card with HaxrcorpFont16 gray label and a
+        // Tab style: white card with HaxrCorp4090FlipCTL gray label and a
         // 3-sided gray stroke. tabCfg from integer position /
         // animFrom (we know we're not in drag mode here).
         var tabCfg = TAB_CONFIG[card.position]
@@ -804,7 +804,7 @@ var AppSwitcherScene = (function() {
             ctx.globalAlpha = ctx.globalAlpha * tabAlpha;
             if (card.name) {
                 var labelDy = tabCfg.labelDy + (isWrapHint ? 1 : 0);
-                HaxrcorpFont16.draw(canvas.ctx, card.name,
+                HaxrCorp4090FlipCTL.draw(canvas.ctx, card.name,
                     state.x + 3 + tabCfg.labelDx,
                     state.y + labelDy,
                     tabColor);
@@ -1903,8 +1903,8 @@ var AppSwitcherScene = (function() {
         // the screen doesn't look broken. Animation is skipped here.
         if (this.cards.length === 0) {
             var msg = 'No running apps';
-            var w = HaxrcorpFont16.textWidth(msg);
-            HaxrcorpFont16.draw(canvas.ctx, msg,
+            var w = HaxrCorp4090FlipCTL.textWidth(msg);
+            HaxrCorp4090FlipCTL.draw(canvas.ctx, msg,
                 Math.floor((canvas.w - w) / 2),
                 Math.floor((canvas.h - 7) / 2),
                 '#6E6E6E');

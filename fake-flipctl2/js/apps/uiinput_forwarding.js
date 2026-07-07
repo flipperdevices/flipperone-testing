@@ -109,7 +109,7 @@ var UIInputForwardingScene = (function() {
     // App-title chrome, same as Internet Radio / Voice Recorder:
     // a plain status bar (battery / wifi / etc.) with a full-width
     // 16-px gray title strip flush beneath it carrying the app
-    // name in Born2bSportyV2Medium.
+    // name in Born2bSportyV2FlipCTL.
     var TITLE_H       = 16;
     var TITLE_FILL    = '#D9D9D9';
     var TITLE_TEXT_X  = 4;    // no icon → text flush-left
@@ -128,17 +128,17 @@ var UIInputForwardingScene = (function() {
         var titleY = UI.STATUS_BAR_H;
         ctx.fillStyle = TITLE_FILL;
         ctx.fillRect(0, titleY, canvas.w, TITLE_H);
-        Born2bSportyV2Medium.draw(ctx, this.displayName,
+        Born2bSportyV2FlipCTL.draw(ctx, this.displayName,
             TITLE_TEXT_X, UI.STATUS_BAR_H + TITLE_TEXT_DY, '#000');
 
         // (3) Two status lines below the title bar. Label left,
         // ON/OFF right (ON solid black, OFF dim) — derived from
         // the live process state.
         function row(label, on, y) {
-            HaxrcorpFont16.draw(ctx, label, 6, y, '#000');
+            HaxrCorp4090FlipCTL.draw(ctx, label, 6, y, '#000');
             var s  = on ? 'ON' : 'OFF';
-            var sw = HaxrcorpFont16.textWidth(s);
-            HaxrcorpFont16.draw(ctx, s, canvas.w - 6 - sw, y, on ? '#000' : '#999999');
+            var sw = HaxrCorp4090FlipCTL.textWidth(s);
+            HaxrCorp4090FlipCTL.draw(ctx, s, canvas.w - 6 - sw, y, on ? '#000' : '#999999');
         }
         var y0 = titleY + TITLE_H + 8;
         row('Keys forwarding',     this._keysRunning,     y0);

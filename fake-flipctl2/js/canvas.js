@@ -48,10 +48,10 @@ var FlipCanvas = (function() {
         return { bg: pressed ? '#000' : '#ffffff', fg: pressed ? '#fff' : '#000' };
     }
     function _btnText(ctx, text, x, w, y, fg) {
-        var tw = HaxrcorpFont16.textWidth(text);
+        var tw = HaxrCorp4090FlipCTL.textWidth(text);
         var tx = x + Math.floor((w - tw) / 2);
         var ty = y + 2;  // 2px top padding
-        HaxrcorpFont16.draw(ctx, text, tx, ty, fg);
+        HaxrCorp4090FlipCTL.draw(ctx, text, tx, ty, fg);
     }
     // Combined icon + label inside a button. Icon and text are
     // measured as one block and centred horizontally inside the
@@ -64,7 +64,7 @@ var FlipCanvas = (function() {
             return;
         }
         var GAP = 3;
-        var tw = HaxrcorpFont16.textWidth(text);
+        var tw = HaxrCorp4090FlipCTL.textWidth(text);
         var totalW = icon.w + GAP + tw;
         var startX = x + Math.floor((w - totalW) / 2);
         // +1 nudge: pure vertical centring puts the icon top at y+1
@@ -79,7 +79,7 @@ var FlipCanvas = (function() {
         } else {
             canvas.drawIcon(icon, startX, iconY, fg);
         }
-        HaxrcorpFont16.draw(canvas.ctx, text, startX + icon.w + GAP, y + 2, fg);
+        HaxrCorp4090FlipCTL.draw(canvas.ctx, text, startX + icon.w + GAP, y + 2, fg);
     }
 
     // Middle button — both top corners rounded
@@ -201,9 +201,9 @@ var FlipCanvas = (function() {
         // Label sits 1 px higher than the standard `_btnText`
         // position (y+1 instead of y+2) — the missing top stroke
         // gives the text an extra pixel to breathe upward.
-        var tw = HaxrcorpFont16.textWidth(text);
+        var tw = HaxrCorp4090FlipCTL.textWidth(text);
         var tx = x + Math.floor((w - tw) / 2);
-        HaxrcorpFont16.draw(this.ctx, text, tx, y + 1, c.fg);
+        HaxrCorp4090FlipCTL.draw(this.ctx, text, tx, y + 1, c.fg);
     };
 
     // Icon-content tab button. Same shape as drawNumericTabButton
@@ -994,10 +994,10 @@ var FlipCanvas = (function() {
                 // keyboard font reads cleanly enough at SHIFT_W
                 // (35 px). Centred inside the cell.
                 var rTxt = 'return';
-                var rW = HaxrcorpFont16.textWidth(rTxt);
+                var rW = HaxrCorp4090FlipCTL.textWidth(rTxt);
                 var rX = bx + Math.floor((bw - rW) / 2);
                 var rY = by + 2;
-                HaxrcorpFont16.draw(ctx, rTxt, rX, rY, color);
+                HaxrCorp4090FlipCTL.draw(ctx, rTxt, rX, rY, color);
                 return;
             }
             if (cell.isKeyboardUp || cell.isKeyboardDown) {
@@ -1019,7 +1019,7 @@ var FlipCanvas = (function() {
                 // "this is a wide key" affordance without
                 // needing a dedicated icon. 90° is an exact
                 // axis swap, so the per-pixel fillRects from
-                // HaxrcorpFont16.draw will land cleanly on
+                // HaxrCorp4090FlipCTL.draw will land cleanly on
                 // integer pixel boundaries — provided the
                 // rotation centre itself is an integer.
                 // `bw / 2` is 17.5 (SHIFT_W = 35), which
@@ -1030,12 +1030,12 @@ var FlipCanvas = (function() {
                 var rcx = bx + Math.floor(bw / 2);
                 var rcy = by + Math.floor(BTN_H / 2);
                 var spSym = ']';
-                var spSymW = HaxrcorpFont16.textWidth(spSym);
+                var spSymW = HaxrCorp4090FlipCTL.textWidth(spSym);
                 var spSymH = 11;                      // font cap height
                 ctx.save();
                 ctx.translate(rcx, rcy);
                 ctx.rotate(Math.PI / 2);
-                HaxrcorpFont16.draw(ctx, spSym,
+                HaxrCorp4090FlipCTL.draw(ctx, spSym,
                     -Math.floor(spSymW / 2),
                     -Math.floor(spSymH / 2),
                     color);
@@ -1049,10 +1049,10 @@ var FlipCanvas = (function() {
             // never letters, so the comparison naturally skips them.
             var displayCh = (shiftActive && t.length === 1 && t >= 'a' && t <= 'z')
                 ? t.toUpperCase() : t;
-            var cw = HaxrcorpFont16.textWidth(displayCh);
+            var cw = HaxrCorp4090FlipCTL.textWidth(displayCh);
             var cx = bx + Math.floor((bw - cw) / 2);
             var cy = by + 2;
-            HaxrcorpFont16.draw(ctx, displayCh, cx, cy, color);
+            HaxrCorp4090FlipCTL.draw(ctx, displayCh, cx, cy, color);
         }
 
         // Calculate keyboard dimensions — pick the widest row.
@@ -1385,13 +1385,13 @@ var FlipCanvas = (function() {
         // doesn't try to infer it. Drawn only when row[last-1] has
         // a wide cell (i.e., there's somewhere to anchor).
         if (langLabel && rows.length >= 2 && cellOf(rows.length - 2, 0).wide) {
-            var llW = HaxrcorpFont16.textWidth(langLabel);
+            var llW = HaxrCorp4090FlipCTL.textWidth(langLabel);
             var llX = keyboardX + Math.floor((LANG_W - llW) / 2);
             // Same y offset glyphs use inside button cells (btnY +
             // 2) so the label optically sits at the row's natural
             // text baseline.
             var llY = keyboardY + 2;
-            HaxrcorpFont16.draw(ctx, langLabel, llX, llY, '#888888');
+            HaxrCorp4090FlipCTL.draw(ctx, langLabel, llX, llY, '#888888');
         }
 
         // (Removed: "Delete" label + back-icon affordance that

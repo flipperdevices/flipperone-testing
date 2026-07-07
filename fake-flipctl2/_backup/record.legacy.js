@@ -49,12 +49,12 @@ var VoiceRecorderScene = (function() {
     // so the file stays self-contained.
     function ellipsizeTo(text, maxW) {
         text = text == null ? '' : String(text);
-        if (HaxrcorpFont16.textWidth(text) <= maxW) return text;
+        if (HaxrCorp4090FlipCTL.textWidth(text) <= maxW) return text;
         var dots = '…';
-        var dotW = HaxrcorpFont16.textWidth(dots);
+        var dotW = HaxrCorp4090FlipCTL.textWidth(dots);
         var s = text;
         while (s.length > 0
-               && HaxrcorpFont16.textWidth(s) + dotW > maxW) {
+               && HaxrCorp4090FlipCTL.textWidth(s) + dotW > maxW) {
             s = s.substring(0, s.length - 1);
         }
         return s + dots;
@@ -526,16 +526,16 @@ var VoiceRecorderScene = (function() {
                         canvas.drawHLine(INNER_X + 3, rowAbsY + 1,
                             dynInnerW - 6, '#CCCCCC');
                     } else if (row.kind === 'action') {
-                        HaxrcorpFont16.draw(ctx, row.text,
+                        HaxrCorp4090FlipCTL.draw(ctx, row.text,
                             INNER_X + 5, rowAbsY + 1, fg);
                     } else if (row.kind === 'kv') {
                         var lblColor = isPressed ? '#fff' : '#6D6D6D';
-                        HaxrcorpFont16.draw(ctx, row.label,
+                        HaxrCorp4090FlipCTL.draw(ctx, row.label,
                             INNER_X + 5, rowAbsY + 1, lblColor);
-                        var lblW = HaxrcorpFont16.textWidth(row.label);
+                        var lblW = HaxrCorp4090FlipCTL.textWidth(row.label);
                         var valStr = String(row.value);
                         var valMaxW = dynInnerW - 5 - lblW - INNER_LABEL_GAP - 2;
-                        HaxrcorpFont16.draw(ctx, ellipsizeTo(valStr, valMaxW),
+                        HaxrCorp4090FlipCTL.draw(ctx, ellipsizeTo(valStr, valMaxW),
                             INNER_X + 5 + lblW + INNER_LABEL_GAP,
                             rowAbsY + 1, fg);
                     }
@@ -573,7 +573,7 @@ var VoiceRecorderScene = (function() {
             : (this.breadcrumbTitle ? [this.breadcrumbTitle] : []);
         var trail = titles.length ? '> ' + titles.join(' > ') : '';
         if (trail) {
-            HaxrcorpFont16.draw(canvas.ctx, trail,
+            HaxrCorp4090FlipCTL.draw(canvas.ctx, trail,
                 BREADCRUMB_X, BREADCRUMB_Y, '#CCCCCC');
         }
 
@@ -599,7 +599,7 @@ var VoiceRecorderScene = (function() {
             if (item.file && this._playing === item.file) {
                 rightTxt = 'Playing';
             }
-            var rightW = rightTxt ? HaxrcorpFont16.textWidth(rightTxt) : 0;
+            var rightW = rightTxt ? HaxrCorp4090FlipCTL.textWidth(rightTxt) : 0;
             var rightX = SELECTOR_X + SELECTOR_W - rightW - STATUS_RIGHT_PAD - 8;
             // Ellipsise label so it can't collide with the
             // right-side marker (or the chevron-bar selector
@@ -607,10 +607,10 @@ var VoiceRecorderScene = (function() {
             var labelMaxW = (rightTxt ? rightX : SELECTOR_X + SELECTOR_W - 12)
                           - (SELECTOR_X + TEXT_LEFT_PAD);
             var labelText = ellipsizeTo(rowText, labelMaxW);
-            HaxrcorpFont16.draw(canvas.ctx, labelText,
+            HaxrCorp4090FlipCTL.draw(canvas.ctx, labelText,
                 SELECTOR_X + TEXT_LEFT_PAD, y + TEXT_DY, '#000');
             if (rightTxt) {
-                HaxrcorpFont16.draw(canvas.ctx, rightTxt,
+                HaxrCorp4090FlipCTL.draw(canvas.ctx, rightTxt,
                     SELECTOR_X + SELECTOR_W - rightW - STATUS_RIGHT_PAD - 8,
                     y + TEXT_DY, isSelected ? '#000' : '#999999');
             }
@@ -623,7 +623,7 @@ var VoiceRecorderScene = (function() {
         // the divider position so the layout reads as intentional.
         if (this._loaded && this._recordings.length === 0) {
             var msg = 'No recordings yet';
-            HaxrcorpFont16.draw(canvas.ctx, msg,
+            HaxrCorp4090FlipCTL.draw(canvas.ctx, msg,
                 SELECTOR_X + TEXT_LEFT_PAD,
                 this.containerY + ROW_H + DIVIDER_ROW_H + 6, '#999999');
         }
@@ -833,25 +833,25 @@ var RecordingScene = (function() {
 
         if (this.state === 'starting') {
             var s1 = 'Starting…';
-            var s1W = HaxrcorpFont16.textWidth(s1);
-            HaxrcorpFont16.draw(ctx, s1,
+            var s1W = HaxrCorp4090FlipCTL.textWidth(s1);
+            HaxrCorp4090FlipCTL.draw(ctx, s1,
                 FRAME_X + Math.floor((FRAME_W - s1W) / 2),
                 FRAME_TOP_Y + Math.floor((FRAME_H - 11) / 2), '#000');
             return;
         }
         if (this.state === 'done') {
             var s2  = 'Failed';
-            var s2W = HaxrcorpFont16.textWidth(s2);
-            HaxrcorpFont16.draw(ctx, s2,
+            var s2W = HaxrCorp4090FlipCTL.textWidth(s2);
+            HaxrCorp4090FlipCTL.draw(ctx, s2,
                 FRAME_X + Math.floor((FRAME_W - s2W) / 2),
                 FRAME_TOP_Y + 10, '#000');
             var msg = this.error || '(no detail)';
             if (msg.length > 38) msg = msg.substring(0, 37) + '…';
-            var emW = HaxrcorpFont16.textWidth(msg);
-            HaxrcorpFont16.draw(ctx, msg,
+            var emW = HaxrCorp4090FlipCTL.textWidth(msg);
+            HaxrCorp4090FlipCTL.draw(ctx, msg,
                 FRAME_X + Math.floor((FRAME_W - emW) / 2),
                 FRAME_TOP_Y + 26, '#999999');
-            HaxrcorpFont16.draw(ctx, '[Back]',
+            HaxrCorp4090FlipCTL.draw(ctx, '[Back]',
                 FRAME_X + 6, FRAME_TOP_Y + FRAME_H - 14, '#999999');
             return;
         }
@@ -862,11 +862,11 @@ var RecordingScene = (function() {
         var mm = Math.floor(totalSec / 60);
         var ss = totalSec % 60;
         var timerStr = pad2(mm) + ':' + pad2(ss);
-        // We don't have a big-font glyph stack so HaxrcorpFont16
+        // We don't have a big-font glyph stack so HaxrCorp4090FlipCTL
         // drawn at a y-offset acts as the "headline". Centred.
-        var timerW = HaxrcorpFont16.textWidth(timerStr);
+        var timerW = HaxrCorp4090FlipCTL.textWidth(timerStr);
         var timerY = FRAME_TOP_Y + 14;
-        HaxrcorpFont16.draw(ctx, timerStr,
+        HaxrCorp4090FlipCTL.draw(ctx, timerStr,
             FRAME_X + Math.floor((FRAME_W - timerW) / 2),
             timerY, '#000');
 
@@ -874,7 +874,7 @@ var RecordingScene = (function() {
         // phased so the cadence is stable across redraw skips.
         var dotOn = (Math.floor(Date.now() / 500) % 2) === 0;
         var label = 'REC';
-        var lblW  = HaxrcorpFont16.textWidth(label);
+        var lblW  = HaxrCorp4090FlipCTL.textWidth(label);
         var dotR  = 3;
         var dotGap = 4;
         var groupW = (dotR * 2) + dotGap + lblW;
@@ -885,7 +885,7 @@ var RecordingScene = (function() {
             ctx.fillStyle = '#000';
             ctx.fillRect(groupX, groupY + 2, dotR * 2, dotR * 2);
         }
-        HaxrcorpFont16.draw(ctx, label,
+        HaxrCorp4090FlipCTL.draw(ctx, label,
             groupX + (dotR * 2) + dotGap, groupY, '#000');
 
         // 3) Mic level meter. Outlined rectangle filled black
@@ -931,8 +931,8 @@ var RecordingScene = (function() {
 
         // 4) Hint + stop affordance at the bottom of the frame.
         var hint = 'Press OK or Back to stop';
-        var hintW = HaxrcorpFont16.textWidth(hint);
-        HaxrcorpFont16.draw(ctx, hint,
+        var hintW = HaxrCorp4090FlipCTL.textWidth(hint);
+        HaxrCorp4090FlipCTL.draw(ctx, hint,
             FRAME_X + Math.floor((FRAME_W - hintW) / 2),
             FRAME_TOP_Y + FRAME_H - 14, '#999999');
     };
