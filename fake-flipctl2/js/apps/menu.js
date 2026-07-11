@@ -356,11 +356,16 @@ var MenuScene = (function() {
             'System info',
             'Battery info',
             'Disk info',
+            'FlipperOS',
             'Update',
             'Reboot'
         ], {
             'Battery info': function() { return new PowerScene(); },
             'Disk info':    function() { return new DiskSpaceScene(); },
+            // Btrfs profiles/snapshots submenu — backed by the
+            // /usr/local/sbin list-profiles / list-snapshots /
+            // create-snapshot / delete-* / create-profile helpers.
+            'FlipperOS':    function() { return ProfilesApp.makeMenu(sm); },
             'Update':       function() { return new UpdateScene(); },
             // Fire-and-forget POST. Server runs `sudo reboot` in a
             // detached unit so the response flushes before the OS
