@@ -1,0 +1,2 @@
+# Voice Assistant backend (groq_voice.py) — Groq API client.
+groq>=0.11

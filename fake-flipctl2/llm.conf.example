@@ -1,0 +1,14 @@
+# Groq configuration for the Voice Assistant app.
+# Copy this file to `llm.conf` (same directory) and fill in your key.
+# `llm.conf` is gitignored so the key never gets committed.
+
+GROQ_API_KEY=gsk_your_key_here
+
+# Speech-to-text model (Groq Whisper).
+STT_MODEL=whisper-large-v3-turbo
+
+# Chat model for the spoken reply. Set to "none" to only transcribe.
+CHAT_MODEL=llama-3.3-70b-versatile
+
+# System prompt steering the assistant's answers.
+SYSTEM_PROMPT=You are a helpful voice assistant on a Flipper One handheld. Answer in one to three short sentences.

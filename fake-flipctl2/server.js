@@ -193,7 +193,14 @@ function applyLedsFromState() {
     // re-asserts the flag every tick so nothing else can drift
     // it (e.g. the kernel default coming back after a reboot).
     var linkLed = 'flipper-one:rgb:link';
-    if (ledLinkOn) {
+    if (voiceRecording) {
+        // Voice Assistant is capturing — solid red recording tally.
+        applyLedTarget(linkLed, {
+            trigger:         'none',
+            multi_intensity: '255 0 0',
+            brightness:      '255'
+        });
+    } else if (ledLinkOn) {
         applyLedTarget(linkLed, {
             trigger:         'none',
             multi_intensity: '0 0 255',
@@ -1377,6 +1384,43 @@ function stopMicLevelMonitor() {
 //   sudo nohup python3 forward-keys.py > /dev/null 2>&1 &
 //   sudo pkill -f forward-keys.py
 var SCRIPTS_DIR = path.join(BASE, '..', 'scripts');
+
+// ── Voice Assistant (PTT → Groq) ─────────────────────────────────
+// While the PTT key (KEY_A) is held, ONE arecord on hw:1,0 (the device's
+// working capture — plughw:1,0 does not exist here) streams raw S16_LE
+// stereo 48 kHz PCM. We fan that stream out to (a) a peak-level meter and
+// (b) sox, which encodes it in real time to a 16 kHz mono FLAC — the
+// format Whisper wants, ~10x smaller than 48k stereo WAV, so the upload
+// is quick. On release the FLAC goes to scripts/groq_voice.py. One clip
+// at a time.
+var VOICE_FLAC      = '/tmp/flipctl-voice.flac';
+var VOICE_LED       = 'flipper-one:rgb:link';   // red while recording
+var VOICE_RATE = 48000, VOICE_CH = 2;           // capture format (hw:1,0 native)
+var voiceRecordChild = null;   // arecord
+var voiceSoxChild    = null;   // sox encoder (raw PCM -> FLAC)
+var voiceBytes       = 0;      // PCM bytes seen (detect too-short clips)
+var voiceLevel       = 0;      // 0..100 peak, read by /api/voice/level
+var voiceLastPeakAt  = 0;
+var voiceStartAt     = 0;      // capture start (ms) for the warm-up gate
+var voiceRecording   = false;  // gates the red LED in applyLedsFromState
+// The ADC emits a full-scale pop for the first fraction of a second after
+// capture enables; ignore the meter (and trim the clip) for this long so the
+// transient doesn't peg the VU meter to 100 and then collapse.
+var VOICE_WARMUP_MS  = 350;
+
+// Toggle the NAU8822 ALC (Automatic Level Control) for capture. With ALC on
+// the codec rides the mic gain to hit its target level, so speech stays at a
+// healthy, steady level regardless of distance — a much better VU experience
+// than a fixed PGA. Enabled for a clip, disabled on stop so other apps keep
+// their own manual gain. Target/Max-Gain are left at the codec defaults
+// (11/15 and 7/7), which are already sensible.
+function setVoiceAlc(card, on) {
+    if (!card) return;
+    try {
+        execSync('amixer -c ' + card + ' set ' + JSON.stringify('ALC Enable')
+            + ' ' + (on ? 'Both' : 'Off') + ' 2>/dev/null', { timeout: 1500 });
+    } catch (e) {}
+}
 
 function forwardScriptName(kind) {
     var names = {
@@ -4090,6 +4134,158 @@ var server = http.createServer(function(req, res) {
         var stopResult = stopRecording();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(stopResult));
+        return;
+    }
+    // ── /api/voice/start ─────────────────────────────────────────
+    // Begin the PTT capture. arecord on hw:1,0 → raw PCM on stdout; each
+    // chunk feeds (a) the peak-level meter and (b) sox's stdin, which
+    // encodes a 16 kHz mono FLAC to VOICE_FLAC in real time. Red LED on.
+    if (req.url === '/api/voice/start' && req.method === 'POST') {
+        var vspawn = require('child_process').spawn;   // module `spawn` is shadowed here
+        // Tear down any prior capture.
+        if (voiceRecordChild) { try { voiceRecordChild.kill('SIGKILL'); } catch (e) {} voiceRecordChild = null; }
+        if (voiceSoxChild) { try { voiceSoxChild.kill('SIGKILL'); } catch (e) {} voiceSoxChild = null; }
+        voiceBytes = 0;
+        voiceLevel = 0;
+        try {
+            // sox: read raw S16_LE 48k stereo from stdin, write 16k mono FLAC,
+            // with a +2 dB gain boost so quiet speech transcribes better.
+            voiceSoxChild = vspawn('sox',
+                ['-t', 'raw', '-r', String(VOICE_RATE), '-b', '16', '-e', 'signed-integer',
+                 '-c', String(VOICE_CH), '-', '-r', '16000', '-c', '1', VOICE_FLAC,
+                 'trim', '0.3', 'gain', '2'],
+                { stdio: ['pipe', 'ignore', 'ignore'] });
+            // The mic is the NAU8822 codec; its ALSA card index is not
+            // fixed (hw:1,0 doesn't exist on every unit), so resolve it
+            // from /proc/asound/cards instead of hardcoding.
+            var vcard = getNau8822Card();
+            // Let the codec's ALC ride the gain to its target level so speech
+            // stays lively regardless of distance (default 0 dB PGA is far too
+            // quiet for arm's-length speech).
+            setVoiceAlc(vcard, true);
+            voiceStartAt = Date.now();
+            var vdev = vcard ? ('hw:' + vcard + ',0') : 'hw:2,0';
+            voiceRecordChild = vspawn('arecord', [
+                '-D', vdev, '-f', 'S16_LE', '-r', String(VOICE_RATE),
+                '-c', String(VOICE_CH), '--period-size=2048', '-t', 'raw'
+            ], { stdio: ['ignore', 'pipe', 'pipe'] });
+        } catch (e) {
+            voiceRecordChild = null; voiceSoxChild = null;
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: String(e.message || e) }));
+            return;
+        }
+        voiceSoxChild.on('error', function () {});
+        if (voiceSoxChild.stdin) voiceSoxChild.stdin.on('error', function () {});
+        voiceRecordChild.on('error', function () {});
+        voiceRecordChild.stdout.on('data', function (chunk) {
+            voiceBytes += chunk.length;
+            if (voiceSoxChild && voiceSoxChild.stdin && voiceSoxChild.stdin.writable) {
+                voiceSoxChild.stdin.write(chunk);
+            }
+            // Throttled peak over interleaved S16_LE frames (strided, cheap).
+            var now = Date.now();
+            if (now - voiceLastPeakAt < 45) return;
+            voiceLastPeakAt = now;
+            // Suppress the startup pop so it can't peg the meter.
+            if (now - voiceStartAt < VOICE_WARMUP_MS) { voiceLevel = 0; return; }
+            var len = chunk.length - (chunk.length % 2);
+            var pk = 0;
+            for (var i = 0; i + 1 < len; i += 32) {
+                var s = chunk.readInt16LE(i);
+                if (s < 0) s = -s;
+                if (s > pk) pk = s;
+            }
+            voiceLevel = Math.round(pk * 100 / 32767);
+        });
+        // When arecord ends, close sox's stdin so it finalizes the FLAC.
+        voiceRecordChild.stdout.on('end', function () {
+            if (voiceSoxChild && voiceSoxChild.stdin) { try { voiceSoxChild.stdin.end(); } catch (e) {} }
+        });
+        voiceRecording = true;
+        // Light the LED now; the 1 Hz loop holds it (unless manual mode).
+        applyLedTarget(VOICE_LED, { trigger: 'none', multi_intensity: '255 0 0', brightness: '255' });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+    }
+    // ── /api/voice/level ─────────────────────────────────────────
+    // Latest capture peak (0..100) for the on-screen VU meter.
+    if (req.url === '/api/voice/level' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ level: voiceRecording ? voiceLevel : 0 }));
+        return;
+    }
+    // ── /api/voice/stop ──────────────────────────────────────────
+    // Stop capture: kill arecord → sox finalizes the FLAC → hand it to
+    // groq_voice.py --stream. The script emits newline-delimited JSON
+    // events (transcript → delta… → done), forwarded to the client AS
+    // THEY ARRIVE via a chunked response so the reply renders token-by-
+    // token. Hang-proof: always ends the response, even if capture never
+    // produced audio. The event loop never blocks on the Groq round-trip.
+    if (req.url === '/api/voice/stop' && req.method === 'POST') {
+        var arec = voiceRecordChild;
+        var sox  = voiceSoxChild;
+        voiceRecordChild = null;
+        voiceSoxChild = null;
+
+        // Recording tally off; restore the codec (ALC off) for other apps.
+        voiceRecording = false;
+        applyLedsFromState();
+        setVoiceAlc(getNau8822Card(), false);
+
+        res.writeHead(200, {
+            'Content-Type': 'application/x-ndjson',
+            'Cache-Control': 'no-cache'
+        });
+        var vEnded = false;
+        var emit = function (obj) { if (!vEnded) res.write(JSON.stringify(obj) + '\n'); };
+        var endRes = function () { if (!vEnded) { vEnded = true; res.end(); } };
+        res.on('close', function () { vEnded = true; });
+
+        // Too short / no audio → bail before spending a Groq call.
+        var TOO_SHORT = 16000; // ~85 ms of 48k stereo s16
+        var ranGroq = false;
+        var runGroq = function () {
+            if (ranGroq) return;
+            ranGroq = true;
+            if (voiceBytes < TOO_SHORT) {
+                emit({ type: 'error', error: 'recording too short' });
+                endRes();
+                return;
+            }
+            var py = path.join(SCRIPTS_DIR, 'groq_voice.py');
+            var conf = path.join(BASE, 'llm.conf');
+            var vspawn = require('child_process').spawn;
+            var proc = vspawn('python3', [py, '--stream', '--conf', conf, VOICE_FLAC],
+                { stdio: ['ignore', 'pipe', 'pipe'] });
+            var sawData = false, perr = '';
+            proc.stdout.on('data', function (chunk) { sawData = true; if (!vEnded) res.write(chunk); });
+            if (proc.stderr) proc.stderr.on('data', function (c) { perr += c; });
+            proc.on('error', function (e) { emit({ type: 'error', error: String(e.message || e) }); endRes(); });
+            proc.on('close', function (code) {
+                if (!sawData) emit({ type: 'error', error: (String(perr).trim() || ('exit ' + code)).slice(0, 300) });
+                endRes();
+            });
+            res.on('close', function () { try { proc.kill('SIGKILL'); } catch (e) {} });
+        };
+
+        // Wait for sox to finish writing the FLAC, then transcribe. Guard
+        // every path so a dead/absent child can't leave the request open.
+        var soxDone = function () { runGroq(); };
+        if (sox && sox.exitCode === null && sox.signalCode === null) {
+            sox.once('close', soxDone);
+        } else {
+            // sox already gone (or never spawned) — nothing more to flush.
+            soxDone();
+        }
+        // Backstop: if sox somehow never closes, proceed after 3 s.
+        setTimeout(function () { if (!ranGroq) { try { if (sox) sox.kill('SIGKILL'); } catch (e) {} runGroq(); } }, 3000);
+
+        // Stopping arecord ends its stdout → the start handler calls
+        // sox.stdin.end(), so sox flushes and closes. SIGTERM is enough.
+        if (arec) { try { arec.kill('SIGTERM'); } catch (e) {} }
+        else if (sox && sox.stdin) { try { sox.stdin.end(); } catch (e) {} }
         return;
     }
     // ── /api/record/pause ───────────────────────────────────────

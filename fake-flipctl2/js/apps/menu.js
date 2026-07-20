@@ -314,9 +314,12 @@ var MenuScene = (function() {
                                  // app's title bar + App Switcher card.
                                  icon:         (typeof Icons !== 'undefined')
                                      ? Icons.media : null,
+                                 iconAnimated: null },
+            'Voice Assistant': { factory:      function(sm) { return new VoiceAssistantScene(sm); },
+                                 icon:         (typeof Icons !== 'undefined') ? Icons.voice_recorder : null,
                                  iconAnimated: null }
         };
-        var order = ['Internet radio', 'Voice recorder', 'Walkie Talkie', 'TV Media Box'];
+        var order = ['Internet radio', 'Voice recorder', 'Walkie Talkie', 'TV Media Box', 'Voice Assistant'];
         // With the TV Media Box target active, that app lives in the
         // main menu's first slot — drop it from Apps to avoid showing
         // it twice.

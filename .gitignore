@@ -7,6 +7,10 @@ results/*
 # macOS
 .DS_Store
 
+# Python bytecode (scripts/)
+__pycache__/
+*.pyc
+
 # Voice recorder output — captured WAVs / MP3s / OGGs are per-
 # device runtime data, not source. The Node server creates this
 # dir on demand and writes every take into it.
@@ -24,3 +28,8 @@ fake-flipctl2/.claude/settings.local.json
 # hook in .githooks/pre-commit refuses to commit when the file
 # is staged OR when it has `enabled: true` on disk.
 fake-flipctl2/js/debug_config.js
+
+# Groq API key for the Voice Assistant app — must never be committed.
+# The app reads this; copy fake-flipctl2/llm.conf.example to create it.
+fake-flipctl2/llm.conf
+llm.conf
