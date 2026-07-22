@@ -217,6 +217,7 @@ var MenuScene = (function() {
             'UIinput forwarding',
             'Haptic tests',
             'Figma live preview',
+            'UI PNG viewer',
             'GPIO',
             'Switch to fake-flipctl'
         ], {
@@ -231,6 +232,7 @@ var MenuScene = (function() {
             'UIinput forwarding': function() { return new UIInputForwardingScene(sm); },
             'Haptic tests': function() { return new HapticTestScene(sm); },
             'Figma live preview': function() { return new FigmaLivePreviewScene(sm); },
+            'UI PNG viewer': function() { return new UiPngViewerScene(sm); },
             'Switch to fake-flipctl': function() {
                 fetch('/api/switch/flipctl', { method: 'POST' });
                 return null;

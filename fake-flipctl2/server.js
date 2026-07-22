@@ -230,6 +230,9 @@ var MIME = {
 
 var BASE = __dirname;
 
+// Directory the "UI PNG viewer" Testing app browses.
+var UI_PNG_DIR = '/media/ui_png';
+
 var PSU = '/sys/class/power_supply/bq28z610-0';
 var QMI_DEV = '/dev/cdc-wdm0';
 
@@ -3236,6 +3239,32 @@ function setAirplaneMode(enabled, cb) {
 }
 
 var server = http.createServer(function(req, res) {
+    // ── UI PNG viewer ────────────────────────────────────────────
+    // List + serve the PNGs dropped in /media/ui_png for the
+    // Testing "UI PNG viewer" app.
+    if (req.url === '/api/ui-png' && req.method === 'GET') {
+        var pngFiles = [];
+        try {
+            pngFiles = fs.readdirSync(UI_PNG_DIR)
+                .filter(function(n) { return /\.png$/i.test(n); })
+                .sort();
+        } catch (e) { /* dir missing → empty list */ }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ files: pngFiles }));
+        return;
+    }
+    if (req.method === 'GET' && req.url.split('?')[0].indexOf('/media/ui_png/') === 0) {
+        // Serve one PNG by basename only — the regex forbids any
+        // slash, so no path traversal reaches the fs.
+        var pngName = decodeURIComponent(req.url.split('?')[0].slice('/media/ui_png/'.length));
+        if (!/^[^/]+\.png$/i.test(pngName)) { res.writeHead(400); res.end('Bad name'); return; }
+        fs.readFile(UI_PNG_DIR + '/' + pngName, function(err, data) {
+            if (err) { res.writeHead(404); res.end('Not found'); return; }
+            res.writeHead(200, { 'Content-Type': 'image/png' });
+            res.end(data);
+        });
+        return;
+    }
     if (req.url === '/api/wifi') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(wifiCache));
