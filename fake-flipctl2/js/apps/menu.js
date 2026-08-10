@@ -246,9 +246,11 @@ var MenuScene = (function() {
     function demoMenu(sm) {
         return new SubMenuScene(sm, 'UI Demos', [
             'Boot menu - UI demo',
+            'Boot Menu v3',
             'Power menu - UI demo'
         ], {
             'Boot menu - UI demo':  function() { return new UIDemoScene(sm); },
+            'Boot Menu v3':         function() { return new BootMenuV2DemoScene(sm); },
             'Power menu - UI demo': function() { return new PowerMenuUIDemoScene(sm); }
         });
     }
