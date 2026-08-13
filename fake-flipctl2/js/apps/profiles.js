@@ -726,8 +726,12 @@ var ProfilesApp = (function() {
                 },
                 detailHeader: 'Last used',
                 rowH: 16,
-                // _stock golden bases sink to the bottom of the list.
-                sort: function(a, b) { return (isStock(a) ? 1 : 0) - (isStock(b) ? 1 : 0); },
+                // Booted profile first, then normal profiles, then _stock
+                // golden bases at the bottom.
+                sort: function(a, b) {
+                    function rank(p) { return p.booted ? 0 : (isStock(p) ? 2 : 1); }
+                    return rank(a) - rank(b);
+                },
                 // OK opens the snapshots menu scoped to this profile.
                 onSelect: function(scene, p) {
                     if (scene.sm) scene.sm.push(makeProfileSnapshots(scene.sm, p));
