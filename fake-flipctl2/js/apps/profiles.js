@@ -726,11 +726,19 @@ var ProfilesApp = (function() {
                 },
                 detailHeader: 'Last used',
                 rowH: 16,
-                // Booted profile first, then normal profiles, then _stock
-                // golden bases at the bottom.
+                // Order: booted first, then used profiles by last-used time
+                // (most recent first), then never-used, then _stock bases.
                 sort: function(a, b) {
-                    function rank(p) { return p.booted ? 0 : (isStock(p) ? 2 : 1); }
-                    return rank(a) - rank(b);
+                    function used(p) { return /^\d{4}-\d\d-\d\d/.test(p.lastUsed || ''); }
+                    function rank(p) {
+                        if (p.booted) return 0;
+                        if (isStock(p)) return 3;
+                        return used(p) ? 1 : 2;
+                    }
+                    var ra = rank(a), rb = rank(b);
+                    if (ra !== rb) return ra - rb;
+                    if (ra === 1) return (b.lastUsed || '').localeCompare(a.lastUsed || '');
+                    return 0;
                 },
                 // OK opens the snapshots menu scoped to this profile.
                 onSelect: function(scene, p) {
