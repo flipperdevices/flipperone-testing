@@ -1,6 +1,154 @@
 (function() {
     var canvasEl = document.getElementById('screen');
     var canvas = new FlipCanvas(canvasEl);
+
+    // Desktop-browser affordance. The Flipper's on-device browser is
+    // WPE WebKit driven by cog, whose UA is "X11; Linux aarch64 ...
+    // AppleWebKit ... Safari" with no Chrome/Firefox/Edge token.
+    // Anything else is a developer viewing the panel on a PC, where
+    // the native 256x144 is tiny, so drop it into a Flipper One photo
+    // (amber-backlit) on a dark background. On the device we leave the
+    // plain panel untouched.
+    (function applyDesktopViewport() {
+        var ua = navigator.userAgent || '';
+        var isCOG = /Linux aarch64/.test(ua) && /AppleWebKit/.test(ua) &&
+            !/(Chrome|Chromium|Firefox|Edg|OPR|Android|Mobile)/.test(ua);
+        if (isCOG) return;
+        document.documentElement.style.background = '#14171C';
+        document.body.style.background = '#14171C';
+        // Drop the live panel into the screen cutout of the Flipper One
+        // photo. The hole is a clean 16:9 rectangle (matches 256x144)
+        // at these fractions of the 2048x1080 image. Layers, low to
+        // high: orange ground -> canvas (multiply -> amber backlight) ->
+        // device photo on top (its transparent hole reveals the panel).
+        var L = '33.94%', T = '28.89%', Wd = '28.76%', Hd = '30.65%';
+        var wrap = document.createElement('div');
+        wrap.style.position = 'relative';
+        wrap.style.display = 'inline-block';
+        wrap.style.isolation = 'isolate';
+        wrap.style.lineHeight = '0';
+
+        var bg = document.createElement('div');
+        bg.style.position = 'absolute';
+        bg.style.zIndex = '0';
+        bg.style.left = L; bg.style.top = T; bg.style.width = Wd; bg.style.height = Hd;
+        bg.style.background = '#FF8200';
+
+        var photo = document.createElement('img');
+        photo.src = 'flipper_one_front_no_screen.png';
+        photo.alt = '';
+        photo.style.display = 'block';
+        photo.style.position = 'relative';
+        photo.style.zIndex = '2';
+        photo.style.width = 'auto';
+        photo.style.height = 'auto';
+        photo.style.maxWidth = '98vw';
+        photo.style.maxHeight = '92vh';
+        photo.style.pointerEvents = 'none';
+
+        canvasEl.parentNode.insertBefore(wrap, canvasEl);
+        wrap.appendChild(bg);
+        wrap.appendChild(canvasEl);
+        wrap.appendChild(photo);
+
+        canvasEl.style.position = 'absolute';
+        canvasEl.style.zIndex = '1';
+        canvasEl.style.left = L; canvasEl.style.top = T;
+        canvasEl.style.width = Wd; canvasEl.style.height = Hd;
+        canvasEl.style.mixBlendMode = 'multiply';
+
+        // Click map over the photo's physical buttons. Each region is a
+        // fraction of the image; clicking injects the matching input action
+        // via window.input.press/release (held while the pointer is down,
+        // like the real button). Each zone shows the key it emulates.
+        var HITMAP = [
+            // Bottom soft-button row (left -> right): esc edit power del run.
+            // Uniform size + even pitch (0.057625), anchored on the user's
+            // measured first (0.3411) and last (0.5716) box.
+            { a: 'esc',   l: 0.3411, t: 0.6301, w: 0.053, h: 0.053 },
+            { a: 'edit',  l: 0.3987, t: 0.6301, w: 0.053, h: 0.053 },
+            { a: 'power', l: 0.4564, t: 0.6301, w: 0.053, h: 0.053 },
+            { a: 'del',   l: 0.5140, t: 0.6301, w: 0.053, h: 0.053 },
+            { a: 'run',   l: 0.5716, t: 0.6301, w: 0.053, h: 0.053 },
+            // Right orange knob: plus-shaped D-pad, symmetric about OK's
+            // centre. up/ok/down share column l=0.7106; left/ok/right share
+            // row t=0.399; equal arm offsets (vert 0.089, horiz 0.047).
+            { a: 'up',    l: 0.7106, t: 0.3105, w: 0.045, h: 0.085 },
+            { a: 'left',  l: 0.6636, t: 0.399,  w: 0.045, h: 0.086 },
+            { a: 'ok',    l: 0.7106, t: 0.399,  w: 0.045, h: 0.086, round: true },
+            { a: 'right', l: 0.7576, t: 0.399,  w: 0.045, h: 0.086 },
+            { a: 'down',  l: 0.7106, t: 0.4885, w: 0.045, h: 0.085 },
+            // App switcher (top-right corner chamfered) + Back. cutTx/cutRy
+            // are the chamfer's break points (% along the top / down the right).
+            { a: 'appsw', l: 0.6596, t: 0.5535, w: 0.0615, h: 0.0811, cut: 'tr', cutTx: 27, cutRy: 56 },
+            { a: 'back',  l: 0.778, t: 0.5655, w: 0.0515, h: 0.0969, round: true },
+            // PTT (push-to-talk, held while pressed), top-left.
+            { a: 'ptt',   l: 0.2255, t: 0.1536, w: 0.071, h: 0.034 }
+        ];
+
+        // Each zone shows the keyboard key it emulates (KEY_MAP in input.js).
+        var KEYLABEL = {
+            esc: 'Z', edit: 'X', power: 'C', del: 'V', run: 'B',
+            up: '↑', down: '↓', left: '←', right: '→', ok: 'Enter',
+            appsw: 'Tab', back: 'Backspace', ptt: 'A'
+        };
+        var zones = [];
+        HITMAP.forEach(function(r) {
+            var d = document.createElement('div');
+            d.style.cssText = 'position:absolute;z-index:3;box-sizing:border-box;cursor:pointer;' +
+                'touch-action:none;display:flex;align-items:center;justify-content:center;';
+            d.style.left = (r.l * 100) + '%';
+            d.style.top = (r.t * 100) + '%';
+            d.style.width = (r.w * 100) + '%';
+            d.style.height = (r.h * 100) + '%';
+            d.style.borderRadius = r.round ? '50%' : '4px';
+            // Chamfered corner: clip-path also clips pointer hit-testing.
+            if (r.cut === 'tr') {
+                var tx = (r.cutTx != null) ? r.cutTx : 52;
+                var ry = (r.cutRy != null) ? r.cutRy : 55;
+                d.style.clipPath = 'polygon(0 0, ' + tx + '% 0, 100% ' + ry + '%, 100% 100%, 0 100%)';
+            }
+
+            var label = document.createElement('span');
+            label.textContent = KEYLABEL[r.a] || r.a;
+            label.style.cssText = 'pointer-events:none;font:bold 18px monospace;color:#fff;' +
+                'white-space:nowrap;text-shadow:0 1px 2px rgba(0,0,0,0.9);display:none;';
+            d.appendChild(label);
+
+            d.addEventListener('pointerdown', function(ev) {
+                ev.preventDefault();
+                if (window.input && window.input.press) window.input.press(r.a);
+                if (window.requestRender) window.requestRender();
+            });
+            function release() { if (window.input && window.input.release) window.input.release(r.a); }
+            d.addEventListener('pointerup', release);
+            d.addEventListener('pointerleave', release);
+            wrap.appendChild(d);
+            zones.push({ el: d, label: label, round: r.round });
+        });
+
+        // Zones are invisible by default (still clickable); a checkbox
+        // reveals them for reference / debugging.
+        function setZonesVisible(on) {
+            zones.forEach(function(z) {
+                z.el.style.background = on ? 'rgba(255,130,0,0.35)' : 'transparent';
+                z.el.style.border = on ? '1px solid rgba(255,255,255,0.85)' : 'none';
+                z.label.style.display = on ? 'block' : 'none';
+            });
+        }
+        setZonesVisible(false);
+
+        var toggle = document.createElement('label');
+        toggle.style.cssText = 'position:fixed;top:8px;left:8px;z-index:10;background:#14171C;' +
+            'color:#fff;font:12px sans-serif;padding:4px 8px;border-radius:5px;cursor:pointer;user-select:none;';
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.style.verticalAlign = 'middle';
+        cb.addEventListener('change', function() { setZonesVisible(cb.checked); });
+        toggle.appendChild(cb);
+        toggle.appendChild(document.createTextNode(' Show Controls'));
+        document.body.appendChild(toggle);
+    })();
     var input = new Input();
     // Exposed so scenes / modals can poll continuous held-state
     // (e.g. Wi-Fi password modal's PTT-to-reveal). The action

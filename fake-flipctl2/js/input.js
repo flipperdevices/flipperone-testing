@@ -65,5 +65,18 @@ var Input = (function() {
         return !!this._held[action];
     };
 
+    // Inject an action programmatically (e.g. the on-screen click map
+    // over the Flipper photo). press() queues the action and marks it
+    // held; release() clears the held flag. Same semantics as a
+    // key down / key up on the matching physical button.
+    Input.prototype.press = function(action) {
+        if (!action) return;
+        this._queue.push(action);
+        this._held[action] = true;
+    };
+    Input.prototype.release = function(action) {
+        if (action) this._held[action] = false;
+    };
+
     return Input;
 })();
