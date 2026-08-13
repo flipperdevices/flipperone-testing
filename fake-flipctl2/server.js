@@ -25,6 +25,41 @@ function tryExec(cmd, opts) {
     );
 }
 
+// Run a /usr/local/sbin btrfs helper (list-profiles, list-snapshots,
+// create-snapshot) and hand the caller the exit code plus BOTH streams,
+// regardless of success. Unlike tryExec — which nulls out on any
+// non-zero exit — these scripts exit non-zero on their expected
+// "not root / not btrfs / @snapshots missing" paths, and we want that
+// message to reach the UI instead of a blank result. Async exec so the
+// Node loop (and the touchpad SSE stream sharing it) never blocks.
+function runBtrfsScript(cmd, cb) {
+    exec(cmd, { encoding: 'utf8', timeout: 20000 }, function(err, stdout, stderr) {
+        cb({
+            code:   err && typeof err.code === 'number' ? err.code : (err ? 1 : 0),
+            stdout: stdout || '',
+            stderr: stderr || ''
+        });
+    });
+}
+
+// POSIX single-quote a string for a /bin/sh command line: wrap in
+// single quotes and escape any embedded quote as '\''. Combined with
+// the strict name validation the btrfs action endpoints do up front,
+// nothing user-controlled reaches the shell unquoted.
+function shq(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'"; }
+
+// Normalize a runBtrfsScript result into the { ok, message } shape the
+// btrfs action endpoints return. On failure prefer stderr (where the
+// scripts' die()/confirm() write) then stdout.
+function btrfsResult(r) {
+    return {
+        ok: r.code === 0,
+        message: r.code === 0
+            ? (r.stdout.trim() || 'OK')
+            : (r.stderr.trim() || r.stdout.trim() || ('exit ' + r.code))
+    };
+}
+
 // Background refresher: invokes `fn` (returns Promise), waits for it to
 // settle, sleeps `ms`, repeats. Errors are logged but never break the
 // loop. Using setTimeout chains instead of setInterval guarantees no
@@ -3897,6 +3932,246 @@ var server = http.createServer(function(req, res) {
     if (req.url === '/api/disk') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(diskCache));
+        return;
+    }
+    // ── /api/profiles ────────────────────────────────────────────
+    // Bootable btrfs profiles at the top level, via `list-profiles`.
+    // The script prints a "Booted profile:" banner, a blank line, then
+    // an aligned NAME/KIND/ID/CREATED/RO/PARENT table with a trailing
+    // "<- booted" marker on the running root. We skip to the header row
+    // and split each data row on runs of 2+ spaces (subvol names never
+    // contain spaces). On a non-zero exit (not root / not btrfs) the
+    // list is empty and `error` carries the script's message.
+    if (req.url === '/api/profiles' && req.method === 'GET') {
+        // list-profiles columns (build 924): NAME [<- booted] KIND ID CREATED
+        // LAST USED RO PARENT. The "<- booted" marker sits inline after NAME,
+        // so it shifts the remaining columns by one for the booted row.
+        runBtrfsScript('sudo list-profiles', function(rp) {
+            var profiles = [], started = false;
+            rp.stdout.split('\n').forEach(function(raw) {
+                var t = raw.trim();
+                if (!started) { if (/^NAME\b/.test(t)) started = true; return; }
+                if (!t) return;
+                var cols = t.split(/\s{2,}/);
+                var booted = false, base = 1;
+                if (/^<-\s*booted$/.test(cols[1] || '')) { booted = true; base = 2; }
+                profiles.push({
+                    name:     cols[0],
+                    kind:     cols[base] || 'profile',
+                    booted:   booted,
+                    lastUsed: cols[base + 3] || ''   // kind, id, created, LAST USED
+                });
+            });
+            // Golden bases (stock) moved under @stock-snapshots and are listed
+            // by list-snapshots now; surface them as kind:'stock' profiles so
+            // they show (at the bottom of) the Profiles list.
+            runBtrfsScript('sudo list-snapshots', function(rs) {
+                rs.stdout.split('\n').forEach(function(raw) {
+                    var cols = raw.trim().split(/\s{2,}/);
+                    if (!/^@stock-snapshots\//.test(cols[0] || '')) return;
+                    profiles.push({
+                        name:     cols[0].replace(/^@stock-snapshots\//, ''),
+                        fullName: cols[0],
+                        kind:     'stock',
+                        booted:   false,
+                        lastUsed: ''
+                    });
+                });
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    profiles: profiles,
+                    error: rp.code !== 0
+                        ? (rp.stderr.trim() || rp.stdout.trim() || ('exit ' + rp.code))
+                        : null
+                }));
+            });
+        });
+        return;
+    }
+    // ── /api/snapshots ───────────────────────────────────────────
+    // Restore points under @snapshots, via `list-snapshots`. Build 924's
+    // output has two sections (restore points + golden bases) with their
+    // own headers; filter to lines whose first column is an @snapshots/
+    // path so section titles, headers, and golden bases are ignored.
+    if (req.url === '/api/snapshots' && req.method === 'GET') {
+        runBtrfsScript('sudo list-snapshots', function(r) {
+            var snapshots = [];
+            r.stdout.split('\n').forEach(function(raw) {
+                var cols = raw.trim().split(/\s{2,}/);
+                if (!/^@snapshots\//.test(cols[0] || '')) return;
+                snapshots.push({
+                    name:    cols[0],
+                    id:      cols[1] || '',
+                    created: cols[2] || '',
+                    parent:  cols[3] || ''
+                });
+            });
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                snapshots: snapshots,
+                error: r.code !== 0
+                    ? (r.stderr.trim() || r.stdout.trim() || ('exit ' + r.code))
+                    : null
+            }));
+        });
+        return;
+    }
+    // ── /api/snapshots/create ────────────────────────────────────
+    // Snapshot a profile into @snapshots, via `create-snapshot`.
+    // Optional body { profile } targets a non-booted root with -p @X
+    // (defaults to the booted root when absent). Optional { tag } is
+    // appended as an argument; the script slugifies it, but we still
+    // shell-quote. Echoes "Created <path>" on success.
+    if (req.url === '/api/snapshots/create' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            var profile = data && data.profile ? String(data.profile) : '';
+            var tag = data && data.tag ? String(data.tag) : '';
+            if (profile && !/^@[A-Za-z0-9._-]+$/.test(profile)) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, message: 'Invalid profile' }));
+                return;
+            }
+            var cmd = 'sudo create-snapshot -y'
+                + (profile ? ' -p ' + shq(profile) : '')
+                + (tag ? ' ' + shq(tag) : '');
+            runBtrfsScript(cmd, function(r) {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(btrfsResult(r)));
+            });
+        });
+        return;
+    }
+    // ── /api/snapshots/delete ────────────────────────────────────
+    // Body { name } — the full top-level path list-snapshots emits,
+    // e.g. "@snapshots/@Desktop_2026-06-29_19-52-31". delete-snapshot
+    // confirms once on stdin; `yes` answers it (and any re-prompt).
+    if (req.url === '/api/snapshots/delete' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            var name = data && data.name ? String(data.name) : '';
+            if (!/^@snapshots\/@[A-Za-z0-9._-]+$/.test(name)) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, message: 'Invalid snapshot name' }));
+                return;
+            }
+            runBtrfsScript('yes | sudo delete-snapshot ' + shq(name), function(r) {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(btrfsResult(r)));
+            });
+        });
+        return;
+    }
+    // ── /api/snapshots/delete-old ────────────────────────────────
+    // Body { profile, days } — prune every restore point of <profile>
+    // whose CREATED timestamp is older than <days> days. Reads
+    // list-snapshots, filters to @snapshots/<profile>_ lines, then
+    // deletes the stale ones one at a time (each confirms on stdin).
+    if (req.url === '/api/snapshots/delete-old' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            var profile = data && data.profile ? String(data.profile) : '';
+            var days = data && data.days ? parseInt(data.days, 10) : 0;
+            if (!/^@[A-Za-z0-9._-]+$/.test(profile) || !(days >= 1 && days <= 3650)) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, message: 'Invalid request' }));
+                return;
+            }
+            runBtrfsScript('sudo list-snapshots', function(r) {
+                var cutoff = Date.now() - days * 86400000;
+                var pfx = '@snapshots/' + profile + '_';
+                var toDelete = [];
+                r.stdout.split('\n').forEach(function(raw) {
+                    var cols = raw.trim().split(/\s{2,}/);
+                    var name = cols[0] || '';
+                    if (name.indexOf(pfx) !== 0) return;
+                    var t = Date.parse((cols[2] || '').replace(' ', 'T'));
+                    if (!isNaN(t) && t < cutoff) toDelete.push(name);
+                });
+                if (!toDelete.length) {
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ ok: true,
+                        message: 'No snapshots older than ' + days + ' days' }));
+                    return;
+                }
+                var i = 0, deleted = 0, failed = 0;
+                (function next() {
+                    if (i >= toDelete.length) {
+                        res.writeHead(200, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({ ok: failed === 0,
+                            message: 'Deleted ' + deleted + ' snapshot' +
+                                (deleted === 1 ? '' : 's') +
+                                (failed ? ', ' + failed + ' failed' : '') }));
+                        return;
+                    }
+                    var n = toDelete[i++];
+                    runBtrfsScript('yes | sudo delete-snapshot ' + shq(n), function(rr) {
+                        if (rr.code === 0) deleted++; else failed++;
+                        next();
+                    });
+                })();
+            });
+        });
+        return;
+    }
+    // ── /api/snapshots/restore ───────────────────────────────────
+    // Body { name } — restore a snapshot onto the booted profile via
+    // `create-profile <@snapshots/name>` (dest defaults to the booted
+    // profile; the previous copy is kept as <@dest>.old_<ts>). Takes
+    // effect after a reboot. create-profile confirms up to twice.
+    if (req.url === '/api/snapshots/restore' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            var name = data && data.name ? String(data.name) : '';
+            if (!/^@snapshots\/@[A-Za-z0-9._-]+$/.test(name)) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, message: 'Invalid snapshot name' }));
+                return;
+            }
+            runBtrfsScript('yes | sudo create-profile ' + shq(name), function(r) {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(btrfsResult(r)));
+            });
+        });
+        return;
+    }
+    // ── /api/profiles/clone ──────────────────────────────────────
+    // Body { source, dest } — clone a profile / stock base / snapshot into a
+    // new writable profile via `create-profile -y <source> <dest>`. Source may
+    // be a path (@stock-snapshots/… , @snapshots/…) so it allows '/'; dest is a
+    // plain top-level @name.
+    if (req.url === '/api/profiles/clone' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            var source = data && data.source ? String(data.source) : '';
+            var dest   = data && data.dest ? String(data.dest) : '';
+            if (!/^@[A-Za-z0-9._/@-]+$/.test(source) || /\.\./.test(source) ||
+                !/^@[A-Za-z0-9._-]+$/.test(dest)) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, message: 'Invalid name' }));
+                return;
+            }
+            runBtrfsScript('sudo create-profile -y ' + shq(source) + ' ' + shq(dest), function(r) {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(btrfsResult(r)));
+            });
+        });
+        return;
+    }
+    // ── /api/profiles/delete ─────────────────────────────────────
+    // Body { name } — a top-level profile name from list-profiles
+    // (@Desktop, @Desktop_stock, @Minimal.old_1 …; no slash).
+    // delete-profile confirms once, again if read-only, a third time
+    // for a _stock base, and refuses the booted profile; `yes` answers
+    // every prompt, the refusal still surfaces as a non-zero exit.
+    if (req.url === '/api/profiles/delete' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            var name = data && data.name ? String(data.name) : '';
+            if (!/^@[A-Za-z0-9._-]+$/.test(name)) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, message: 'Invalid profile name' }));
+                return;
+            }
+            runBtrfsScript('yes | sudo delete-profile ' + shq(name), function(r) {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(btrfsResult(r)));
+            });
+        });
         return;
     }
     if (req.url === '/api/hdmi') {

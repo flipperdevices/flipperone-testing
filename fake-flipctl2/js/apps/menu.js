@@ -29,6 +29,7 @@ var MenuScene = (function() {
     var menuItems = [
         'Router',
         'Boot Menu',
+        'FlipperOS',
         'Apps',
         'Files',
         'Network',
@@ -391,6 +392,8 @@ var MenuScene = (function() {
         'Testing': testingMenu,
         'Settings': settingsMenu,
         'Router':  function() { return null; },
+        // Root-level FlipperOS entry opens the btrfs Profiles list directly.
+        'FlipperOS': function(reSm) { return ProfilesApp.makeProfiles(reSm); },
         'Boot Menu': function(reSm) { return new BootMenuScene(reSm); },
         // Target apps surfaced in the main-menu first slot.
         'TV Media Box':     function(reSm) { return new TVMediaBoxScene(reSm); },
@@ -417,6 +420,7 @@ var MenuScene = (function() {
 
         var iconMap = {
             'Settings':         Icons.system,
+            'FlipperOS':        (typeof Icons !== 'undefined') ? Icons.sdcard : null,
             'TV Media Box':     (typeof Icons !== 'undefined') ? Icons.media : null,
             'Desktop Computer': (typeof Icons !== 'undefined') ? Icons.desktop_computer : null
             // 'Network' / 'Files' / 'Apps' / 'Testing' have no static

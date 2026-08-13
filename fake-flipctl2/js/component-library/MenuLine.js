@@ -52,11 +52,35 @@ var MenuLine = (function() {
         this.activeLabelYNudge = (typeof options.activeLabelYNudge === 'number')
             ? options.activeLabelYNudge
             : 1;
+        // When true, a label too wide for its column is elided with ".."
+        // while the row is idle, and horizontally marquee-scrolled (so it
+        // can be read in full) while the row is active. Default false
+        // keeps the stock overflow behaviour for existing menus.
+        this.labelScroll = !!options.labelScroll;
     }
 
     function spriteFrameHeight(sprite) {
         var frames = sprite.frames || 1;
         return frames > 1 ? Math.floor(sprite.h / frames) : sprite.h;
+    }
+
+    // Ping-pong marquee: pause at the start, scroll left to reveal the
+    // tail, pause at the end, scroll back. `overflow` is the hidden px;
+    // `elapsed` is ms since the row became active. Returns the px to
+    // shift the text left by.
+    function marqueeOffset(overflow, elapsed) {
+        var PAUSE = 900;                 // ms held at each end
+        var SPEED = 18;                  // px per second
+        var scroll = Math.max(1, overflow / SPEED * 1000);
+        var period = 2 * PAUSE + 2 * scroll;
+        var t = elapsed % period;
+        if (t < PAUSE) return 0;
+        t -= PAUSE;
+        if (t < scroll) return overflow * (t / scroll);
+        t -= scroll;
+        if (t < PAUSE) return overflow;
+        t -= PAUSE;
+        return overflow * (1 - t / scroll);
     }
 
     MenuLine.prototype.render = function(canvas, x, y) {
@@ -156,7 +180,31 @@ var MenuLine = (function() {
         var statusFont = Busy9pxFlipCTL;
         var textY = y + TEXT_DRAW_Y;
         var labelY = active ? (textY + this.activeLabelYNudge) : textY;
-        font.draw(canvas.ctx, this.text, textLeft, labelY, textColor);
+        if (this.labelScroll) {
+            // Reserve room on the right for the status text (if any),
+            // then either draw in full, elide (idle), or marquee (active).
+            var lblStatus = this.statusProvider ? this.statusProvider() : this.status;
+            var reservedR = STATUS_PAD_R + (lblStatus ? statusFont.textWidth(String(lblStatus)) + 4 : 0);
+            var labelMaxW = (x + this.w - reservedR) - textLeft;
+            var fullW = font.textWidth(this.text);
+            if (fullW <= labelMaxW || labelMaxW <= 0) {
+                font.draw(canvas.ctx, this.text, textLeft, labelY, textColor);
+            } else if (!active) {
+                var s = this.text;
+                while (s.length > 1 && font.textWidth(s + '..') > labelMaxW) s = s.slice(0, -1);
+                font.draw(canvas.ctx, s + '..', textLeft, labelY, textColor);
+            } else {
+                var off = marqueeOffset(fullW - labelMaxW, Date.now() - (this._selectedAt || Date.now()));
+                canvas.ctx.save();
+                canvas.ctx.beginPath();
+                canvas.ctx.rect(textLeft, y, labelMaxW, H);
+                canvas.ctx.clip();
+                font.draw(canvas.ctx, this.text, textLeft - Math.round(off), labelY, textColor);
+                canvas.ctx.restore();
+            }
+        } else {
+            font.draw(canvas.ctx, this.text, textLeft, labelY, textColor);
+        }
 
         var status = this.statusProvider ? this.statusProvider() : this.status;
         if (status) {
