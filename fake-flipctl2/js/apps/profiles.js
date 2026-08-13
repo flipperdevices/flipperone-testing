@@ -718,7 +718,12 @@ var ProfilesApp = (function() {
             {
                 sceneManager: sceneManager,
                 rowIcon: profileIcon,
-                rowDetail: function(p) { return p.lastUsed || ''; },   // LAST USED column
+                // LAST USED column; drop the century (2026 -> 26) and seconds.
+                rowDetail: function(p) {
+                    return (p.lastUsed || '')
+                        .replace(/^20(\d\d-)/, '$1')
+                        .replace(/(\d\d:\d\d):\d\d$/, '$1');
+                },
                 detailHeader: 'Last used',
                 rowH: 16,
                 // _stock golden bases sink to the bottom of the list.
