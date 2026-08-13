@@ -83,7 +83,7 @@ var Modem5gScene = (function() {
     };
 
     Modem5gScene.prototype.render = function(canvas) {
-        UI.drawStatusBar(canvas, '5G Modem');
+        UI.drawStatusBar(canvas, '5G Modem1');
 
         var y = UI.STATUS_BAR_H + 4;
         var lh = 10;
