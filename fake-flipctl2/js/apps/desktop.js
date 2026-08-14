@@ -22,6 +22,11 @@ var DesktopScene = (function() {
         // resolves, in which case the line is simply not drawn).
         this.currentTargetProfile = '';
 
+        // Booted btrfs profile (root subvolume, e.g. "@Minimal"), shown on
+        // the row above the hostname when there is no current target.
+        // Populated once from /api/profile/current.
+        this.bootedProfile = '';
+
         // Thermal readings in °C (null = not yet read).
         this.batteryTempC = null;
         this.cpuTempC = null;
@@ -86,6 +91,24 @@ var DesktopScene = (function() {
             var next = (data && data.profile) ? data.profile : '';
             if (next !== self.currentTargetProfile) {
                 self.currentTargetProfile = next;
+                if (typeof window.requestRender === 'function') window.requestRender();
+            }
+        };
+        xhr.send();
+    };
+
+    DesktopScene.prototype._fetchCurrentProfile = function() {
+        var self = this;
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', '/api/profile/current', true);
+        xhr.timeout = 3000;
+        xhr.onload = function() {
+            if (xhr.status !== 200) return;
+            var data;
+            try { data = JSON.parse(xhr.responseText); } catch (e) { return; }
+            var next = (data && data.profile) ? data.profile : '';
+            if (next !== self.bootedProfile) {
+                self.bootedProfile = next;
                 if (typeof window.requestRender === 'function') window.requestRender();
             }
         };
@@ -240,6 +263,7 @@ var DesktopScene = (function() {
 
     DesktopScene.prototype.enter = function() {
         this._fetchHostname();
+        this._fetchCurrentProfile();
         this._fetchAllStats();
         var self = this;
         this._tempTimer = setInterval(function() { self._fetchAllStats(); }, BATTERY_TEMP_POLL_MS);
@@ -402,7 +426,7 @@ var DesktopScene = (function() {
         // put regardless of hostnameShift (only rows below the
         // value-line move when the hostname wraps).
         var midDividerY = UI.STATUS_BAR_H + 48;
-        var hostnameLabel = 'Hostname';
+        var hostnameLabel = 'Hostname:';
         var hostnameWraps = !!(this.hostnameRaw
             && this.hostnameRaw.length > HOSTNAME_WRAP_THRESHOLD);
         var hostnameShift = hostnameWraps ? HOSTNAME_LINE_H : 0;
@@ -428,6 +452,19 @@ var DesktopScene = (function() {
             HaxrCorp4090FlipCTL.draw(canvas.ctx, tgtLabel, tgtLabelX, targetY, '#6D6D6D');
             HaxrCorp4090FlipCTL.draw(canvas.ctx, this.currentTargetProfile,
                 tgtLabelX + tgtLabelW + tgtGap, targetY, '#000');
+        } else if (this.bootedProfile) {
+            // No systemd target (plain profile) — show the booted btrfs
+            // profile on this row instead, same centered label+value style.
+            // Drop the leading '@' subvol marker for display.
+            var pLabel  = 'Profile:';
+            var pValue  = this.bootedProfile.replace(/^@/, '');
+            var pLabelW = HaxrCorp4090FlipCTL.textWidth(pLabel);
+            var pGap    = 4;
+            var pValueW = HaxrCorp4090FlipCTL.textWidth(pValue);
+            var pLabelX = Math.floor((canvas.w - (pLabelW + pGap + pValueW)) / 2);
+            HaxrCorp4090FlipCTL.draw(canvas.ctx, pLabel, pLabelX, targetY, '#6D6D6D');
+            HaxrCorp4090FlipCTL.draw(canvas.ctx, pValue,
+                pLabelX + pLabelW + pGap, targetY, '#000');
         }
 
         if (hostnameWraps) {

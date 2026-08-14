@@ -3316,6 +3316,18 @@ var server = http.createServer(function(req, res) {
         });
         return;
     }
+    // Booted btrfs profile (the root subvolume), read cheaply from the
+    // mount table — e.g. "/@Minimal" -> "@Minimal". Home screen shows it.
+    if (req.url === '/api/profile/current' && req.method === 'GET') {
+        var bootedProfile = '';
+        try {
+            bootedProfile = execSync('findmnt -no FSROOT /', { encoding: 'utf8', timeout: 3000 })
+                .trim().replace(/^\/+/, '');
+        } catch (e) {}
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ profile: bootedProfile }));
+        return;
+    }
     // ── UI PNG viewer ────────────────────────────────────────────
     // List + serve the PNGs dropped in /media/ui_png for the
     // Testing "UI PNG viewer" app.
