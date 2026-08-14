@@ -2,17 +2,16 @@
     var canvasEl = document.getElementById('screen');
     var canvas = new FlipCanvas(canvasEl);
 
-    // Desktop-browser affordance. The Flipper's on-device browser is
-    // WPE WebKit driven by cog, whose UA is "X11; Linux aarch64 ...
-    // AppleWebKit ... Safari" with no Chrome/Firefox/Edge token.
-    // Anything else is a developer viewing the panel on a PC, where
-    // the native 256x144 is tiny, so drop it into a Flipper One photo
-    // (amber-backlit) on a dark background. On the device we leave the
-    // plain panel untouched.
+    // COG (the device's WPE WebKit browser) vs a PC browser. The device
+    // UA is "X11; Linux aarch64 ... AppleWebKit ... Safari" with no
+    // Chrome/Firefox/Edge token; anything else is a PC viewer.
+    var ua = navigator.userAgent || '';
+    var isCOG = /Linux aarch64/.test(ua) && /AppleWebKit/.test(ua) &&
+        !/(Chrome|Chromium|Firefox|Edg|OPR|Android|Mobile)/.test(ua);
+
+    // On a PC, drop the panel into a Flipper One photo (amber-backlit) on
+    // a dark ground; the device keeps its plain panel.
     (function applyDesktopViewport() {
-        var ua = navigator.userAgent || '';
-        var isCOG = /Linux aarch64/.test(ua) && /AppleWebKit/.test(ua) &&
-            !/(Chrome|Chromium|Firefox|Edg|OPR|Android|Mobile)/.test(ua);
         if (isCOG) return;
         document.documentElement.style.background = '#14171C';
         document.body.style.background = '#14171C';
@@ -115,14 +114,17 @@
                 'white-space:nowrap;text-shadow:0 1px 2px rgba(0,0,0,0.9);display:none;';
             d.appendChild(label);
 
-            d.addEventListener('pointerdown', function(ev) {
-                ev.preventDefault();
-                if (window.input && window.input.press) window.input.press(r.a);
-                if (window.requestRender) window.requestRender();
-            });
-            function release() { if (window.input && window.input.release) window.input.release(r.a); }
-            d.addEventListener('pointerup', release);
-            d.addEventListener('pointerleave', release);
+            // Mirror viewer: forward the press to the device (held while down).
+            function mirrorPress(down) {
+                fetch('/api/mirror-input', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: r.a, down: down })
+                }).catch(function() {});
+            }
+            d.addEventListener('pointerdown', function(ev) { ev.preventDefault(); mirrorPress(true); });
+            d.addEventListener('pointerup', function() { mirrorPress(false); });
+            d.addEventListener('pointerleave', function() { mirrorPress(false); });
             wrap.appendChild(d);
             zones.push({ el: d, label: label, round: r.round });
         });
@@ -149,6 +151,63 @@
         toggle.appendChild(document.createTextNode(' Show Controls'));
         document.body.appendChild(toggle);
     })();
+
+    // ── Browser mirror mode (PC) ─────────────────────────────────
+    // A PC viewer does NOT run its own UI session. It shows the device's
+    // live screen (polled from /api/screen) blitted into the canvas, and
+    // forwards its keyboard to the device (the click map already forwards
+    // via /api/mirror-input). This keeps the PC in exact sync with COG.
+    if (!isCOG) {
+        setInterval(function() {
+            fetch('/api/screen', { cache: 'no-store' })
+                .then(function(r) { return r.status === 200 ? r.blob() : null; })
+                .then(function(blob) {
+                    if (!blob) return;
+                    var url = URL.createObjectURL(blob);
+                    var im = new Image();
+                    im.onload = function() {
+                        canvas.ctx.drawImage(im, 0, 0, canvasEl.width, canvasEl.height);
+                        URL.revokeObjectURL(url);
+                    };
+                    im.src = url;
+                })
+                .catch(function() {});
+        }, 100);
+
+        var MIRROR_KEYS = {
+            ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
+            Enter: 'ok', Escape: 'back', Backspace: 'back', Tab: 'appsw',
+            k: 'ok', i: 'up', m: 'down', j: 'left', l: 'right', h: 'appsw', n: 'back',
+            a: 'ptt', z: 'esc', x: 'edit', c: 'power', v: 'del', b: 'run'
+        };
+        function mirrorKey(action, down) {
+            fetch('/api/mirror-input', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: action, down: down })
+            }).catch(function() {});
+        }
+        document.addEventListener('keydown', function(e) {
+            var a = MIRROR_KEYS[e.key];
+            if (a && !e.repeat) { e.preventDefault(); mirrorKey(a, true); }
+        });
+        document.addEventListener('keyup', function(e) {
+            var a = MIRROR_KEYS[e.key];
+            if (a) { e.preventDefault(); mirrorKey(a, false); }
+        });
+
+        // Reload if the server process changes (same signal as the app).
+        (function() {
+            var base = null;
+            setInterval(function() {
+                fetch('/api/version', { cache: 'no-store' })
+                    .then(function(r) { return r.ok ? r.json().then(function(b) { return r.status + ':' + b.id; }) : String(r.status); })
+                    .then(function(s) { if (base === null) base = s; else if (s !== base) location.reload(); })
+                    .catch(function() {});
+            }, 2000);
+        })();
+        return;   // PC viewer stops here — no local scene session.
+    }
+
     var input = new Input();
     // Exposed so scenes / modals can poll continuous held-state
     // (e.g. Wi-Fi password modal's PTT-to-reveal). The action
@@ -255,6 +314,46 @@
         }, 2000);
     })();
 
+    // ── Device broadcast + remote input (COG only) ──────────────
+    // The device holds ONE Server-Sent-Events stream and does no polling.
+    // While idle it makes no requests and runs no timers. The server pushes
+    // `watch` (a viewer appeared/left) and `input` (a forwarded press). Only
+    // while watched do we run a 100ms uploader, and it encodes a frame only
+    // when the screen actually changed (`mirrorDirty`, set on each render).
+    var mirrorWatching = false;
+    var mirrorDirty = true;
+    var mirrorUploadTimer = null;
+    if (typeof EventSource !== 'undefined') {
+        var es = new EventSource('/api/mirror-events');
+        es.addEventListener('watch', function(e) {
+            var w = false;
+            try { w = !!JSON.parse(e.data).watching; } catch (x) {}
+            if (w === mirrorWatching) return;
+            mirrorWatching = w;
+            if (w) {
+                mirrorDirty = true;   // send the current frame on connect
+                mirrorUploadTimer = setInterval(function() {
+                    if (!mirrorDirty) return;
+                    mirrorDirty = false;
+                    try {
+                        var data = canvasEl.toDataURL('image/png').split(',')[1];
+                        fetch('/api/screen', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: data })
+                            .catch(function() {});
+                    } catch (x) {}
+                }, 100);
+            } else if (mirrorUploadTimer) {
+                clearInterval(mirrorUploadTimer); mirrorUploadTimer = null;
+            }
+        });
+        es.addEventListener('input', function(e) {
+            try {
+                var a = JSON.parse(e.data);
+                if (a.down) input.press(a.action); else input.release(a.action);
+                needsRender = true;
+            } catch (x) {}
+        });
+    }
+
     function loop(ts) {
         var keys = input.processQueue();
 
@@ -344,6 +443,7 @@
             // after would clobber that and stop the animation cold.
             var active = scenes.current();
             needsRender = false;
+            mirrorDirty = true;   // screen changed → mirror should re-upload
             canvas.clear('#000');
             if (active && active.render) {
                 active.render(canvas);

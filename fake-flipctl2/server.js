@@ -233,6 +233,37 @@ var BASE = __dirname;
 // Directory the "UI PNG viewer" Testing app browses.
 var UI_PNG_DIR = '/media/ui_png';
 
+// Browser-mirror relay: the device (COG) posts its framebuffer here and
+// PC viewers fetch it; PC viewers post button presses which the device
+// drains and injects. In-memory, latest-frame-wins.
+var mirrorFrame = null;    // latest device screen as a PNG Buffer
+var mirrorViewerAt = 0;    // ms of the last viewer frame fetch (presence)
+var MIRROR_VIEWER_TTL = 3000;  // a viewer is "watching" if seen within this
+var mirrorSSE = [];        // device Server-Sent-Events connections
+var mirrorWatching = false;  // server's current presence state
+var mirrorCheck = null;      // presence-expiry timer (alive only while watched)
+
+// Push an event to every connected device stream.
+function mirrorBroadcast(evt, obj) {
+    var payload = 'event: ' + evt + '\ndata: ' + JSON.stringify(obj) + '\n\n';
+    for (var i = 0; i < mirrorSSE.length; i++) { try { mirrorSSE[i].write(payload); } catch (e) {} }
+}
+// Flip watch-state and tell the device. The only mirror timer runs here,
+// and only while a viewer is present, to expire presence after the TTL.
+function mirrorSetWatching(w) {
+    if (w === mirrorWatching) return;
+    mirrorWatching = w;
+    mirrorBroadcast('watch', { watching: w });
+    if (w && !mirrorCheck) {
+        mirrorCheck = setInterval(function() {
+            if (Date.now() - mirrorViewerAt >= MIRROR_VIEWER_TTL) {
+                clearInterval(mirrorCheck); mirrorCheck = null;
+                mirrorSetWatching(false);
+            }
+        }, 1000);
+    }
+}
+
 var PSU = '/sys/class/power_supply/bq28z610-0';
 var QMI_DEV = '/dev/cdc-wdm0';
 
@@ -3239,6 +3270,52 @@ function setAirplaneMode(enabled, cb) {
 }
 
 var server = http.createServer(function(req, res) {
+    // ── Browser mirror relay (Server-Sent Events; no device polling) ──
+    // The device holds one SSE stream; the server pushes watch-state and
+    // forwarded presses down it, so the device issues no requests while idle.
+    if (req.url === '/api/mirror-events' && req.method === 'GET') {
+        res.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive'
+        });
+        res.write('retry: 3000\n\n');
+        res.write('event: watch\ndata: ' + JSON.stringify({ watching: mirrorWatching }) + '\n\n');
+        mirrorSSE.push(res);
+        req.on('close', function() {
+            var i = mirrorSSE.indexOf(res);
+            if (i >= 0) mirrorSSE.splice(i, 1);
+        });
+        return;
+    }
+    // Device posts its screen (base64 PNG body).
+    if (req.url === '/api/screen' && req.method === 'POST') {
+        var sChunks = [];
+        req.on('data', function(c) { sChunks.push(c); });
+        req.on('end', function() {
+            try { mirrorFrame = Buffer.from(Buffer.concat(sChunks).toString('utf8'), 'base64'); } catch (e) {}
+            res.writeHead(204); res.end();
+        });
+        return;
+    }
+    // Viewer fetches the frame; the fetch marks a viewer present, which
+    // pushes watch:true to the device so it starts streaming.
+    if (req.url === '/api/screen' && req.method === 'GET') {
+        mirrorViewerAt = Date.now();
+        mirrorSetWatching(true);
+        if (!mirrorFrame) { res.writeHead(204); res.end(); return; }
+        res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' });
+        res.end(mirrorFrame);
+        return;
+    }
+    // Viewer posts a press; push it straight to the device stream.
+    if (req.url === '/api/mirror-input' && req.method === 'POST') {
+        readJsonBody(req, function(err, d) {
+            if (d && d.action) mirrorBroadcast('input', { action: String(d.action), down: !!d.down });
+            res.writeHead(204); res.end();
+        });
+        return;
+    }
     // ── UI PNG viewer ────────────────────────────────────────────
     // List + serve the PNGs dropped in /media/ui_png for the
     // Testing "UI PNG viewer" app.
