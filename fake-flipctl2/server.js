@@ -5136,6 +5136,34 @@ var server = http.createServer(function(req, res) {
         });
         return;
     }
+    // ── /api/boot/profiles ──────────────────────────────────────
+    // GET → { profiles: [...] }: bootable btrfs profiles via list-profiles
+    // (name, booted, created, lastUsed) for the Boot Menu. Columns are
+    // parsed positionally (NAME [<- booted] KIND ID CREATED LAST USED ...);
+    // the "<- booted" marker shifts them by one. Skips _old leftovers.
+    if (req.url === '/api/boot/profiles' && req.method === 'GET') {
+        exec('sudo list-profiles', { encoding: 'utf8', timeout: 20000 }, function(err, stdout) {
+            var profiles = [], started = false;
+            (stdout || '').split('\n').forEach(function(raw) {
+                var t = raw.trim();
+                if (!started) { if (/^NAME\b/.test(t)) started = true; return; }
+                if (!t) return;
+                var cols = t.split(/\s{2,}/);
+                var booted = false, base = 1;
+                if (/^<-\s*booted$/.test(cols[1] || '')) { booted = true; base = 2; }
+                if ((cols[base] || 'profile') !== 'profile') return;   // skip _old etc.
+                profiles.push({
+                    name:     cols[0],
+                    booted:   booted,
+                    created:  cols[base + 2] || '',
+                    lastUsed: cols[base + 3] || ''
+                });
+            });
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ profiles: profiles, error: err ? 'list-profiles failed' : null }));
+        });
+        return;
+    }
     // ── /api/target/current ─────────────────────────────────────
     // Which boot profile is active right now (TV Media Box /
     // Desktop Computer / Minimal system). The Desktop dashboard

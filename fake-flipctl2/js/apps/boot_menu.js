@@ -1,354 +1,160 @@
 /**
  * BootMenuScene
  *
- * Main-menu "Boot Menu" entry. Same content as the Boot menu UI
- * demo (the U-BOOT header + the five boot profiles, with their
- * icons), but rendered in the project's standard menu style —
- * MenuLine rows (Born2bSportyV2FlipCTL when selected, Busy9pxFlipCTL
- * otherwise) under a MenuSelectorFrame, like the Network / Apps /
- * Testing submenus. No app-defined buttons.
+ * Main-menu "Boot Menu": a titled header with a full-width auto-start
+ * progress bar (inverts the header text as it fills), a scrollable list of
+ * bootable profiles (from list-profiles) with icons and a "Used <when>"
+ * column, a rounded selector, and Info / Edit soft buttons over the X / V
+ * keys. Rows use HaxrCorp so the label keeps one baseline in every state.
  *
- * Up/down moves the selection (wraps); OK gives a press flash;
- * Back / Esc returns to the main menu.
+ * Any key press cancels the auto-start countdown (bar empties and stops,
+ * countdown text hides). Selecting/booting is not wired yet.
  */
 var BootMenuScene = (function() {
-    // Geometry mirrors SubMenuScene's standard menu chrome.
-    var CONTAINER_X   = 5;     // icon lands at x = 8
-    var CONTAINER_W   = 224;
-    var HEADER_Y      = 5;     // U-BOOT header baseline
-    var CONTAINER_Y   = 20;    // first row top (below the header)
-    var DIVIDER_COLOR = '#CCCCCC';
+    var CONTAINER_X    = 5;      // icon lands at x = 8
+    var HEADER_H       = 18;     // title bar height
+    var CONTAINER_Y    = 20;     // first row top (below the header)
+    var DIVIDER_COLOR  = '#CCCCCC';
 
     var SELECTOR_X             = 4;
     var SELECTOR_W_WITH_SCROLL = 244;
     var SELECTOR_W_NO_SCROLL   = 247;
-    var SELECTOR_H             = 22;
+    var SELECTOR_H             = 16;
     var SELECTOR_CORNER_R      = 3;
-    var SELECTOR_Y_OFFSET      = -1;
+    var SELECTOR_Y_OFFSET      = 0;   // 16px frame on the 16px row
 
     var SCROLLBAR_X         = 253;
-    var SCROLLBAR_THUMB_PAD = 1;
+    var SCROLLBAR_THUMB_PAD  = 1;
 
-    // Rows that fit between the header and the bottom edge.
-    var VISIBLE_COUNT = 5;
+    var VISIBLE_COUNT = 6;
+    var ICON_BOX_W    = 12;   // fixed icon column so labels line up
+    var ROW_H         = 16;   // row height (tighter than MenuLine.H = 20)
+    var TIMEOUT_MS    = 5000; // auto-start countdown before loading the default
 
-    // Maps each profile to the systemd target its extlinux entry
-    // boots (parsed from the `append … systemd.unit=` line). The
-    // profile whose target equals the DEFAULT entry's target gets
-    // the "default" tag. A label with no systemd.unit override
-    // boots the normal graphical/KDE default → 'default'.
-    var PROFILE_TARGET = {
-        'Router':           'router.target',
-        'TV Media Box':     'tv-media-box.target',
-        'Minimal system':   'multi-user.target',
-        'Desktop Computer': 'default'
-    };
+    function ic(name) { return (typeof Icons !== 'undefined') ? Icons[name] : null; }
 
-    // systemd target each profile switches to NOW on OK
-    // (`systemctl isolate`). Note Desktop runs graphical.target,
-    // unlike its extlinux "no systemd.unit" default above.
-    var ISOLATE_TARGET = {
-        'Router':           'router.target',
-        'TV Media Box':     'tv-media-box.target',
-        'Desktop Computer': 'graphical.target',
-        'Minimal system':   'multi-user.target'
-    };
+    // Display name of a profile: drop the leading '@' subvol marker.
+    function dispName(n) { return String(n || '').replace(/^@/, ''); }
 
-    // Profiles whose availability is verified against the live systemd
-    // target list (GET /api/boot/targets) rather than assumed: each is
-    // shown active only when its target is present, and dimmed 'N/A'
-    // otherwise. (Profile name → target to look for.) The other rows
-    // are static placeholders ('TBA'), unaffected by this check.
-    var DYNAMIC_PROFILE_TARGET = {
-        'Router':           'router.target',
-        'TV Media Box':     'tv-media-box.target',
-        'Desktop Computer': 'graphical.target'
-    };
+    // Boot-menu icon for a profile, chosen by its name.
+    function bootIcon(name) {
+        var n = (name || '').toLowerCase();
+        if (n.indexOf('minimal') >= 0)  return ic('minimal_small');
+        if (n.indexOf('graphics') >= 0) return ic('no_graphics_boot_menu');
+        if (n.indexOf('desktop') >= 0)  return ic('small_desktop');
+        if (n.indexOf('router') >= 0)   return ic('router_small');
+        if (n.indexOf('media') >= 0 || n.indexOf('tv') >= 0) return ic('media_small');
+        return ic('flipper_os');
+    }
+
+    // "Used <when>" relative time (mockup style: singular units). Sentinels:
+    // '' / 'never' -> blank, 'now' (the booted profile) -> "Running".
+    function usedAgo(lu) {
+        lu = lu || '';
+        if (lu === '' || lu === 'never') return '';
+        if (lu === 'now') return 'Running';
+        var t = Date.parse(lu.replace(' ', 'T'));
+        if (isNaN(t)) return lu;
+        var s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+        function u(n, w) { return 'Used ' + n + ' ' + w + (n === 1 ? '' : 's') + ' ago'; }
+        if (s < 60) return 'Used just now';
+        var m = Math.floor(s / 60);  if (m < 60) return u(m, 'min');
+        var h = Math.floor(m / 60);  if (h < 24) return u(h, 'hour');
+        var d = Math.floor(h / 24);  if (d < 30) return u(d, 'day');
+        var mo = Math.floor(d / 30); if (mo < 12) return u(mo, 'month');
+        return u(Math.floor(d / 365), 'year');
+    }
 
     function BootMenuScene(sceneManager) {
         this.sceneManager    = sceneManager || null;
         this.displayName     = 'Boot Menu';
         this.breadcrumbTitle = 'Boot Menu';
 
-        var names = [
-            'Router',
-            'TV Media Box',
-            'Desktop Computer',
-            'Minimal system',
-            'Boot from SD card'
-        ];
-        var iconMap = {
-            'Router':            Icons.router,
-            'TV Media Box':       Icons.media,
-            'Desktop Computer':   Icons.desktop,
-            'Minimal system':     Icons.minimal,
-            'Boot from SD card':  Icons.sdcard
-        };
-        // Profiles that aren't wired yet: rendered at 50% opacity
-        // with a "TBA" status and skipped by the selector.
-        var inactiveSet = {
-            'Minimal system':     true,
-            'Boot from SD card':  true
-        };
-
-        this.items = [];
-        for (var i = 0; i < names.length; i++) {
-            var nm        = names[i];
-            var isStatic  = !!inactiveSet[nm];             // permanent placeholder
-            var isDynamic = !!DYNAMIC_PROFILE_TARGET[nm];  // target-gated profile
-            // Status while inactive: static placeholders are 'TBA'
-            // (planned); the target-gated profiles use 'N/A' (target
-            // not present / not yet verified).
-            var inactiveStatus = isStatic ? 'TBA' : 'N/A';
-            // Target-gated profiles START inactive — grayed exactly like
-            // the placeholders — and are promoted to active by
-            // _applyTargets ONLY once their systemd target is confirmed
-            // present. So a profile is never shown active until verified.
-            var startInactive = isStatic || isDynamic;
-            var line = new MenuLine({
-                text:  nm,
-                width: CONTAINER_W,
-                icon:  iconMap[nm] || null,
-                status: startInactive ? inactiveStatus : null
-            });
-            line._inactive       = startInactive;
-            line._inactiveStatus = inactiveStatus;
-            this.items.push(line);
-        }
-        // Initial selection: the first target-gated profile. It starts
-        // grayed and is promoted once its target is confirmed; if it
-        // turns out unavailable, _applyTargets hops the selection to the
-        // next active row. Falls back to row 0.
-        this.selectedIndex = 0;
-        for (var s = 0; s < this.items.length; s++) {
-            if (DYNAMIC_PROFILE_TARGET[this.items[s].text]) { this.selectedIndex = s; break; }
-        }
-        this.items[this.selectedIndex].state = MenuLine.STATE_SELECTED;
-        this.scrollOffset = 0;
-        this.containerY   = CONTAINER_Y;
+        // Entries loaded from list-profiles on enter().
+        this.items         = [];
+        this.loading       = true;
+        this.selectedIndex = 0;      // default: the first line (auto-start target)
+        this.scrollOffset  = 0;
+        this._autoStart    = true;   // countdown active until a key press
+        this._startAt      = 0;      // countdown start (ms); set in enter()
+        this._timer        = null;
 
         this.selectorFrame = new MenuSelectorFrame({
-            x: SELECTOR_X, y: 0,
-            width: SELECTOR_W_WITH_SCROLL, height: SELECTOR_H,
-            anchorH: 'left', anchorV: 'top',
-            strokeColor: '#000', showStroke: true, showFill: false
+            x: SELECTOR_X, y: 0, width: SELECTOR_W_WITH_SCROLL, height: SELECTOR_H,
+            anchorH: 'left', anchorV: 'top', strokeColor: '#000', showStroke: true, showFill: false
         });
-        this.scrollbar = new UI.Scrollbar(this.items.length, VISIBLE_COUNT, this.scrollOffset);
+        this.scrollbar = new UI.Scrollbar(0, VISIBLE_COUNT, 0);
 
-        // Edit button on the V slot (x = 156, 'del' action). A
-        // toggle button — its 2 px bar lights up while the modal
-        // is open. Opens a small centred modal with one option.
-        var self = this;
-        this._editBtn = new UI.MiddleToggleButton('Edit', 0, 48, 2, 'del',
-            function() { self._openEdit(); }, false);
-        this._editBtn.x = 156;
-        this._editOpen  = false;
-        this._editItems = ['Select as default'];
-        this._editIndex = 0;
-        this._editSelectorFrame = new MenuSelectorFrame({
-            x: 0, y: 0, width: 1, height: 1,
-            anchorH: 'left', anchorV: 'top',
-            strokeColor: '#000', showStroke: true, showFill: false
-        });
-
-        // "Starting…" spinner modal shown while a selected profile's
-        // target is being isolated, until it reaches 'active'.
-        this._spinnerOpen   = false;
-        this._spinnerTarget = null;
-        this._spinnerTimer  = null;
-        this._spinnerTick   = 0;
+        // Soft buttons over their physical keys: Info over X ('edit' slot,
+        // x=50), Edit over V ('middle' slot, x=156).
+        this.infoBtn = new UI.MiddleButton('Info', 0, 48, 2, 'edit', function() {});
+        this.infoBtn.x = 50;  this.infoBtn.w = 48;
+        this.editBtn = new UI.MiddleButton('Edit', 0, 48, 2, 'del', function() {});
+        this.editBtn.x = 156; this.editBtn.w = 48;
     }
 
     BootMenuScene.prototype.enter = function() {
-        // Gate the target-backed profiles against the live target list
-        // first, then re-fetch the extlinux default (so the "Default"
-        // tag lands on a row whose active/inactive state is settled).
-        this._fetchTargets();
+        if (this._timer) { clearInterval(this._timer); this._timer = null; }
+        this._autoStart = true;   // will start once the profiles arrive
+        this._startAt = 0;
+        this._fetchProfiles();
     };
-    BootMenuScene.prototype.exit  = function() {
-        if (this._spinnerTimer) {
-            clearInterval(this._spinnerTimer);
-            this._spinnerTimer = null;
-        }
+    BootMenuScene.prototype.exit = function() {
+        if (this._timer) { clearInterval(this._timer); this._timer = null; }
     };
 
-    // GET the live systemd target list and gate the target-backed
-    // profiles on it, then (always) re-fetch the extlinux default.
-    // Runs the default re-fetch even on error so an unreachable /
-    // mocked endpoint still tags the default off the optimistic state.
-    BootMenuScene.prototype._fetchTargets = function() {
+    // Start the auto-start countdown + progress bar. Called only after the
+    // profiles have loaded, so the bar never moves against an empty list.
+    BootMenuScene.prototype._startCountdown = function() {
         var self = this;
-        var done = function() { self._refetchDefault(); };
-        try {
-            var x = new XMLHttpRequest();
-            x.open('GET', '/api/boot/targets', true);
-            x.timeout = 3000;
-            x.onload = function() {
-                if (x.status === 200) {
-                    try {
-                        var d = JSON.parse(x.responseText);
-                        self._applyTargets(d.targets || []);
-                    } catch (e) {}
-                }
-                done();
-            };
-            x.onerror   = done;
-            x.ontimeout = done;
-            x.send();
-        } catch (e) { done(); }
-    };
-
-    // Mark each target-gated profile active/inactive by whether its
-    // target appears in the live list. Absent → dimmed 'N/A' and
-    // skipped by the selector; present → active (default tag applied
-    // afterwards). If the current selection lands on a row that just
-    // went inactive, move it to the next selectable one.
-    BootMenuScene.prototype._applyTargets = function(targets) {
-        var present = {};
-        for (var t = 0; t < targets.length; t++) present[targets[t]] = true;
-        for (var i = 0; i < this.items.length; i++) {
-            var tgt = DYNAMIC_PROFILE_TARGET[this.items[i].text];
-            if (!tgt) continue;   // static placeholder — leave as-is
-            var avail = !!present[tgt];
-            this.items[i]._inactive = !avail;
-            this.items[i].status = avail
-                ? (this.items[i]._isDefault ? 'Default' : null)
-                : this.items[i]._inactiveStatus;   // 'N/A'
-        }
-        // Selection may now sit on a freshly-inactive row — hop off it.
-        if (this.items[this.selectedIndex] && this.items[this.selectedIndex]._inactive) {
-            this.items[this.selectedIndex].state = MenuLine.STATE_DEFAULT;
-            this.selectedIndex = this._nextSelectable(this.selectedIndex, 1);
-            this.items[this.selectedIndex].state = MenuLine.STATE_SELECTED;
-            this._ensureVisible();
-        }
-        if (window.requestRender) window.requestRender();
-    };
-
-    // GET the extlinux DEFAULT and re-tag the matching profile.
-    BootMenuScene.prototype._refetchDefault = function() {
-        var self = this;
-        try {
-            var x = new XMLHttpRequest();
-            x.open('GET', '/api/boot/default', true);
-            x.timeout = 3000;
-            x.onload = function() {
-                if (x.status !== 200) return;
-                try { self._applyDefault(JSON.parse(x.responseText)); } catch (e) {}
-            };
-            x.send();
-        } catch (e) { /* offline / mocked — ignore */ }
-    };
-
-    // Move the "Default" tag to whichever profile matches the
-    // DEFAULT entry's systemd target. Clears any previous tag
-    // first (restoring "TBA" on inactive rows) so it tracks
-    // changes made via Select as default.
-    BootMenuScene.prototype._applyDefault = function(data) {
-        var tgt = data && data.defaultTarget;
-        for (var i = 0; i < this.items.length; i++) {
-            if (this.items[i]._isDefault) {
-                this.items[i]._isDefault = false;
-                this.items[i].status = this.items[i]._inactive
-                    ? (this.items[i]._inactiveStatus || 'TBA')
-                    : null;
-            }
-        }
-        if (tgt) {
-            for (var j = 0; j < this.items.length; j++) {
-                if (PROFILE_TARGET[this.items[j].text] === tgt) {
-                    this.items[j].status     = 'Default';
-                    this.items[j]._isDefault = true;
-                }
-            }
-        }
-        if (window.requestRender) window.requestRender();
-    };
-
-    BootMenuScene.prototype._openEdit = function() {
-        this._editOpen  = true;
-        this._editIndex = 0;
-        if (window.requestRender) window.requestRender();
-    };
-
-    // Switch the running system to the profile's target now
-    // (`systemctl isolate`) and show the "Starting…" spinner until
-    // that target reports active. Fire-and-forget POST — isolating
-    // may tear down this UI's session, which is the intended mode
-    // switch; if the UI survives, the spinner closes on active.
-    BootMenuScene.prototype._isolate = function(name) {
-        var tgt = ISOLATE_TARGET[name];
-        if (!tgt) return;
-        try {
-            var x = new XMLHttpRequest();
-            x.open('POST', '/api/boot/isolate', true);
-            x.setRequestHeader('Content-Type', 'application/json');
-            x.timeout = 5000;
-            x.send(JSON.stringify({ target: tgt }));
-        } catch (e) { /* offline / mocked — ignore */ }
-        this._startSpinner(tgt);
-    };
-
-    BootMenuScene.prototype._startSpinner = function(tgt) {
-        var self = this;
-        this._spinnerOpen   = true;
-        this._spinnerTarget = tgt;
-        this._spinnerTick   = 0;
-        if (this._spinnerTimer) clearInterval(this._spinnerTimer);
-        // 80 ms ticks: repaint every tick (the spinner animates off
-        // Date.now()), poll the target every ~6th tick (~0.5 s).
-        this._spinnerTimer = setInterval(function() {
+        if (this._timer) clearInterval(this._timer);
+        this._startAt = Date.now();
+        this._timer = setInterval(function() {
+            if (!self._autoStart) { clearInterval(self._timer); self._timer = null; return; }
             if (window.requestRender) window.requestRender();
-            self._spinnerTick++;
-            if (self._spinnerTick % 6 === 0) self._checkTargetActive();
-        }, 80);
-        setTimeout(function() { self._checkTargetActive(); }, 400);
+            if (Date.now() - self._startAt >= TIMEOUT_MS) {
+                clearInterval(self._timer);
+                self._timer = null;
+            }
+        }, 100);
     };
 
-    BootMenuScene.prototype._checkTargetActive = function() {
-        if (!this._spinnerOpen) return;
+    BootMenuScene.prototype._fetchProfiles = function() {
         var self = this;
-        try {
-            var x = new XMLHttpRequest();
-            x.open('GET', '/api/boot/target-active?target='
-                + encodeURIComponent(this._spinnerTarget), true);
-            x.timeout = 3000;
-            x.onload = function() {
-                if (x.status !== 200) return;
-                try {
-                    var d = JSON.parse(x.responseText);
-                    if (d.active) self._stopSpinner();
-                } catch (e) {}
-            };
-            x.send();
-        } catch (e) {}
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', '/api/boot/profiles', true);
+        xhr.timeout = 10000;
+        function done(list) { self._setProfiles(list || []); }
+        xhr.onload = function() {
+            var list = [];
+            if (xhr.status === 200) {
+                try { list = JSON.parse(xhr.responseText).profiles || []; } catch (e) {}
+            }
+            done(list);
+        };
+        xhr.onerror   = function() { done([]); };
+        xhr.ontimeout = function() { done([]); };
+        xhr.send();
     };
 
-    BootMenuScene.prototype._stopSpinner = function() {
-        if (this._spinnerTimer) {
-            clearInterval(this._spinnerTimer);
-            this._spinnerTimer = null;
-        }
-        this._spinnerOpen = false;
+    BootMenuScene.prototype._setProfiles = function(list) {
+        this.items = list.map(function(p) {
+            return new MenuLine({ text: dispName(p.name), width: 224, icon: bootIcon(p.name),
+                                  status: usedAgo(p.lastUsed) || null, iconBoxW: ICON_BOX_W,
+                                  // single font in every state -> no baseline
+                                  // shift when the row becomes selected. Text
+                                  // lowered to sit against the icon bottom.
+                                  font: HaxrCorp4090FlipCTL, activeLabelYNudge: 0,
+                                  labelYOffset: 0, rowHeight: ROW_H });
+        });
+        this.loading = false;
+        this.selectedIndex = 0;
+        this.scrollOffset = 0;
+        if (this.items.length) this.items[0].state = MenuLine.STATE_SELECTED;
+        // Begin the auto-start countdown now that the data is in, unless a key
+        // press already cancelled it while loading.
+        if (this._autoStart) this._startCountdown();
         if (window.requestRender) window.requestRender();
-    };
-
-    // "Select as default" — set the currently-selected profile as
-    // the boot default (POST its systemd target), then re-fetch
-    // to move the "Default" tag.
-    BootMenuScene.prototype._selectAsDefault = function() {
-        var name = this.items[this.selectedIndex].text;
-        var tgt  = PROFILE_TARGET[name];
-        if (!tgt) return;
-        var self = this;
-        try {
-            var x = new XMLHttpRequest();
-            x.open('POST', '/api/boot/default', true);
-            x.setRequestHeader('Content-Type', 'application/json');
-            x.timeout = 3000;
-            x.onload = function() { self._refetchDefault(); };
-            x.send(JSON.stringify({ target: tgt }));
-        } catch (e) { /* offline / mocked — ignore */ }
     };
 
     BootMenuScene.prototype._ensureVisible = function() {
@@ -359,257 +165,132 @@ var BootMenuScene = (function() {
         }
     };
 
-    // Next selectable (active) index from `from` in `dir` (+1/-1),
-    // wrapping and skipping inactive rows. Returns `from` if no
-    // other active row exists.
-    BootMenuScene.prototype._nextSelectable = function(from, dir) {
-        var n = this.items.length;
-        var i = from;
-        for (var step = 0; step < n; step++) {
-            i = (i + dir + n) % n;
-            if (!this.items[i]._inactive) return i;
-        }
-        return from;
+    BootMenuScene.prototype._flash = function(btn) {
+        btn.press();
+        if (window.requestRender) window.requestRender();
+        setTimeout(function() {
+            btn.release();
+            if (window.requestRender) window.requestRender();
+        }, 30);
+        if (typeof btn.onPress === 'function') btn.onPress();
     };
 
     BootMenuScene.prototype.handleInput = function(action) {
-        // While the "Starting…" spinner is up, swallow input. Esc /
-        // Back hides the spinner (the isolate has already fired;
-        // this just dismisses the overlay).
-        if (this._spinnerOpen) {
-            if (action === 'back' || action === 'esc') this._stopSpinner();
-            return;
-        }
-
-        // Edit modal owns input while open.
-        if (this._editOpen) {
-            var en = this._editItems.length;
-            if (action === 'up') {
-                this._editIndex = (this._editIndex - 1 + en) % en;
-            } else if (action === 'esc' || action === 'back' || action === 'del') {
-                // Esc / Back, or a second press of Edit (V), closes it.
-                this._editOpen = false;
-            } else if (action === 'down') {
-                this._editIndex = (this._editIndex + 1) % en;
-            } else if (action === 'ok' || action === 'run') {
-                // Only option for now: Select as default. No-op if
-                // the selected profile is already the default (the
-                // option is shown inert / gray in that case).
-                this._editOpen = false;
-                if (!this.items[this.selectedIndex]._isDefault) {
-                    this._selectAsDefault();
-                }
-            }
+        // Any key cancels auto-start: the bar resets to empty and stops, and
+        // the countdown text hides.
+        if (this._autoStart) {
+            this._autoStart = false;
+            if (this._timer) { clearInterval(this._timer); this._timer = null; }
             if (window.requestRender) window.requestRender();
-            return;
         }
 
-        if (action === 'back' || action === 'esc') return 'pop';
+        if (action === 'back') return 'pop';
 
-        // V (Edit) opens the edit modal for the selected profile.
-        if (action === 'del') {
-            var eb = this._editBtn;
-            eb.press();
-            if (window.requestRender) window.requestRender();
-            setTimeout(function() {
-                eb.release();
-                if (window.requestRender) window.requestRender();
-            }, 30);
-            this._openEdit();
-            return;
-        }
+        // X key -> Info; V key -> Edit.
+        if (action === 'edit') { this._flash(this.infoBtn); return; }
+        if (action === 'del')  { this._flash(this.editBtn); return; }
 
+        var n = this.items.length;
+        if (!n) return;
         if (action === 'down' || action === 'up') {
-            var next = this._nextSelectable(this.selectedIndex, action === 'down' ? 1 : -1);
-            if (next !== this.selectedIndex) {
-                this.items[this.selectedIndex].state = MenuLine.STATE_DEFAULT;
-                this.selectedIndex = next;
-                this.items[this.selectedIndex].state = MenuLine.STATE_SELECTED;
-                this._ensureVisible();
-                if (window.requestRender) window.requestRender();
-            }
-        } else if (action === 'ok' || action === 'run') {
-            var self = this;
+            this.items[this.selectedIndex].state = MenuLine.STATE_DEFAULT;
+            this.selectedIndex = (action === 'down')
+                ? (this.selectedIndex + 1) % n
+                : (this.selectedIndex - 1 + n) % n;
+            this.items[this.selectedIndex].state = MenuLine.STATE_SELECTED;
+            this._ensureVisible();
+            if (window.requestRender) window.requestRender();
+        } else if (action === 'ok') {
             var line = this.items[this.selectedIndex];
             line.state = MenuLine.STATE_PRESSED;
             if (window.requestRender) window.requestRender();
             setTimeout(function() {
                 line.state = MenuLine.STATE_SELECTED;
                 if (window.requestRender) window.requestRender();
-            }, 30);
-            // Switch the running system to the selected profile.
-            this._isolate(line.text);
+            }, 120);
         }
     };
 
     BootMenuScene.prototype.render = function(canvas) {
+        var ctx = canvas.ctx;
         canvas.clear('#fff');
 
-        // U-BOOT header (centred), kept from the demo.
-        var headerText  = 'FlipperOS Boot profiles | U-BOOT';
-        var headerWidth = HaxrCorp4090FlipCTL.textWidth(headerText);
-        HaxrCorp4090FlipCTL.draw(canvas.ctx, headerText,
-            Math.floor((canvas.w - headerWidth) / 2), HEADER_Y, '#000');
+        // Grey header background (the progress bar's black fill sweeps over it).
+        canvas.drawRect(0, 0, canvas.w, HEADER_H, '#D9D9D9');
 
-        // Selector width tracks scrollbar visibility; divider
-        // matches the selector's straight edge (width − 2×radius).
-        var total     = this.items.length;
-        var hasScroll = total > VISIBLE_COUNT;
-        var selectorW = hasScroll ? SELECTOR_W_WITH_SCROLL : SELECTOR_W_NO_SCROLL;
-        var dividerX  = SELECTOR_X + SELECTOR_CORNER_R;
-        var dividerW  = selectorW - 2 * SELECTOR_CORNER_R;
+        // Header: full-width auto-start progress bar. A black fill sweeps
+        // left->right over TIMEOUT_MS while counting; the header text inverts
+        // to white over the fill. Once a key cancels it, the bar is empty and
+        // the countdown text is gone. The "Boot Menu" title is always shown
+        // (the only non-HaxrCorp text).
+        // The bar/countdown only exist once the countdown has actually started
+        // (after the profiles loaded) and until a key cancels it.
+        var started = this._autoStart && this._startAt > 0;
+        var elapsed = started ? Math.min(TIMEOUT_MS, Date.now() - this._startAt) : 0;
+        var fillW   = started ? Math.round(canvas.w * (elapsed / TIMEOUT_MS)) : 0;
 
-        // MenuLine `w` = its status right-align reference; extend so
-        // the right edge lands on the selector's right edge.
-        var lineW = selectorW + SELECTOR_X - CONTAINER_X;
-        for (var k = 0; k < this.items.length; k++) this.items[k].w = lineW;
+        var title  = 'Boot Menu';
+        var titleX = Math.floor((canvas.w - Born2bSportyV2FlipCTL.textWidth(title)) / 2);
+        var auto = '', autoX = 0;
+        if (started) {
+            var remaining = Math.max(0, Math.ceil((TIMEOUT_MS - elapsed) / 1000));
+            auto  = 'Auto start in ' + remaining + 's...';
+            autoX = canvas.w - 4 - HaxrCorp4090FlipCTL.textWidth(auto);
+        }
+        var drawHeader = function(titleColor, autoColor) {
+            Born2bSportyV2FlipCTL.draw(ctx, title, titleX, 3, titleColor);
+            if (auto) HaxrCorp4090FlipCTL.draw(ctx, auto, autoX, 4, autoColor);
+        };
+        drawHeader('#000000', '#999999');                 // base, on white
+        if (fillW > 0) {
+            canvas.drawRect(0, 0, fillW, HEADER_H, '#000');   // progress fill
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(0, 0, fillW, HEADER_H);
+            ctx.clip();
+            drawHeader('#ffffff', '#ffffff');              // inverted over the fill
+            ctx.restore();
+        }
 
-        var first = this.scrollOffset;
-        var last  = Math.min(total, first + VISIBLE_COUNT);
-        var y = this.containerY;
-        var selectedLineY = this.containerY;
-        for (var i = first; i < last; i++) {
-            if (i === this.selectedIndex) selectedLineY = y;
-            // Inactive rows render at 50% opacity (text, icon and
-            // the "TBA" status all dim together). The divider below
-            // stays full strength.
-            if (this.items[i]._inactive) {
-                canvas.ctx.globalAlpha = 0.5;
+        if (!this.items.length) {
+            var msg = this.loading ? 'Loading...' : '(no profiles)';
+            HaxrCorp4090FlipCTL.draw(ctx, msg, 8, CONTAINER_Y + 5, '#888888');
+        } else {
+            var total     = this.items.length;
+            var hasScroll = total > VISIBLE_COUNT;
+            var selectorW = hasScroll ? SELECTOR_W_WITH_SCROLL : SELECTOR_W_NO_SCROLL;
+            var dividerX  = SELECTOR_X + SELECTOR_CORNER_R;
+            var dividerW  = selectorW - 2 * SELECTOR_CORNER_R;
+            var lineW     = selectorW + SELECTOR_X - CONTAINER_X;
+            for (var k = 0; k < this.items.length; k++) this.items[k].w = lineW;
+
+            var first = this.scrollOffset;
+            var last  = Math.min(total, first + VISIBLE_COUNT);
+            var y = CONTAINER_Y, selY = CONTAINER_Y;
+            for (var i = first; i < last; i++) {
+                if (i === this.selectedIndex) selY = y;
                 this.items[i].render(canvas, CONTAINER_X, y);
-                canvas.ctx.globalAlpha = 1.0;
-            } else {
-                this.items[i].render(canvas, CONTAINER_X, y);
+                y += ROW_H;
+                if (i < last - 1) y += 1;   // 1px row spacing, no divider line
             }
-            y += MenuLine.H;
-            if (i < last - 1) {
-                canvas.drawHLine(dividerX, y, dividerW, DIVIDER_COLOR);
-                y += 1;
+
+            var pressed = this.items[this.selectedIndex].state === MenuLine.STATE_PRESSED;
+            this.selectorFrame.setPosition(SELECTOR_X, selY + SELECTOR_Y_OFFSET);
+            this.selectorFrame.setSize(selectorW, SELECTOR_H);
+            this.selectorFrame.setShowFill(pressed);
+            if (pressed) this.selectorFrame.setFillColor('#000');
+            this.selectorFrame.render(canvas);
+            if (pressed) this.items[this.selectedIndex].render(canvas, CONTAINER_X, selY);
+
+            this.scrollbar.update(total, VISIBLE_COUNT, this.scrollOffset);
+            if (this.scrollbar.shouldShow()) {
+                this.scrollbar.render(canvas, SCROLLBAR_X, CONTAINER_Y, 144 - CONTAINER_Y - 16, SCROLLBAR_THUMB_PAD);
             }
         }
 
-        // Selector frame: filled while PRESSED, outline otherwise.
-        var pressed = this.items[this.selectedIndex].state === MenuLine.STATE_PRESSED;
-        this.selectorFrame.setPosition(SELECTOR_X, selectedLineY + SELECTOR_Y_OFFSET);
-        this.selectorFrame.setSize(selectorW, SELECTOR_H);
-        this.selectorFrame.setShowFill(pressed);
-        if (pressed) this.selectorFrame.setFillColor('#000');
-        this.selectorFrame.render(canvas);
-        if (pressed) {
-            this.items[this.selectedIndex].render(canvas, CONTAINER_X, selectedLineY);
-        }
-
-        // Scrollbar (only when the list overflows the viewport).
-        this.scrollbar.update(total, VISIBLE_COUNT, this.scrollOffset);
-        if (this.scrollbar.shouldShow()) {
-            this.scrollbar.render(canvas, SCROLLBAR_X, this.containerY,
-                canvas.h - this.containerY, SCROLLBAR_THUMB_PAD);
-        }
-
-        // Edit button (V slot) — its toggle bar tracks the modal.
-        if (this._editBtn) this._editBtn.toggled = this._editOpen;
-        if (this._editBtn) this._editBtn.render(canvas);
-
-        // Edit modal on top of everything. The Edit button is
-        // re-drawn over the wash so it stays crisp with its
-        // toggled bar showing (same as the Power-menu buttons).
-        if (this._editOpen) {
-            this._renderEditModal(canvas);
-            if (this._editBtn) this._editBtn.render(canvas);
-        }
-
-        // "Starting…" spinner modal — above everything.
-        if (this._spinnerOpen) this._renderSpinnerModal(canvas);
-    };
-
-    // Centred "Starting…" modal: a label over an animated spinner,
-    // under a wash. Shown while a profile's target is isolating.
-    BootMenuScene.prototype._renderSpinnerModal = function(canvas) {
-        var ctx   = canvas.ctx;
-        var label = 'Starting';
-        var sp    = AnimatedIcons.spinner_22x20px;
-        var spFrameH = Math.floor(sp.h / sp.frames);
-
-        var PAD = 12, GAP = 8, TEXT_H = 9;
-        var tw   = HaxrCorp4090FlipCTL.textWidth(label);
-        var boxW = Math.max(tw, sp.w) + PAD * 2;
-        var boxH = PAD + TEXT_H + GAP + spFrameH + PAD;
-        var boxX = Math.floor((canvas.w - boxW) / 2);
-        var boxY = Math.floor((canvas.h - boxH) / 2);
-
-        // Dim the background.
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
-        ctx.fillRect(0, 0, canvas.w, canvas.h);
-
-        // Box.
-        new ResponsiveFrame({
-            x: boxX, y: boxY, width: boxW, height: boxH,
-            anchorH: 'left', anchorV: 'top',
-            fillColor: '#fff', strokeColor: '#000',
-            showFill: true, showStroke: true, cornerRadius: 5
-        }).render(canvas);
-
-        // Label (centred).
-        HaxrCorp4090FlipCTL.draw(ctx, label,
-            boxX + Math.floor((boxW - tw) / 2), boxY + PAD, '#000');
-
-        // Spinner (centred) below the label, frame off wall-clock.
-        var spFrame = Math.floor(Date.now() / 80) % sp.frames;
-        var spX = boxX + Math.floor((boxW - sp.w) / 2);
-        var spY = boxY + PAD + TEXT_H + GAP;
-        canvas.drawSpriteFrame(sp, spX, spY, spFrame, '#000');
-    };
-
-    // Centred modal launched by Edit — same styling as the Power-
-    // menu demo's modal: HaxrCorp4090FlipCTL rows, 7 px bottom / 6 px
-    // top gap, 9 px between lines, and a fixed-width selector
-    // (3 px in from each side, 14 px tall, centred on the text).
-    var MODAL_SEL_H   = 14;
-    var MODAL_GAP     = 9;
-    var MODAL_TOP_GAP = 6;
-    var MODAL_BOT_GAP = 7;
-    var MODAL_VIS_TOP = 1;   // HaxrCorp4090FlipCTL visible glyph starts 1 px below draw-y
-    var MODAL_VIS_H   = 9;   // ~9 px tall
-
-    BootMenuScene.prototype._renderEditModal = function(canvas) {
-        var ctx = canvas.ctx;
-        // When the selected profile is already the boot default the
-        // option is inert: "Selected as default" in gray, no
-        // selector frame. Otherwise it's actionable: "Select as
-        // default" in black, with the selector.
-        var isDef = !!this.items[this.selectedIndex]._isDefault;
-        var label = isDef ? 'Selected as default' : 'Select as default';
-        var color = isDef ? '#AAAAAA' : '#000';
-
-        var maxW   = HaxrCorp4090FlipCTL.textWidth(label);
-        var modalW = maxW + 21;   // 10 px left / 11 px right of the text
-        var modalH = MODAL_TOP_GAP + MODAL_BOT_GAP + MODAL_VIS_H;
-        var modalX = Math.floor((canvas.w - modalW) / 2);
-        var modalY = Math.floor((canvas.h - modalH) / 2);
-
-        // Dim the background.
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
-        ctx.fillRect(0, 0, canvas.w, canvas.h);
-
-        // Box — white fill, black rounded border.
-        new ResponsiveFrame({
-            x: modalX, y: modalY, width: modalW, height: modalH,
-            anchorH: 'left', anchorV: 'top',
-            fillColor: '#fff', strokeColor: '#000',
-            showFill: true, showStroke: true, cornerRadius: 5
-        }).render(canvas);
-
-        var drawY = modalY + MODAL_TOP_GAP - MODAL_VIS_TOP;
-        var tw = HaxrCorp4090FlipCTL.textWidth(label);
-        var tx = modalX + Math.floor((modalW - tw) / 2);
-        // Selector only when the option is actionable.
-        if (!isDef) {
-            var visCenter = drawY + MODAL_VIS_TOP + MODAL_VIS_H / 2;
-            var selY      = Math.round(visCenter - MODAL_SEL_H / 2);
-            this._editSelectorFrame.setPosition(modalX + 3, selY);
-            this._editSelectorFrame.setSize(modalW - 7, MODAL_SEL_H);
-            this._editSelectorFrame.render(canvas);
-        }
-        HaxrCorp4090FlipCTL.draw(ctx, label, tx, drawY, color);
+        // Soft buttons.
+        this.infoBtn.render(canvas);
+        this.editBtn.render(canvas);
     };
 
     return BootMenuScene;
