@@ -360,7 +360,8 @@ var ProfilesApp = (function() {
             if (ok && onSuccess) { onSuccess(msg); return; }
             self.dialog = {
                 kind: 'notice',
-                lines: [ok ? 'Done' : 'Error', msg],
+                // Hide the internal @snapshots/ path prefix from result text.
+                lines: [ok ? 'Done' : 'Error', String(msg).replace(/@snapshots\//g, '')],
                 afterClose: refresh ? function() { self.enter(); } : null
             };
             rr();
@@ -589,7 +590,7 @@ var ProfilesApp = (function() {
             };
             rr();
         } },
-        { label: 'Open', slot: 'right', run: function(scene, entry) {
+        { label: 'Open', slot: 'right', disabledFor: function(e) { return isStock(e); }, run: function(scene, entry) {
             // Same as Enter: open the selected profile's snapshots.
             if (typeof scene.onSelect === 'function') scene.onSelect(scene, entry);
         } },
@@ -642,7 +643,7 @@ var ProfilesApp = (function() {
         { label: 'Restore', slot: 'left', run: function(scene, entry) {
             scene.dialog = {
                 kind: 'confirm',
-                lines: ['Restore onto booted profile?', entry.name,
+                lines: ['Restore this snapshot?', entry.name,
                         '(takes effect after reboot)'],
                 onYes: function() {
                     scene.postAction('/api/snapshots/restore', { name: entry.name },
@@ -742,6 +743,8 @@ var ProfilesApp = (function() {
                 },
                 // OK opens the snapshots menu scoped to this profile.
                 onSelect: function(scene, p) {
+                    // Stock golden bases have no per-profile snapshots view.
+                    if (isStock(p)) return;
                     if (scene.sm) scene.sm.push(makeProfileSnapshots(scene.sm, p));
                 }
             });
@@ -792,10 +795,10 @@ var ProfilesApp = (function() {
         function doRestore(sc, entry) {
             sc.dialog = {
                 kind: 'confirm',
-                lines: ['Restore onto booted profile?', shortName(entry),
+                lines: ['Restore ' + pname + ' from', shortName(entry) + '?',
                         '(takes effect after reboot)'],
                 onYes: function() {
-                    sc.postAction('/api/snapshots/restore', { name: entry.name },
+                    sc.postAction('/api/snapshots/restore', { name: entry.name, dest: pname },
                         'Restoring...', false, function() {
                         // Applied on next boot -> offer to reboot now.
                         sc.dialog = {

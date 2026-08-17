@@ -4112,10 +4112,11 @@ var server = http.createServer(function(req, res) {
         return;
     }
     // ── /api/snapshots/restore ───────────────────────────────────
-    // Body { name } — restore a snapshot onto the booted profile via
-    // `create-profile <@snapshots/name>` (dest defaults to the booted
-    // profile; the previous copy is kept as <@dest>.old_<ts>). Takes
-    // effect after a reboot. create-profile confirms up to twice.
+    // Body { name, dest? } — restore a snapshot onto ITS OWN profile via
+    // `create-profile <@snapshots/name> <@dest>` (the previous copy is kept
+    // as <@dest>.old_<ts>). dest defaults to the profile derived from the
+    // snapshot name (strip @snapshots/ and the _timestamp suffix), NOT the
+    // booted profile. Takes effect after a reboot; create-profile confirms.
     if (req.url === '/api/snapshots/restore' && req.method === 'POST') {
         readJsonBody(req, function(err, data) {
             var name = data && data.name ? String(data.name) : '';
@@ -4124,7 +4125,15 @@ var server = http.createServer(function(req, res) {
                 res.end(JSON.stringify({ ok: false, message: 'Invalid snapshot name' }));
                 return;
             }
-            runBtrfsScript('yes | sudo create-profile ' + shq(name), function(r) {
+            var dest = (data && data.dest) ? String(data.dest)
+                : name.replace(/^@snapshots\//, '')
+                      .replace(/_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d(_.*)?$/, '');
+            if (!/^@[A-Za-z0-9._-]+$/.test(dest)) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, message: 'Invalid destination profile' }));
+                return;
+            }
+            runBtrfsScript('yes | sudo create-profile ' + shq(name) + ' ' + shq(dest), function(r) {
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify(btrfsResult(r)));
             });
