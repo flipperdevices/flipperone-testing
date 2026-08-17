@@ -65,6 +65,15 @@ var BootMenuScene = (function() {
         return u(Math.floor(d / 365), 'year');
     }
 
+    // Split a human size string ("3.5GiB") into [number, unit] so the two parts
+    // can be drawn in fixed-width slots. The server sends sizes already
+    // formatted (btrfs-show-space); we never reformat them here. null -> ['?',''].
+    function sizeParts(s) {
+        if (!s) return ['?', ''];
+        var m = String(s).match(/^([0-9.]+)\s*(.*)$/);
+        return m ? [m[1], m[2]] : [String(s), ''];
+    }
+
     // Larger (14px) icon for the Edit popup header.
     function headerIcon(name) {
         var n = (name || '').toLowerCase();
@@ -113,6 +122,15 @@ var BootMenuScene = (function() {
         this._editOpen    = false;
         this._editIndex   = 0;
         this._editOptions = ['Rename', 'Clone', 'Delete'];
+
+        // Profile size (Total + Exclusive), fetched async when the popup
+        // opens; a rotating spinner shows while it loads.
+        this._size        = { name: null, loading: false, total: null, exclusive: null };
+        this._spinIndex   = 0;
+        this._spinTimer   = null;
+        this._spinFrames  = ['-', '\\', '|', '/'];
+        this._numSlotW    = null;   // fixed number/spinner slot width, measured lazily
+        this._unitSlotW   = null;   // fixed unit (B/KB/MB/GB) slot width
     }
 
     BootMenuScene.prototype.enter = function() {
@@ -211,7 +229,50 @@ var BootMenuScene = (function() {
         this._cancelAutoStart();
         this._editOpen = true;
         this._editIndex = 0;
+        this._fetchSize();
         if (window.requestRender) window.requestRender();
+    };
+
+    BootMenuScene.prototype._closeEdit = function() {
+        this._editOpen = false;
+        this._stopSpinner();
+    };
+
+    // Fetch Total + Exclusive for the selected profile; a spinner runs
+    // until the response lands (results are cached server-side).
+    BootMenuScene.prototype._fetchSize = function() {
+        var p = this._profiles[this.selectedIndex] || {};
+        var name = p.name || '';
+        this._size = { name: name, loading: true, total: null, exclusive: null };
+        this._startSpinner();
+        if (!name) { this._size.loading = false; this._stopSpinner(); return; }
+        var self = this;
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', '/api/boot/profile-size?name=' + encodeURIComponent(name), true);
+        xhr.onreadystatechange = function() {
+            if (xhr.readyState !== 4) return;
+            if (self._size.name !== name) return;   // selection moved on; ignore
+            var total = null, exclusive = null;
+            try { var d = JSON.parse(xhr.responseText); total = d.total; exclusive = d.exclusive; } catch (e) {}
+            self._size = { name: name, loading: false, total: total, exclusive: exclusive };
+            self._stopSpinner();
+            if (window.requestRender) window.requestRender();
+        };
+        xhr.send();
+    };
+
+    BootMenuScene.prototype._startSpinner = function() {
+        var self = this;
+        if (this._spinTimer) clearInterval(this._spinTimer);
+        this._spinIndex = 0;
+        this._spinTimer = setInterval(function() {
+            self._spinIndex = (self._spinIndex + 1) % self._spinFrames.length;
+            if (window.requestRender) window.requestRender();
+        }, 120);
+    };
+
+    BootMenuScene.prototype._stopSpinner = function() {
+        if (this._spinTimer) { clearInterval(this._spinTimer); this._spinTimer = null; }
     };
 
     // Input while the Edit popup is open (captures everything).
@@ -219,8 +280,8 @@ var BootMenuScene = (function() {
         var opts = this._editOptions;
         if (action === 'up')        { this._editIndex = (this._editIndex - 1 + opts.length) % opts.length; }
         else if (action === 'down') { this._editIndex = (this._editIndex + 1) % opts.length; }
-        else if (action === 'back' || action === 'esc') { this._editOpen = false; }
-        else if (action === 'ok' || action === 'run')   { this._editOpen = false; }   // mockup: select closes
+        else if (action === 'back' || action === 'esc') { this._closeEdit(); }
+        else if (action === 'ok' || action === 'run')   { this._closeEdit(); }   // mockup: select closes
         else return;
         if (window.requestRender) window.requestRender();
     };
@@ -357,8 +418,16 @@ var BootMenuScene = (function() {
             strokeColor: '#000', showStroke: true, fillColor: '#fff', showFill: true, cornerRadius: 5
         }).render(canvas);
 
-        // Grey header band with icon + bold name + size.
-        canvas.drawRect(fx + 2, fy + 2, fw - 4, HDR - 2, '#D9D9D9');
+        // Grey header band, filled inside the frame stroke and following the
+        // 5px rounded top corners so it doesn't punch holes in the outline.
+        var CR = 5;
+        ctx.fillStyle = '#D9D9D9';
+        for (var by = 1; by < HDR; by++) {
+            var off = (by < CR) ? (CR - by) : 1;   // 1px past the corner diagonal, else inside the stroke
+            var left = fx + off, right = fx + fw - 1 - off;
+            if (right >= left) ctx.fillRect(left, fy + by, right - left + 1, 1);
+        }
+
         var hicon = headerIcon(p.name);
         var nameX = fx + 8;
         if (hicon) {
@@ -369,9 +438,41 @@ var BootMenuScene = (function() {
             nameX = fx + 8 + hicon.w + 4;
         }
         Born2bSportyV2FlipCTL.draw(ctx, name, nameX, fy + 6, '#000');
-        var size = 'Size: ' + (p.size || '20 GB');
-        var sw = HaxrCorp4090FlipCTL.textWidth(size);
-        HaxrCorp4090FlipCTL.draw(ctx, size, fx + Math.floor((fw - sw) / 2), fy + 24, '#666666');
+
+        // Total + Exclusive. Number and unit each sit in a fixed-width slot so
+        // nothing shifts horizontally: not the spinner (- \ | /) while loading,
+        // not between loading and loaded, and not between B/KB/MB/GB units or
+        // different number widths.
+        var sz = this._size, F = HaxrCorp4090FlipCTL, sy = fy + 24, col = '#666666';
+        if (this._numSlotW == null) {
+            var mx = F.textWidth('00.0');   // widest number we expect
+            for (var k = 0; k < this._spinFrames.length; k++) mx = Math.max(mx, F.textWidth(this._spinFrames[k]));
+            this._numSlotW = mx;
+            var mu = 0, units = [' B', ' KiB', ' MiB', ' GiB'];
+            for (var j = 0; j < units.length; j++) mu = Math.max(mu, F.textWidth(units[j]));
+            this._unitSlotW = mu;
+        }
+        var numW = this._numSlotW, unitW = this._unitSlotW, fieldW = numW + unitW;
+        var l1 = 'Total: ', l2 = '   Exclusive: ';
+        var w1 = F.textWidth(l1), w2 = F.textWidth(l2);
+        var x = fx + Math.floor((fw - (w1 + fieldW + w2 + fieldW)) / 2);
+        var spin = this._spinFrames[this._spinIndex];
+        var drawField = function(sx, bytes) {
+            var numStr, unitStr;
+            if (sz.loading) { numStr = spin; unitStr = ' B'; }
+            else { var pr = sizeParts(bytes); numStr = pr[0]; unitStr = ' ' + pr[1]; }
+            var nw = F.textWidth(numStr);
+            // number/spinner right-aligned at the slot edge, unit right-aligned in
+            // its slot: the trailing letter (B) never moves when B -> KB/MB/GB
+            // (the higher unit just grows a letter to the left), and the number
+            // sits tight against the unit.
+            F.draw(ctx, numStr, sx + numW - nw, sy, col);
+            F.draw(ctx, unitStr, sx + numW + unitW - F.textWidth(unitStr), sy, col);
+        };
+        F.draw(ctx, l1, x, sy, col); x += w1;
+        drawField(x, sz.total);     x += fieldW;
+        F.draw(ctx, l2, x, sy, col); x += w2;
+        drawField(x, sz.exclusive);
 
         // Actions, centred; the selected one in a rounded frame.
         var oy = fy + HDR + 5, rowH = 16;

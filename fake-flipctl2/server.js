@@ -3273,6 +3273,11 @@ async function refreshWifi() {
 // "scan finished, nothing visible" (ready=true, networks=[]) and
 // shows a spinner only in the former case.
 var wifiScanCache = { ready: false, networks: [] };
+
+// Per-profile size cache for the Boot Menu Edit popup. `btrfs filesystem du`
+// is a ~2-4s tree walk (no quotas), so results are memoised per subvol name.
+var profileSizeCache = {};
+var PROFILE_SIZE_TTL = 60000;
 // Timestamp of the first successful `nmcli dev wifi rescan`. Until
 // it's set we treat an empty list as "scan still in progress" and
 // hold `ready` at false — otherwise the client would prematurely
@@ -5161,6 +5166,43 @@ var server = http.createServer(function(req, res) {
             });
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ profiles: profiles, error: err ? 'list-profiles failed' : null }));
+        });
+        return;
+    }
+    // ── /api/boot/profile-size ──────────────────────────────────
+    // GET ?name=<@profile> → { name, total, exclusive } human size strings
+    // (e.g. "3.5GiB") from `btrfs-show-space -q <@profile>` (btrfs filesystem
+    // du, no quotas). Slow (~2-4s tree walk), so the Edit popup shows a spinner
+    // while it loads; results are memoised per subvol for PROFILE_SIZE_TTL. The
+    // strings are displayed verbatim — the client does not reformat sizes.
+    if (req.method === 'GET' && req.url.indexOf('/api/boot/profile-size') === 0) {
+        var pq = req.url.split('?')[1] || '';
+        var pmatch = pq.match(/(?:^|&)name=([^&]+)/);
+        var pName = pmatch ? decodeURIComponent(pmatch[1]) : '';
+        if (!/^@[A-Za-z0-9._-]+$/.test(pName)) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Invalid name' }));
+            return;
+        }
+        var cached = profileSizeCache[pName];
+        if (cached && (Date.now() - cached.at) < PROFILE_SIZE_TTL) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ name: pName, total: cached.total, exclusive: cached.exclusive }));
+            return;
+        }
+        exec('sudo btrfs-show-space -q ' + pName, { encoding: 'utf8', timeout: 30000 }, function(err, stdout) {
+            if (err) {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ name: pName, total: null, exclusive: null, error: 'btrfs-show-space failed' }));
+                return;
+            }
+            var tm = String(stdout).match(/TOTAL=(\S+)/);
+            var em = String(stdout).match(/UNIQUE=(\S+)/);
+            var total     = tm ? tm[1] : null;
+            var exclusive = em ? em[1] : null;
+            profileSizeCache[pName] = { total: total, exclusive: exclusive, at: Date.now() };
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ name: pName, total: total, exclusive: exclusive }));
         });
         return;
     }
