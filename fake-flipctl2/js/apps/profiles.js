@@ -901,7 +901,7 @@ var ProfilesApp = (function() {
             append.push({
                 label: rowName(o),
                 icon: (typeof Icons !== 'undefined') ? Icons.sdcard : icon,
-                detail: '',
+                detail: relTime(o.created),
                 entry: o
             });
         });
@@ -938,6 +938,9 @@ var ProfilesApp = (function() {
                 headerLabel: 'Snapshots:',
                 headerIcon: icon,
                 rowIcon: function() { return icon; },
+                // CREATED column shown as relative time, like Last used.
+                rowDetail: function(s) { return relTime(s.created); },
+                detailHeader: 'Created',
                 rowH: 16,
                 filter: function(s) { return s.name.indexOf(prefix) === 0; },
                 // Latest first (created is 'YYYY-MM-DD HH-MM-SS', sorts lexically).

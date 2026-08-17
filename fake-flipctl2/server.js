@@ -3959,7 +3959,8 @@ var server = http.createServer(function(req, res) {
                     name:     cols[0],
                     kind:     cols[base] || 'profile',
                     booted:   booted,
-                    lastUsed: cols[base + 3] || ''   // kind, id, created, LAST USED
+                    created:  cols[base + 2] || '',   // kind, id, CREATED
+                    lastUsed: cols[base + 3] || ''    // kind, id, created, LAST USED
                 });
             });
             // Origin stock ("Factory Image") for each profile, read from that
