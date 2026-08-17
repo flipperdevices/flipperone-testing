@@ -65,6 +65,17 @@ var BootMenuScene = (function() {
         return u(Math.floor(d / 365), 'year');
     }
 
+    // Larger (14px) icon for the Edit popup header.
+    function headerIcon(name) {
+        var n = (name || '').toLowerCase();
+        if (n.indexOf('graphics') >= 0) return ic('no_graphics_boot_menu');
+        if (n.indexOf('minimal') >= 0) return ic('minimal');
+        if (n.indexOf('desktop') >= 0) return ic('desktop');
+        if (n.indexOf('router') >= 0)  return ic('router');
+        if (n.indexOf('media') >= 0 || n.indexOf('tv') >= 0) return ic('media');
+        return ic('flipper_os');
+    }
+
     function BootMenuScene(sceneManager) {
         this.sceneManager    = sceneManager || null;
         this.displayName     = 'Boot Menu';
@@ -91,6 +102,17 @@ var BootMenuScene = (function() {
         this.infoBtn.x = 50;  this.infoBtn.w = 48;
         this.editBtn = new UI.MiddleButton('Edit', 0, 48, 2, 'del', function() {});
         this.editBtn.x = 156; this.editBtn.w = 48;
+
+        // Edit popup: profile actions for the selected entry. Same selector
+        // frame style as the menu rows.
+        this._editSelector = new MenuSelectorFrame({
+            x: 0, y: 0, width: 10, height: SELECTOR_H,
+            anchorH: 'left', anchorV: 'top', strokeColor: '#000', showStroke: true, showFill: false
+        });
+        this._profiles    = [];
+        this._editOpen    = false;
+        this._editIndex   = 0;
+        this._editOptions = ['Rename', 'Clone', 'Delete'];
     }
 
     BootMenuScene.prototype.enter = function() {
@@ -138,6 +160,7 @@ var BootMenuScene = (function() {
     };
 
     BootMenuScene.prototype._setProfiles = function(list) {
+        this._profiles = list;
         this.items = list.map(function(p) {
             return new MenuLine({ text: dispName(p.name), width: 224, icon: bootIcon(p.name),
                                   status: usedAgo(p.lastUsed) || null, iconBoxW: ICON_BOX_W,
@@ -175,20 +198,43 @@ var BootMenuScene = (function() {
         if (typeof btn.onPress === 'function') btn.onPress();
     };
 
+    // Any key cancels auto-start: bar resets to empty and stops, text hides.
+    BootMenuScene.prototype._cancelAutoStart = function() {
+        if (!this._autoStart) return;
+        this._autoStart = false;
+        if (this._timer) { clearInterval(this._timer); this._timer = null; }
+        if (window.requestRender) window.requestRender();
+    };
+
+    BootMenuScene.prototype._openEdit = function() {
+        if (!this.items.length) return;
+        this._cancelAutoStart();
+        this._editOpen = true;
+        this._editIndex = 0;
+        if (window.requestRender) window.requestRender();
+    };
+
+    // Input while the Edit popup is open (captures everything).
+    BootMenuScene.prototype._editInput = function(action) {
+        var opts = this._editOptions;
+        if (action === 'up')        { this._editIndex = (this._editIndex - 1 + opts.length) % opts.length; }
+        else if (action === 'down') { this._editIndex = (this._editIndex + 1) % opts.length; }
+        else if (action === 'back' || action === 'esc') { this._editOpen = false; }
+        else if (action === 'ok' || action === 'run')   { this._editOpen = false; }   // mockup: select closes
+        else return;
+        if (window.requestRender) window.requestRender();
+    };
+
     BootMenuScene.prototype.handleInput = function(action) {
-        // Any key cancels auto-start: the bar resets to empty and stops, and
-        // the countdown text hides.
-        if (this._autoStart) {
-            this._autoStart = false;
-            if (this._timer) { clearInterval(this._timer); this._timer = null; }
-            if (window.requestRender) window.requestRender();
-        }
+        if (this._editOpen) { this._editInput(action); return; }
+
+        this._cancelAutoStart();   // any key cancels the auto-start countdown
 
         if (action === 'back') return 'pop';
 
-        // X key -> Info; V key -> Edit.
+        // X key -> Info; V key -> Edit (opens the popup).
         if (action === 'edit') { this._flash(this.infoBtn); return; }
-        if (action === 'del')  { this._flash(this.editBtn); return; }
+        if (action === 'del')  { this._flash(this.editBtn); this._openEdit(); return; }
 
         var n = this.items.length;
         if (!n) return;
@@ -288,9 +334,58 @@ var BootMenuScene = (function() {
             }
         }
 
-        // Soft buttons.
+        // Soft buttons (dimmed while the Edit popup is open).
+        this.infoBtn.disabled = this._editOpen;
+        this.editBtn.disabled = this._editOpen;
         this.infoBtn.render(canvas);
         this.editBtn.render(canvas);
+
+        if (this._editOpen) this._renderEditPopup(canvas);
+    };
+
+    // Edit popup: profile header (icon + name + size) over a grey band, then
+    // the actions (Rename / Clone / Delete), the selected one framed.
+    BootMenuScene.prototype._renderEditPopup = function(canvas) {
+        var ctx = canvas.ctx;
+        var p = this._profiles[this.selectedIndex] || {};
+        var name = dispName(p.name || '') + ' profile';
+
+        var fx = 6, fy = 14, fw = 244, fh = 116, HDR = 38;
+
+        new ResponsiveFrame({
+            x: fx, y: fy, width: fw, height: fh, anchorH: 'left', anchorV: 'top',
+            strokeColor: '#000', showStroke: true, fillColor: '#fff', showFill: true, cornerRadius: 5
+        }).render(canvas);
+
+        // Grey header band with icon + bold name + size.
+        canvas.drawRect(fx + 2, fy + 2, fw - 4, HDR - 2, '#D9D9D9');
+        var hicon = headerIcon(p.name);
+        var nameX = fx + 8;
+        if (hicon) {
+            // Grayscale icons use drawSprite; binary ones (desktop/minimal/
+            // router) use drawIcon's row-per-element format.
+            if (hicon.grayscale) canvas.drawSprite(hicon, fx + 8, fy + 6, '#000');
+            else canvas.drawIcon(hicon, fx + 8, fy + 6, '#000');
+            nameX = fx + 8 + hicon.w + 4;
+        }
+        Born2bSportyV2FlipCTL.draw(ctx, name, nameX, fy + 6, '#000');
+        var size = 'Size: ' + (p.size || '20 GB');
+        var sw = HaxrCorp4090FlipCTL.textWidth(size);
+        HaxrCorp4090FlipCTL.draw(ctx, size, fx + Math.floor((fw - sw) / 2), fy + 24, '#666666');
+
+        // Actions, centred; the selected one in a rounded frame.
+        var oy = fy + HDR + 5, rowH = 16;
+        for (var i = 0; i < this._editOptions.length; i++) {
+            var label = this._editOptions[i];
+            var rowY = oy + i * rowH;
+            if (i === this._editIndex) {
+                this._editSelector.setPosition(fx + 10, rowY);
+                this._editSelector.setSize(fw - 20, rowH);
+                this._editSelector.render(canvas);
+            }
+            var lw = HaxrCorp4090FlipCTL.textWidth(label);
+            HaxrCorp4090FlipCTL.draw(ctx, label, fx + Math.floor((fw - lw) / 2), rowY + 3, '#000');
+        }
     };
 
     return BootMenuScene;
