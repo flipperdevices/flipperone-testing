@@ -3962,6 +3962,29 @@ var server = http.createServer(function(req, res) {
                     lastUsed: cols[base + 3] || ''   // kind, id, created, LAST USED
                 });
             });
+            // Origin stock ("Factory Image") for each profile, read from that
+            // subvolume's /etc/profile_origin. list-profiles' PARENT can't see
+            // it for clones (btrfs parent is the source profile, not the stock),
+            // but this file propagates the true origin. Mount the top level RO
+            // once and read each profile's file.
+            try {
+                var rootDev = execSync('findmnt -no SOURCE /', { encoding: 'utf8', timeout: 3000 })
+                    .trim().replace(/\[.*$/, '');
+                var topMnt = execSync('mktemp -d', { encoding: 'utf8', timeout: 3000 }).trim();
+                try {
+                    execSync('sudo mount -o subvolid=5,ro ' + rootDev + ' ' + topMnt, { timeout: 5000 });
+                    profiles.forEach(function(p) {
+                        try {
+                            var oc = fs.readFileSync(topMnt + '/' + p.name + '/etc/profile_origin', 'utf8');
+                            var om = /origin_stock_name\s*=\s*(\S+)/.exec(oc);
+                            if (om) p.origin = om[1];
+                        } catch (e) {}
+                    });
+                } finally {
+                    execSync('sudo umount ' + topMnt + ' 2>/dev/null; rmdir ' + topMnt + ' 2>/dev/null',
+                        { timeout: 5000 });
+                }
+            } catch (e) {}
             // Golden bases (stock) moved under @stock-snapshots and are listed
             // by list-snapshots now; surface them as kind:'stock' profiles so
             // they show (at the bottom of) the Profiles list.
@@ -4120,7 +4143,9 @@ var server = http.createServer(function(req, res) {
     if (req.url === '/api/snapshots/restore' && req.method === 'POST') {
         readJsonBody(req, function(err, data) {
             var name = data && data.name ? String(data.name) : '';
-            if (!/^@snapshots\/@[A-Za-z0-9._-]+$/.test(name)) {
+            // Restore point (@snapshots/...), Factory Image (@stock-snapshots/...),
+            // or an old version (bare top-level @name kept aside on restore/clone).
+            if (!/^@[A-Za-z0-9._/@-]+$/.test(name) || /\.\./.test(name)) {
                 res.writeHead(400, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ ok: false, message: 'Invalid snapshot name' }));
                 return;

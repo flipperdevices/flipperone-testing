@@ -220,6 +220,7 @@ var ProfilesApp = (function() {
         this.sm = opts.sceneManager || null;       // to push child scenes on OK
         this.onSelect = opts.onSelect || null;     // fn(scene, entry) on OK
         this.prepend = opts.prepend || [];         // synthetic action rows first
+        this.append = opts.append || [];           // synthetic entry rows last
         this.filter = opts.filter || null;         // fn(entry) -> keep?
         this.sort = opts.sort || null;             // fn(a,b) applied after filter
         this.buttonDefs = buttons || [];
@@ -292,6 +293,10 @@ var ProfilesApp = (function() {
                          detail: self.rowDetail ? (self.rowDetail(e) || '') : '',
                          entry: e });
         });
+        this.append.forEach(function(a) {
+            items.push({ kind: 'entry', label: a.label, icon: a.icon || null,
+                         detail: a.detail || '', entry: a.entry });
+        });
         return items;
     };
 
@@ -314,11 +319,12 @@ var ProfilesApp = (function() {
                 try {
                     var data = JSON.parse(xhr.responseText);
                     if (data.error) self.error = data.error;
-                    self.entries = data[self.key] || [];
+                    self.rawEntries = data[self.key] || [];   // pre-filter (e.g. to find stock)
+                    self.entries = self.rawEntries;
                     if (self.filter) self.entries = self.entries.filter(self.filter);
                     if (self.sort) self.entries = self.entries.slice().sort(self.sort);
                     self.rows = self.entries.map(self.formatRow);
-                    var total = self.prepend.length + self.rows.length;
+                    var total = self.prepend.length + self.rows.length + self.append.length;
                     if (self.sel >= total) self.sel = Math.max(0, total - 1);
                     if (self.scroll > self.sel) self.scroll = 0;
                 } catch (e) { self.error = 'Bad response'; }
@@ -460,7 +466,7 @@ var ProfilesApp = (function() {
         }
 
         // List navigation (over prepend + data rows).
-        var n = this.prepend.length + this.rows.length;
+        var n = this.prepend.length + this.rows.length + this.append.length;
         if (!n) return;
         if (action === 'down')    this.sel = (this.sel + 1) % n;
         else if (action === 'up') this.sel = (this.sel - 1 + n) % n;
@@ -715,10 +721,44 @@ var ProfilesApp = (function() {
     function isStock(p) {
         return (p && p.kind === 'stock') || /_stock$/.test((p && p.name) || '');
     }
+    // Old version: a previous profile root kept aside on restore/clone,
+    // named "@<profile>_old_<timestamp>" (list-profiles KIND 'old').
+    function isOld(p) {
+        return (p && p.kind === 'old') || /_old_[0-9-_]+$/.test((p && p.name) || '');
+    }
+
+    // The _stock golden base ("Factory Image") for a profile: the stock
+    // entry named by the profile's origin (from /etc/profile_origin, surfaced
+    // as p.origin by the server). Works for clones too, unlike a name match.
+    function factoryFor(list, p) {
+        if (!p || !p.origin) return null;
+        return (list || []).filter(function(e) {
+            return isStock(e) && e.name === p.origin;
+        })[0] || null;
+    }
 
     // Display form of a profile name: drop the leading '@' subvol marker.
     // The real '@name' is kept for API calls; this is display-only.
     function dispName(n) { return String(n || '').replace(/^@/, ''); }
+
+    // "Last used" as relative time (e.g. "5 minutes ago", "2 days ago").
+    // Input is list-profiles' local timestamp "YYYY-MM-DD HH:MM:SS", or the
+    // sentinels "now"/"never"/"" . Recomputed each render so it ticks live.
+    function relTime(lu) {
+        lu = lu || '';
+        if (lu === '' || lu === 'never') return '';
+        if (lu === 'now') return 'now';
+        var t = Date.parse(lu.replace(' ', 'T'));
+        if (isNaN(t)) return lu;
+        var s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+        function u(n, w) { return n + ' ' + w + (n === 1 ? '' : 's') + ' ago'; }
+        if (s < 60) return 'just now';
+        var m = Math.floor(s / 60);  if (m < 60) return u(m, 'minute');
+        var h = Math.floor(m / 60);  if (h < 24) return u(h, 'hour');
+        var d = Math.floor(h / 24);  if (d < 30) return u(d, 'day');
+        var mo = Math.floor(d / 30); if (mo < 12) return u(mo, 'month');
+        return u(Math.floor(d / 365), 'year');
+    }
 
     function makeProfiles(sceneManager) {
         return new ListScene('Profiles', '/api/profiles', 'profiles',
@@ -729,12 +769,12 @@ var ProfilesApp = (function() {
             {
                 sceneManager: sceneManager,
                 rowIcon: profileIcon,
-                // LAST USED column; drop the century (2026 -> 26) and seconds.
-                rowDetail: function(p) {
-                    return (p.lastUsed || '')
-                        .replace(/^20(\d\d-)/, '$1')
-                        .replace(/(\d\d:\d\d):\d\d$/, '$1');
-                },
+                // Stock golden bases and _old versions are hidden here; they
+                // show up inside each profile's snapshots (Factory Image + old
+                // versions).
+                filter: function(p) { return !isStock(p) && !isOld(p); },
+                // LAST USED column shown as relative time ("5 minutes ago").
+                rowDetail: function(p) { return relTime(p.lastUsed); },
                 detailHeader: 'Last used',
                 rowH: 16,
                 // Order: booted first, then used profiles by last-used time
@@ -751,26 +791,42 @@ var ProfilesApp = (function() {
                     if (ra === 1) return (b.lastUsed || '').localeCompare(a.lastUsed || '');
                     return 0;
                 },
-                // OK opens the snapshots menu scoped to this profile.
+                // OK opens the snapshots menu scoped to this profile, with its
+                // Factory Image (stock base) and old versions found in the
+                // unfiltered list.
                 onSelect: function(scene, p) {
-                    // Stock golden bases have no per-profile snapshots view.
-                    if (isStock(p)) return;
-                    if (scene.sm) scene.sm.push(makeProfileSnapshots(scene.sm, p));
+                    if (isStock(p) || isOld(p)) return;
+                    var raw = scene.rawEntries || [];
+                    var olds = raw.filter(function(e) {
+                        return isOld(e) && String(e.name).indexOf(p.name + '_old_') === 0;
+                    });
+                    if (scene.sm) scene.sm.push(
+                        makeProfileSnapshots(scene.sm, p, factoryFor(raw, p), olds));
                 }
             });
     }
 
     // Snapshots menu for a single profile: a 'Save' action first, then that
     // profile's snapshots. Restore/Delete soft buttons act on the selection.
-    function makeProfileSnapshots(sceneManager, profile) {
+    function makeProfileSnapshots(sceneManager, profile, stock, olds) {
         var pname = profile.name;                    // e.g. @Desktop
         var prefix = '@snapshots/' + pname + '_';    // snapshots for this profile
+        var oldPrefix = pname + '_old_';             // old versions of this profile
         // Animated 14px filesystem icon for snapshot rows.
         var icon = (typeof AnimatedIcons !== 'undefined' && AnimatedIcons.files_animated)
             ? AnimatedIcons.files_animated
             : ((typeof Icons !== 'undefined') ? Icons.sdcard : null);
         var shortName = function(s) {
             return s.name.indexOf(prefix) === 0 ? s.name.slice(prefix.length) : s.name;
+        };
+        // Row display name: Factory Image (stock) reads as such; an old
+        // version shows its timestamp + "(old)"; a snapshot shows its
+        // timestamp (profile prefix stripped).
+        var rowName = function(s) {
+            if (isStock(s)) return 'Factory Image';
+            if (isOld(s)) return (s.name.indexOf(oldPrefix) === 0
+                ? s.name.slice(oldPrefix.length) : s.name) + ' (old)';
+            return shortName(s);
         };
 
         // Save works for any profile: create-snapshot -p @X snapshots the
@@ -795,9 +851,15 @@ var ProfilesApp = (function() {
         function doDelete(sc, entry) {
             sc.dialog = {
                 kind: 'confirm',
-                lines: ['Delete', shortName(entry) + '?'],
+                lines: ['Delete', rowName(entry) + '?'],
                 onYes: function() {
-                    sc.postAction('/api/snapshots/delete', { name: entry.name }, 'Deleting...', true);
+                    // An old version is a top-level profile (delete-profile);
+                    // a snapshot is under @snapshots (delete-snapshot).
+                    if (isOld(entry)) {
+                        sc.postAction('/api/profiles/delete', { name: entry.name }, 'Deleting...', true);
+                    } else {
+                        sc.postAction('/api/snapshots/delete', { name: entry.name }, 'Deleting...', true);
+                    }
                 }
             };
             rr();
@@ -805,10 +867,12 @@ var ProfilesApp = (function() {
         function doRestore(sc, entry) {
             sc.dialog = {
                 kind: 'confirm',
-                lines: ['Restore ' + dispName(pname) + ' from', shortName(entry) + '?',
+                lines: ['Restore ' + dispName(pname) + ' from', rowName(entry) + '?',
                         '(takes effect after reboot)'],
                 onYes: function() {
-                    sc.postAction('/api/snapshots/restore', { name: entry.name, dest: pname },
+                    // Factory Image source is under @stock-snapshots (fullName).
+                    sc.postAction('/api/snapshots/restore',
+                        { name: entry.fullName || entry.name, dest: pname },
                         'Restoring...', false, function() {
                         // Applied on next boot -> offer to reboot now.
                         sc.dialog = {
@@ -827,9 +891,33 @@ var ProfilesApp = (function() {
             rr();
         }
 
-        // Soft buttons: Delete (left) / Del Old (X) / Restore (right).
+        // Below the snapshots: old versions (newest first), then the Factory
+        // Image (stock base). Old versions are restorable and deletable;
+        // the Factory Image is restore-only.
+        var append = [];
+        (olds || []).slice().sort(function(a, b) {
+            return String(b.name).localeCompare(String(a.name));   // name ends with timestamp
+        }).forEach(function(o) {
+            append.push({
+                label: rowName(o),
+                icon: (typeof Icons !== 'undefined') ? Icons.sdcard : icon,
+                detail: '',
+                entry: o
+            });
+        });
+        if (stock) {
+            var ver = (/_([0-9]+)_stock$/.exec(stock.name || '') || [])[1] || '';
+            append.push({
+                label: 'Factory Image' + (ver ? ' ' + ver : ''),
+                icon: profileIcon(stock),
+                detail: '',
+                entry: stock
+            });
+        }
+
+        // Soft buttons: Delete (left, not on Factory) / Del Old (X) / Restore (right).
         var buttons = [
-            { label: 'Delete', slot: 'left', run: doDelete },
+            { label: 'Delete', slot: 'left', disabledFor: function(e) { return isStock(e); }, run: doDelete },
             { label: 'Del Old', slot: 'edit', noEntry: true, run: function(sc) {
                 sc.dialog = {
                     kind: 'days', days: 7,
@@ -855,19 +943,19 @@ var ProfilesApp = (function() {
                 // Latest first (created is 'YYYY-MM-DD HH-MM-SS', sorts lexically).
                 sort: function(a, b) { return (b.created || '').localeCompare(a.created || ''); },
                 prepend: prepend,
+                append: append,
                 // Enter also opens a Restore/Delete popup (same actions).
                 onSelect: function(sc, entry) {
-                    sc.dialog = {
-                        kind: 'menu',
-                        title: shortName(entry),
-                        sel: 0,
-                        options: [
-                            { label: 'Restore', icon: (typeof Icons !== 'undefined') ? Icons.arrow_left_11px : null,
-                              run: function() { doRestore(sc, entry); } },
-                            { label: 'Delete', icon: (typeof Icons !== 'undefined') ? Icons.kill_app : null,
-                              run: function() { doDelete(sc, entry); } }
-                        ]
-                    };
+                    var options = [
+                        { label: 'Restore', icon: (typeof Icons !== 'undefined') ? Icons.arrow_left_11px : null,
+                          run: function() { doRestore(sc, entry); } }
+                    ];
+                    // Factory Image can't be deleted; only offer Restore.
+                    if (!isStock(entry)) {
+                        options.push({ label: 'Delete', icon: (typeof Icons !== 'undefined') ? Icons.kill_app : null,
+                            run: function() { doDelete(sc, entry); } });
+                    }
+                    sc.dialog = { kind: 'menu', title: rowName(entry), sel: 0, options: options };
                     rr();
                 }
             });
