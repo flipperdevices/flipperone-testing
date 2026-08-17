@@ -361,7 +361,13 @@ var ProfilesApp = (function() {
             self.dialog = {
                 kind: 'notice',
                 // Hide the internal @snapshots/ path prefix from result text.
-                lines: [ok ? 'Done' : 'Error', String(msg).replace(/@snapshots\//g, '')],
+                // Display cleanup: drop the internal @snapshots/ and
+                // @stock-snapshots/ path prefixes, then the '@' subvol
+                // marker from every name (profiles + snapshots).
+                lines: [ok ? 'Done' : 'Error', String(msg)
+                    .replace(/@snapshots\//g, '')
+                    .replace(/@stock-snapshots\//g, '')
+                    .replace(/@/g, '')],
                 afterClose: refresh ? function() { self.enter(); } : null
             };
             rr();
@@ -602,7 +608,7 @@ var ProfilesApp = (function() {
             var dest = entry.name.replace(/_[0-9]+_stock$|_stock$/, '') + '-copy';
             scene.dialog = {
                 kind: 'confirm',
-                lines: ['Clone to', dest + '?'],
+                lines: ['Clone to', dispName(dest) + '?'],
                 onYes: function() {
                     scene.postAction('/api/profiles/clone',
                         { source: src, dest: dest }, 'Cloning...', true);
@@ -622,7 +628,7 @@ var ProfilesApp = (function() {
             function secondConfirm() {
                 scene.dialog = {
                     kind: 'confirm',
-                    lines: [entry.name, 'is a _stock golden base',
+                    lines: [dispName(entry.name), 'is a _stock golden base',
                             '(factory-reset source).', 'Delete anyway?'],
                     onYes: doDelete
                 };
@@ -630,7 +636,7 @@ var ProfilesApp = (function() {
             }
             scene.dialog = {
                 kind: 'confirm',
-                lines: ['Delete profile', entry.name + '?'],
+                lines: ['Delete profile', dispName(entry.name) + '?'],
                 onYes: isStock ? secondConfirm : doDelete
             };
             rr();
@@ -710,10 +716,14 @@ var ProfilesApp = (function() {
         return (p && p.kind === 'stock') || /_stock$/.test((p && p.name) || '');
     }
 
+    // Display form of a profile name: drop the leading '@' subvol marker.
+    // The real '@name' is kept for API calls; this is display-only.
+    function dispName(n) { return String(n || '').replace(/^@/, ''); }
+
     function makeProfiles(sceneManager) {
         return new ListScene('Profiles', '/api/profiles', 'profiles',
             function(p) {
-                return p.name + (p.booted ? ' *' : '');
+                return dispName(p.name) + (p.booted ? ' *' : '');
             },
             PROFILE_BUTTONS,
             {
@@ -771,7 +781,7 @@ var ProfilesApp = (function() {
             run: function(sc) {
                 sc.dialog = {
                     kind: 'confirm',
-                    lines: ['Save ', pname + '?'],
+                    lines: ['Save ', dispName(pname) + '?'],
                     onYes: function() {
                         sc.postAction('/api/snapshots/create', { profile: pname }, 'Saving...', true);
                     }
@@ -795,7 +805,7 @@ var ProfilesApp = (function() {
         function doRestore(sc, entry) {
             sc.dialog = {
                 kind: 'confirm',
-                lines: ['Restore ' + pname + ' from', shortName(entry) + '?',
+                lines: ['Restore ' + dispName(pname) + ' from', shortName(entry) + '?',
                         '(takes effect after reboot)'],
                 onYes: function() {
                     sc.postAction('/api/snapshots/restore', { name: entry.name, dest: pname },
@@ -833,7 +843,7 @@ var ProfilesApp = (function() {
             { label: 'Restore', slot: 'right', run: doRestore }
         ];
 
-        return new ListScene(pname, '/api/snapshots', 'snapshots', shortName,
+        return new ListScene(dispName(pname), '/api/snapshots', 'snapshots', shortName,
             buttons,
             {
                 sceneManager: sceneManager,
