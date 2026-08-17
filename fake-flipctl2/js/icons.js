@@ -1908,7 +1908,125 @@ var Icons = (function() {
         ]
     };
 
+    // no_graphics_boot_menu icon (auto-generated from PNG)
+    var no_graphics_boot_menu = {
+        w: 10,
+        h: 8,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0x00,            0x00,            0x3f,            0xff,            0xff,            0xc0,            0x00,            0x00,  // row 0
+            0x00,            0x03,            0xff,            0xff,            0xff,            0xff,            0xff,            0xfc,  // row 1
+            0x00,            0x00,            0x03,            0xff,            0xc0,            0xff,            0xf0,            0x3f,  // row 2
+            0xfc,            0x00,            0x00,            0xff,            0xff,            0xff,            0xff,            0xff,  // row 3
+            0xff,            0xff,            0xf0,            0x00,            0xff,            0xff,            0xc0,            0xff,  // row 4
+            0xf0,            0x3f,            0xff,            0xf0,            0x00,            0x03,            0xff,            0xff,  // row 5
+            0x00,            0x0f,            0xff,            0xfc,            0x00,            0x00,            0x03,            0xff,  // row 6
+            0xff,            0xff,            0xff,            0xff,            0xfc,            0x00,            0x00,            0x00,  // row 7
+            0x00,            0x3f,            0xff,            0xff,            0xc0,            0x00,            0x00,            0x00   // row 8
+
+        ]
+    };
+
+    // flipper_os icon (auto-generated from PNG)
+    var flipper_os = {
+        w: 14,
+        h: 14,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xf0,  // row 0
+            0x00,            0xfc,            0x00,            0x00,            0x00,            0x00,            0x00,            0x03,            0xff,            0xff,            0xff,  // row 1
+            0xf0,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x3f,  // row 2
+            0xff,            0xf0,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x03,            0xff,  // row 3
+            0xc0,            0x03,            0xf0,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x03,  // row 4
+            0xff,            0xff,            0x03,            0xf0,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,  // row 5
+            0x03,            0xff,            0xff,            0xfc,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,  // row 6
+            0x00,            0x00,            0x0f,            0xff,            0xfc,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,  // row 7
+            0x00,            0x00,            0x00,            0x0f,            0xff,            0xfc,            0x00,            0x00,            0x00,            0x00,            0x00,  // row 8
+            0x00,            0x00,            0x00,            0x03,            0xff,            0xff,            0xfc,            0x00,            0x00,            0x00,            0x00,  // row 9
+            0x00,            0x00,            0x00,            0x00,            0x03,            0xff,            0xff,            0x03,            0xf0,            0x00,            0x00,  // row 10
+            0x00,            0x00,            0x00,            0x00,            0x00,            0x03,            0xff,            0xc0,            0x03,            0xf0,            0x00,  // row 11
+            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x3f,            0xff,            0xf0,  // row 12
+            0x00,            0xfc,            0x00,            0x00,            0x00,            0x00,            0x00,            0x03,            0xff,            0xff,            0xff,  // row 13
+            0xf0,            0x00,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,  // row 14
+            0xff,            0xf0,            0x00 
+        ]
+    };
+
+    // router_small icon (auto-generated from PNG)
+    var router_small = {
+        w: 9,
+        h: 7,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xfc,  // row 0
+            0x00,            0x00,            0xff,            0xff,            0xff,            0xff,            0xff,  // row 1
+            0xff,            0xfc,            0x00,            0x00,            0xff,            0xf0,            0x00,  // row 2
+            0x00,            0x00,            0x3f,            0xfc,            0x00,            0x00,            0xfc,  // row 3
+            0x0f,            0xff,            0xff,            0xff,            0xc0,            0xfc,            0x00,  // row 4
+            0x00,            0x03,            0xff,            0xc0,            0x00,            0x0f,            0xff,  // row 5
+            0x00,            0x00,            0x00,            0xff,            0xf0,            0x3f,            0xff,  // row 6
+            0xf0,            0x3f,            0xfc,            0x00,            0x00,            0xff,            0xff,  // row 7
+            0xff,            0x03,            0xff,            0xff,            0xfc,            0x00,            0x00   // row 8
+
+        ]
+    };
+
+    // small_desktop icon (auto-generated from PNG)
+    var small_desktop = {
+        w: 10,
+        h: 8,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,  // row 0
+            0x00,            0x03,            0xff,            0xff,            0xff,            0xff,            0xff,            0xfc,  // row 1
+            0x00,            0x00,            0x03,            0xff,            0xff,            0xff,            0xff,            0xff,  // row 2
+            0xfc,            0x00,            0x00,            0x03,            0xff,            0xff,            0xff,            0xff,  // row 3
+            0xff,            0xfc,            0x00,            0x00,            0x03,            0xff,            0xff,            0xff,  // row 4
+            0xff,            0xff,            0xfc,            0x00,            0x00,            0x00,            0x00,            0x00,  // row 5
+            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0xff,            0xff,  // row 6
+            0xff,            0x00,            0x0f,            0xff,            0xff,            0xf0,            0x00,            0xff,  // row 7
+            0xff,            0xc0,            0x00,            0x00,            0x3f,            0xff,            0xf0,            0x00   // row 8
+
+        ]
+    };
+
+    // minimal_small icon (auto-generated from PNG)
+    var minimal_small = {
+        w: 20,
+        h: 16,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,  // row 0
+            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,  // row 1
+            0x00,            0x0f,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xf0,            0x00,  // row 2
+            0x00,            0x0f,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xf0,            0x00,  // row 3
+            0x00,            0x0f,            0xff,            0x00,            0x0f,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xf0,            0x00,  // row 4
+            0x00,            0x0f,            0xff,            0x00,            0x0f,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xf0,            0x00,  // row 5
+            0x00,            0x0f,            0xff,            0xff,            0xf0,            0x00,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xf0,            0x00,  // row 6
+            0x00,            0x0f,            0xff,            0xff,            0xf0,            0x00,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xf0,            0x00,  // row 7
+            0x00,            0x0f,            0xff,            0x00,            0x0f,            0xff,            0xff,            0xf0,            0x00,            0x00,            0x00,            0x00,            0xff,            0xf0,            0x00,  // row 8
+            0x00,            0x0f,            0xff,            0x00,            0x0f,            0xff,            0xff,            0xf0,            0x00,            0x00,            0x00,            0x00,            0xff,            0xf0,            0x00,  // row 9
+            0x00,            0x0f,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xf0,            0x00,  // row 10
+            0x00,            0x0f,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xf0,            0x00,  // row 11
+            0x00,            0x0f,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xf0,            0x00,  // row 12
+            0x00,            0x0f,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xf0,            0x00,  // row 13
+            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,  // row 14
+            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00   // row 15
+
+        ]
+    };
+
     return {
+        minimal_small: minimal_small,
+        small_desktop: small_desktop,
+        router_small: router_small,
+        flipper_os: flipper_os,
+        no_graphics_boot_menu: no_graphics_boot_menu,
         satllite: satllite,
         desktop_computer: desktop_computer,
         desktop_small_icon: desktop_small_icon,
