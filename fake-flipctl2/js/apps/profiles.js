@@ -565,9 +565,9 @@ var ProfilesApp = (function() {
             if (this.dialog.kind === 'menu') {
                 drawMenu(canvas, this.dialog);
             } else if (this.dialog.kind === 'days') {
-                drawModal(canvas, ['Delete snapshots',
-                    'older than ' + this.dialog.days + ' day' + (this.dialog.days === 1 ? '' : 's') + '?',
-                    'up / down to change'], 'confirm', this._animFrame);
+                drawModal(canvas, ['Delete older',
+                    'than ' + this.dialog.days + ' day' + (this.dialog.days === 1 ? '' : 's') + '?',
+                    '(up / down to change)'], 'confirm', this._animFrame);
             } else {
                 drawModal(canvas, this.dialog.lines, this.dialog.kind, this._animFrame);
             }
@@ -655,7 +655,7 @@ var ProfilesApp = (function() {
         { label: 'Delete', slot: 'middle', run: function(scene, entry) {
             scene.dialog = {
                 kind: 'confirm',
-                lines: ['Delete snapshot', entry.name + '?'],
+                lines: ['Delete', entry.name + '?'],
                 onYes: function() {
                     scene.postAction('/api/snapshots/delete', { name: entry.name },
                         'Deleting...', true);
@@ -771,7 +771,7 @@ var ProfilesApp = (function() {
             run: function(sc) {
                 sc.dialog = {
                     kind: 'confirm',
-                    lines: ['Save a snapshot of', pname + '?'],
+                    lines: ['Save ', pname + '?'],
                     onYes: function() {
                         sc.postAction('/api/snapshots/create', { profile: pname }, 'Saving...', true);
                     }
@@ -785,7 +785,7 @@ var ProfilesApp = (function() {
         function doDelete(sc, entry) {
             sc.dialog = {
                 kind: 'confirm',
-                lines: ['Delete snapshot', shortName(entry) + '?'],
+                lines: ['Delete', shortName(entry) + '?'],
                 onYes: function() {
                     sc.postAction('/api/snapshots/delete', { name: entry.name }, 'Deleting...', true);
                 }
