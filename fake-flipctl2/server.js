@@ -233,6 +233,130 @@ var BASE = __dirname;
 // Directory the "UI PNG viewer" Testing app browses.
 var UI_PNG_DIR = '/media/ui_png';
 
+// ── UI PNG viewer: MP4 → sprite-sheet frames ────────────────────
+// WPE/GStreamer <video> cannot loop seamlessly on the device: the
+// wrap is a seek + decoder restart that freezes the last frame for
+// ~66 ms (measured; two-element ping-pong is worse at ~98 ms). So
+// the viewer plays short clips from a pre-rendered sprite sheet:
+// one PNG holding every frame in a cols×rows grid. The client blits
+// frame rects from memory and the wrap becomes index arithmetic —
+// zero seam. Sheets are built on first use with the on-device
+// ffmpeg and cached in /tmp keyed by source mtime+size.
+var FRAMES_DIR = '/tmp/ui-png-frames';
+var FRAMES_MAX = 400;      // ≈16 s @ 25fps — sheets get huge past this;
+                           // longer clips fall back to the <video> path
+var framesInFlight = {};   // name → [cb, …] while ffprobe/ffmpeg run
+try { fs.mkdirSync(FRAMES_DIR, { recursive: true }); } catch (e) {}
+
+// spawn() + collected stdout; cb(stdout|null). Argument-array exec —
+// the media names contain spaces/parens, no shell quoting involved.
+function uiPngRunTool(cmd, args, timeoutMs, cb) {
+    var out = '', done = false;
+    var child;
+    try {
+        child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (e) { cb(null); return; }
+    var killer = setTimeout(function() {
+        try { child.kill('SIGKILL'); } catch (e) {}
+    }, timeoutMs);
+    child.stdout.on('data', function(d) { out += d; });
+    child.stderr.resume();   // drain so ffmpeg never blocks on a full pipe
+    child.on('error', function() {
+        if (done) return; done = true;
+        clearTimeout(killer); cb(null);
+    });
+    child.on('close', function(code) {
+        if (done) return; done = true;
+        clearTimeout(killer); cb(code === 0 ? out : null);
+    });
+}
+
+// Resolve (building if needed) the frame-sheet meta for one MP4.
+// cb({ ok:true, frames, cols, rows, w, h, fps }) or { ok:false,
+// error } — refusals are cached too so a too-long clip is probed
+// only once per edit. Concurrent requests for the same name share
+// one ffmpeg run via framesInFlight.
+function uiPngFramesEnsure(name, cb) {
+    var src = UI_PNG_DIR + '/' + name;
+    fs.stat(src, function(errS, st) {
+        if (errS || !st.isFile()) { cb({ ok: false, error: 'Not found' }); return; }
+        var metaPath  = FRAMES_DIR + '/' + name + '.json';
+        var sheetPath = FRAMES_DIR + '/' + name + '.sheet.png';
+        var cached = null;
+        try { cached = JSON.parse(fs.readFileSync(metaPath, 'utf8')); } catch (e) {}
+        if (cached && cached.srcMtimeMs === st.mtimeMs && cached.srcSize === st.size
+                && (!cached.ok || fs.existsSync(sheetPath))) {
+            cb(cached); return;
+        }
+        if (framesInFlight[name]) { framesInFlight[name].push(cb); return; }
+        framesInFlight[name] = [cb];
+        var settle = function(meta) {
+            meta.srcMtimeMs = st.mtimeMs;
+            meta.srcSize    = st.size;
+            try { fs.writeFileSync(metaPath, JSON.stringify(meta)); } catch (e) {}
+            var cbs = framesInFlight[name] || [];
+            delete framesInFlight[name];
+            cbs.forEach(function(f) { try { f(meta); } catch (e) {} });
+        };
+        // -count_frames decodes the stream for an exact count — the
+        // header's nb_frames can lie, and an off-by-one would leave a
+        // black padding cell flashing at every wrap.
+        uiPngRunTool('ffprobe', ['-v', 'error', '-select_streams', 'v:0',
+                '-count_frames', '-show_entries',
+                'stream=nb_read_frames,avg_frame_rate,r_frame_rate,width,height',
+                '-of', 'json', src], 30000, function(probeOut) {
+            var frames = 0, fps = 0, w = 0, h = 0;
+            try {
+                var s = JSON.parse(probeOut).streams[0];
+                frames = parseInt(s.nb_read_frames, 10) || 0;
+                w = s.width | 0; h = s.height | 0;
+                var fr = (s.avg_frame_rate && s.avg_frame_rate !== '0/0')
+                       ? s.avg_frame_rate : s.r_frame_rate;
+                var p = String(fr || '').split('/');
+                fps = (parseFloat(p[0]) / (parseFloat(p[1]) || 1)) || 0;
+            } catch (e) {}
+            if (!frames || !w || !h || !fps) {
+                settle({ ok: false, error: 'probe failed' }); return;
+            }
+            if (frames > FRAMES_MAX) {
+                settle({ ok: false, error: 'too long (' + frames + ' frames)' });
+                return;
+            }
+            var cols = Math.ceil(Math.sqrt(frames));
+            var rows = Math.ceil(frames / cols);
+            uiPngRunTool('ffmpeg', ['-v', 'error', '-y', '-i', src,
+                    '-vf', 'tile=' + cols + 'x' + rows,
+                    '-frames:v', '1', '-update', '1', sheetPath],
+                    60000, function(ffOut) {
+                if (ffOut === null || !fs.existsSync(sheetPath)) {
+                    settle({ ok: false, error: 'ffmpeg failed' }); return;
+                }
+                settle({ ok: true, frames: frames, cols: cols, rows: rows,
+                         w: w, h: h, fps: fps });
+            });
+        });
+    });
+}
+
+// Drop a stale sheet (source renamed / deleted / overwritten).
+function uiPngFramesEvict(name) {
+    try { fs.unlinkSync(FRAMES_DIR + '/' + name + '.json'); } catch (e) {}
+    try { fs.unlinkSync(FRAMES_DIR + '/' + name + '.sheet.png'); } catch (e) {}
+}
+
+// name= query param for the two frames endpoints; null when invalid.
+function uiPngFramesName(url) {
+    var name = null;
+    (url.split('?')[1] || '').split('&').forEach(function(kv) {
+        var i = kv.indexOf('=');
+        if (i > 0 && kv.slice(0, i) === 'name') {
+            try { name = decodeURIComponent(kv.slice(i + 1)); } catch (e) {}
+        }
+    });
+    if (!name || !/^[^/]+\.mp4$/i.test(name) || name.indexOf('..') !== -1) return null;
+    return name;
+}
+
 // Browser-mirror relay: the device (COG) posts its framebuffer here and
 // PC viewers fetch it; PC viewers post button presses which the device
 // drains and injects. In-memory, latest-frame-wins.
@@ -3329,28 +3453,147 @@ var server = http.createServer(function(req, res) {
         return;
     }
     // ── UI PNG viewer ────────────────────────────────────────────
-    // List + serve the PNGs dropped in /media/ui_png for the
+    // List + serve the PNGs / MP4s dropped in /media/ui_png for the
     // Testing "UI PNG viewer" app.
     if (req.url === '/api/ui-png' && req.method === 'GET') {
         var pngFiles = [];
         try {
             pngFiles = fs.readdirSync(UI_PNG_DIR)
-                .filter(function(n) { return /\.png$/i.test(n); })
+                .filter(function(n) { return /\.(png|mp4)$/i.test(n); })
                 .sort();
         } catch (e) { /* dir missing → empty list */ }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ files: pngFiles }));
         return;
     }
+    // Frame-sheet meta for one MP4, building the sheet on first use
+    // (ffprobe + ffmpeg, so the first hit takes a few seconds — the
+    // client shows its spinner). { ok:false } → client falls back to
+    // the <video> element.
+    if (req.method === 'GET' && req.url.split('?')[0] === '/api/ui-png/frames') {
+        var framesName = uiPngFramesName(req.url);
+        if (!framesName) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: 'Bad name' }));
+            return;
+        }
+        uiPngFramesEnsure(framesName, function(meta) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(meta));
+        });
+        return;
+    }
+    // The sheet PNG itself (meta must have been built OK).
+    if (req.method === 'GET' && req.url.split('?')[0] === '/api/ui-png/frames-sheet') {
+        var sheetName = uiPngFramesName(req.url);
+        if (!sheetName) { res.writeHead(400); res.end('Bad name'); return; }
+        uiPngFramesEnsure(sheetName, function(meta) {
+            if (!meta.ok) { res.writeHead(404); res.end('No sheet'); return; }
+            var sheetFile = FRAMES_DIR + '/' + sheetName + '.sheet.png';
+            fs.stat(sheetFile, function(errSt, stSt) {
+                if (errSt || !stSt.isFile()) {
+                    res.writeHead(404); res.end('No sheet'); return;
+                }
+                res.writeHead(200, {
+                    'Content-Type':   'image/png',
+                    'Content-Length': stSt.size
+                });
+                fs.createReadStream(sheetFile).pipe(res);
+            });
+        });
+        return;
+    }
     if (req.method === 'GET' && req.url.split('?')[0].indexOf('/media/ui_png/') === 0) {
-        // Serve one PNG by basename only — the regex forbids any
-        // slash, so no path traversal reaches the fs.
+        // Serve one file by basename only — the regex forbids any
+        // slash, so no path traversal reaches the fs. Supports HTTP
+        // Range (206) — <video> needs it to seek back to 0, which
+        // is exactly what loop playback does at every wrap.
         var pngName = decodeURIComponent(req.url.split('?')[0].slice('/media/ui_png/'.length));
-        if (!/^[^/]+\.png$/i.test(pngName)) { res.writeHead(400); res.end('Bad name'); return; }
-        fs.readFile(UI_PNG_DIR + '/' + pngName, function(err, data) {
-            if (err) { res.writeHead(404); res.end('Not found'); return; }
-            res.writeHead(200, { 'Content-Type': 'image/png' });
-            res.end(data);
+        if (!/^[^/]+\.(png|mp4)$/i.test(pngName)) { res.writeHead(400); res.end('Bad name'); return; }
+        var pngMime = /\.mp4$/i.test(pngName) ? 'video/mp4' : 'image/png';
+        var pngPath = UI_PNG_DIR + '/' + pngName;
+        fs.stat(pngPath, function(err, st) {
+            if (err || !st.isFile()) { res.writeHead(404); res.end('Not found'); return; }
+            var range = req.headers.range;
+            var m = range && /^bytes=(\d*)-(\d*)$/.exec(range);
+            if (m && (m[1] !== '' || m[2] !== '')) {
+                var start = m[1] === '' ? Math.max(0, st.size - parseInt(m[2], 10))
+                                        : parseInt(m[1], 10);
+                var end   = (m[1] !== '' && m[2] !== '') ? parseInt(m[2], 10)
+                                                         : st.size - 1;
+                if (end > st.size - 1) end = st.size - 1;
+                if (start > end || start >= st.size) {
+                    res.writeHead(416, { 'Content-Range': 'bytes */' + st.size });
+                    res.end();
+                    return;
+                }
+                res.writeHead(206, {
+                    'Content-Type':   pngMime,
+                    'Content-Range':  'bytes ' + start + '-' + end + '/' + st.size,
+                    'Content-Length': end - start + 1,
+                    'Accept-Ranges':  'bytes'
+                });
+                fs.createReadStream(pngPath, { start: start, end: end }).pipe(res);
+            } else {
+                res.writeHead(200, {
+                    'Content-Type':   pngMime,
+                    'Content-Length': st.size,
+                    'Accept-Ranges':  'bytes'
+                });
+                fs.createReadStream(pngPath).pipe(res);
+            }
+        });
+        return;
+    }
+    // Rename one PNG / MP4. Body { from, to } — both basenames
+    // ("to" may omit the extension; the source's is appended).
+    // Refuses to clobber an existing file.
+    if (req.url === '/api/ui-png/rename' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            var from = data && data.from, to = data && data.to;
+            var bad  = function(msg) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: msg }));
+            };
+            if (err || typeof from !== 'string' || typeof to !== 'string') {
+                return bad('Invalid request');
+            }
+            var extM = from.match(/\.(png|mp4)$/i);
+            var ext  = extM ? extM[0].toLowerCase() : '.png';
+            if (!/\.(png|mp4)$/i.test(to)) to += ext;
+            if (!/^[^/]+\.(png|mp4)$/i.test(from) || !/^[^/]+\.(png|mp4)$/i.test(to)
+                    || from.indexOf('..') !== -1 || to.indexOf('..') !== -1) {
+                return bad('Bad name');
+            }
+            var src = UI_PNG_DIR + '/' + from, dst = UI_PNG_DIR + '/' + to;
+            if (from !== to && fs.existsSync(dst)) return bad('Name already exists');
+            try { fs.renameSync(src, dst); }
+            catch (e) { return bad(String((e && e.message) || e)); }
+            uiPngFramesEvict(from);   // sheet cache is keyed by name
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, name: to }));
+        });
+        return;
+    }
+    // Delete one PNG / MP4. Body { name } — basename only.
+    if (req.url === '/api/ui-png/delete' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            var name = data && data.name;
+            if (err || typeof name !== 'string' || !/^[^/]+\.(png|mp4)$/i.test(name)
+                    || name.indexOf('..') !== -1) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Bad name' }));
+                return;
+            }
+            try { fs.unlinkSync(UI_PNG_DIR + '/' + name); }
+            catch (e) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: String((e && e.message) || e) }));
+                return;
+            }
+            uiPngFramesEvict(name);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true }));
         });
         return;
     }
