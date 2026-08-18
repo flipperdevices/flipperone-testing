@@ -63,6 +63,12 @@ var BootMenuScene = (function() {
         return raw;
     }
 
+    // Profile name for popup captions: the display name without the list's
+    // [ ] user-edit brackets (e.g. "[My Games]" -> "My Games").
+    function plainName(name, origin) {
+        return profileDisplay(name, origin).replace(/[\[\]]/g, '');
+    }
+
     // Editable label text for Rename: the user @Base__label__ label with '-'
     // shown as space (backup suffix stripped); legacy names come back whole.
     function profileLabel(name) {
@@ -151,6 +157,7 @@ var BootMenuScene = (function() {
         this._autoStart    = true;   // countdown active until a key press
         this._startAt      = 0;      // countdown start (ms); set in enter()
         this._timer        = null;
+        this._loadTimer    = null;   // repaint ticker for the loading spinner
 
         this.selectorFrame = new MenuSelectorFrame({
             x: SELECTOR_X, y: 0, width: SELECTOR_W_WITH_SCROLL, height: SELECTOR_H,
@@ -173,11 +180,13 @@ var BootMenuScene = (function() {
         });
         this._profiles    = [];
         this._editOpen    = false;
+        this._infoOpen    = false;   // read-only Info popup (over the Info button)
         this._editIndex   = 0;
         this._editOptions = ['Rename', 'Clone', 'Factory Reset', 'Delete'];   // recomputed per profile in _openEdit
         this._busy        = null;   // action-in-progress message (e.g. 'Cloning')
         this._actionError = null;   // last action error, dismissed by a key press
         this._confirm     = null;   // { kind, msg1, msg2 } confirmation before a destructive action
+        this._autoStartProfile = null;   // subvol name of the auto-start profile (only one; not persisted yet)
 
         // Profile size (Total + Exclusive), fetched async when the popup
         // opens; a rotating spinner shows while it loads.
@@ -197,9 +206,22 @@ var BootMenuScene = (function() {
         this._autoStart = true;   // will start once the profiles arrive
         this._startAt = 0;
         this._fetchProfiles();
+        this._startLoadAnim();
+    };
+
+    // Repaint while the profile list is loading, so the spinner animates.
+    BootMenuScene.prototype._startLoadAnim = function() {
+        var self = this;
+        if (this._loadTimer) clearInterval(this._loadTimer);
+        if (!this.loading) return;
+        this._loadTimer = setInterval(function() {
+            if (!self.loading) { clearInterval(self._loadTimer); self._loadTimer = null; return; }
+            if (window.requestRender) window.requestRender();
+        }, 100);
     };
     BootMenuScene.prototype.exit = function() {
         if (this._timer) { clearInterval(this._timer); this._timer = null; }
+        if (this._loadTimer) { clearInterval(this._loadTimer); this._loadTimer = null; }
     };
 
     // Start the auto-start countdown + progress bar. Called only after the
@@ -237,6 +259,7 @@ var BootMenuScene = (function() {
     };
 
     BootMenuScene.prototype._setProfiles = function(list) {
+        var self = this;
         this._profiles = list;
         this.items = list.map(function(p) {
             return new MenuLine({ text: profileDisplay(p.name, p.origin), width: 224, icon: bootIcon(p.name, p.origin),
@@ -245,7 +268,8 @@ var BootMenuScene = (function() {
                                   // shift when the row becomes selected. Text
                                   // lowered to sit against the icon bottom.
                                   font: HaxrCorp4090FlipCTL, activeLabelYNudge: 0,
-                                  labelYOffset: 0, rowHeight: ROW_H });
+                                  labelYOffset: 0, rowHeight: ROW_H,
+                                  suffixIcon: (p.name === self._autoStartProfile) ? ic('auto_start_heart') : null });
         });
         this.loading = false;
         this.selectedIndex = 0;
@@ -254,6 +278,16 @@ var BootMenuScene = (function() {
         // Begin the auto-start countdown now that the data is in, unless a key
         // press already cancelled it while loading.
         if (this._autoStart) this._startCountdown();
+        if (window.requestRender) window.requestRender();
+    };
+
+    // Refresh the auto-start heart markers on the existing rows in place (no
+    // refetch), so toggling keeps the current selection/scroll.
+    BootMenuScene.prototype._applyAutoStartIcons = function() {
+        for (var i = 0; i < this.items.length; i++) {
+            this.items[i].suffixIcon = (this._profiles[i] && this._profiles[i].name === this._autoStartProfile)
+                ? ic('auto_start_heart') : null;
+        }
         if (window.requestRender) window.requestRender();
     };
 
@@ -292,10 +326,10 @@ var BootMenuScene = (function() {
         // be renamed or deleted (Clone / Factory Reset); users get everything.
         var p = this._profiles[this.selectedIndex] || {};
         this._editOptions = p.old
-            ? ['Rename', 'Clone', 'Delete']
+            ? ['Rename', 'Clone', 'Delete', 'Auto Start']
             : isFactory(p.name, p.origin)
-                ? ['Clone', 'Factory Reset']
-                : ['Rename', 'Clone', 'Factory Reset', 'Delete'];
+                ? ['Clone', 'Factory Reset', 'Auto Start']
+                : ['Rename', 'Clone', 'Factory Reset', 'Delete', 'Auto Start'];
         this._fetchSize();
         if (window.requestRender) window.requestRender();
     };
@@ -308,23 +342,39 @@ var BootMenuScene = (function() {
         this._stopSpinner();
     };
 
+    // Read-only Info popup (Info soft button). Reuses the size/dtbo fetch.
+    BootMenuScene.prototype._openInfo = function() {
+        if (!this.items.length) return;
+        this._cancelAutoStart();
+        this._infoOpen = true;
+        this._fetchSize();   // exclusive is enough for the Info popup (no compsize)
+        if (window.requestRender) window.requestRender();
+    };
+
+    BootMenuScene.prototype._closeInfo = function() {
+        this._infoOpen = false;
+        this._stopSpinner();
+    };
+
     // Fetch Total + Exclusive for the selected profile; a spinner runs
     // until the response lands (results are cached server-side).
-    BootMenuScene.prototype._fetchSize = function() {
+    BootMenuScene.prototype._fetchSize = function(full) {
         var p = this._profiles[this.selectedIndex] || {};
         var name = p.name || '';
-        this._size = { name: name, loading: true, total: null, exclusive: null };
+        this._size = { name: name, loading: true, total: null, exclusive: null,
+                       referenced: null, compression: null, dtbo: null };
         this._startSpinner();
         if (!name) { this._size.loading = false; this._stopSpinner(); return; }
         var self = this;
         var xhr = new XMLHttpRequest();
-        xhr.open('GET', '/api/boot/profile-size?name=' + encodeURIComponent(name), true);
+        xhr.open('GET', '/api/boot/profile-size?name=' + encodeURIComponent(name) + (full ? '&full=1' : ''), true);
         xhr.onreadystatechange = function() {
             if (xhr.readyState !== 4) return;
             if (self._size.name !== name) return;   // selection moved on; ignore
-            var total = null, exclusive = null;
-            try { var d = JSON.parse(xhr.responseText); total = d.total; exclusive = d.exclusive; } catch (e) {}
-            self._size = { name: name, loading: false, total: total, exclusive: exclusive };
+            var d = {};
+            try { d = JSON.parse(xhr.responseText); } catch (e) {}
+            self._size = { name: name, loading: false, total: d.total || null, exclusive: d.exclusive || null,
+                           referenced: d.referenced || null, compression: d.compression || null, dtbo: d.dtbo || null };
             self._stopSpinner();
             if (window.requestRender) window.requestRender();
         };
@@ -372,6 +422,14 @@ var BootMenuScene = (function() {
 
     BootMenuScene.prototype._runEditAction = function(label) {
         var p = this._profiles[this.selectedIndex] || {};
+        if (label === 'Auto Start') {
+            // Only one auto-start profile; selecting toggles it (exclusive).
+            // Not persisted yet — in-memory for now.
+            this._autoStartProfile = (this._autoStartProfile === p.name) ? null : p.name;
+            this._applyAutoStartIcons();
+            this._closeEdit();
+            return;
+        }
         if (label === 'Rename') { this._doRename(); return; }
         if (label === 'Clone') { this._doClone(); return; }
         if (label === 'Delete') {
@@ -496,13 +554,19 @@ var BootMenuScene = (function() {
 
     BootMenuScene.prototype.handleInput = function(action) {
         if (this._editOpen) { this._editInput(action); return; }
+        if (this._infoOpen) {
+            // Read-only popup: any of back/esc/ok/edit closes it.
+            if (action === 'back' || action === 'esc' || action === 'ok' ||
+                action === 'run' || action === 'edit') { this._closeInfo(); }
+            return;
+        }
 
         this._cancelAutoStart();   // any key cancels the auto-start countdown
 
         if (action === 'back') return 'pop';
 
-        // X key -> Info; V key -> Edit (opens the popup).
-        if (action === 'edit') { this._flash(this.infoBtn); return; }
+        // X key -> Info (read-only popup); V key -> Edit (actions popup).
+        if (action === 'edit') { this._flash(this.infoBtn); this._openInfo(); return; }
         if (action === 'del')  { this._flash(this.editBtn); this._openEdit(); return; }
 
         var n = this.items.length;
@@ -568,8 +632,16 @@ var BootMenuScene = (function() {
         }
 
         if (!this.items.length) {
-            var msg = this.loading ? 'Loading...' : '(no profiles)';
-            HaxrCorp4090FlipCTL.draw(ctx, msg, 8, CONTAINER_Y + 5, '#888888');
+            var loadSpr = (typeof AnimatedIcons !== 'undefined') ? AnimatedIcons.spinner_22x20px : null;
+            if (this.loading && loadSpr) {
+                var frH = Math.floor(loadSpr.h / (loadSpr.frames || 1));
+                var frIdx = Math.floor(Date.now() / 100) % (loadSpr.frames || 1);
+                var lsx = Math.floor((canvas.w - loadSpr.w) / 2);
+                var lsy = CONTAINER_Y + Math.floor((canvas.h - CONTAINER_Y - frH) / 2) - 8;
+                canvas.drawSpriteFrame(loadSpr, lsx, lsy, frIdx, '#000');
+            } else if (!this.loading) {
+                HaxrCorp4090FlipCTL.draw(ctx, '(no profiles)', 8, CONTAINER_Y + 5, '#888888');
+            }
         } else {
             var total     = this.items.length;
             var hasScroll = total > VISIBLE_COUNT;
@@ -603,36 +675,107 @@ var BootMenuScene = (function() {
             }
         }
 
-        // Soft buttons (dimmed while the Edit popup is open).
-        this.infoBtn.disabled = this._editOpen;
-        this.editBtn.disabled = this._editOpen;
+        // Soft buttons (dimmed while a popup is open).
+        this.infoBtn.disabled = this._editOpen || this._infoOpen;
+        this.editBtn.disabled = this._editOpen || this._infoOpen;
         this.infoBtn.render(canvas);
         this.editBtn.render(canvas);
 
         if (this._editOpen) this._renderEditPopup(canvas);
+        else if (this._infoOpen) this._renderInfoPopup(canvas);
     };
+
+    // Lazily measure the fixed size-line slot widths (number + unit).
+    BootMenuScene.prototype._ensureSlots = function(F) {
+        if (this._numSlotW != null) return;
+        var mx = F.textWidth('00.0');
+        for (var k = 0; k < this._spinFrames.length; k++) mx = Math.max(mx, F.textWidth(this._spinFrames[k]));
+        this._numSlotW = mx;
+        var mu = 0, u = [' B', ' KB', ' MB', ' GB'];
+        for (var j = 0; j < u.length; j++) mu = Math.max(mu, F.textWidth(u[j]));
+        this._unitSlotW = mu;
+    };
+
+    BootMenuScene.prototype._sizeLineWidth = function(F) {
+        this._ensureSlots(F);
+        return F.textWidth('Size: ') + this._numSlotW + this._unitSlotW;
+    };
+
+    // Single "Size: X" line, fixed-width slots so nothing shifts (spinner while
+    // loading; number + B/KB/MB/GB unit right-aligned in their slots).
+    BootMenuScene.prototype._drawSizeLine = function(canvas, fx, fw, sy) {
+        var ctx = canvas.ctx, F = HaxrCorp4090FlipCTL, col = '#666666';
+        this._ensureSlots(F);
+        var sz = this._size, numW = this._numSlotW, unitW = this._unitSlotW;
+        var lbl = 'Size: ', lblW = F.textWidth(lbl);
+        var x = fx + Math.floor((fw - (lblW + numW + unitW)) / 2);
+        F.draw(ctx, lbl, x, sy, col);
+        var sx = x + lblW;
+        var numStr, unitStr;
+        if (sz.loading) { numStr = this._spinFrames[this._spinIndex]; unitStr = ' B'; }
+        else { var pr = sizeParts(sz.exclusive); numStr = pr[0]; unitStr = ' ' + pr[1]; }
+        var nw = F.textWidth(numStr);
+        // number/spinner right-aligned in its slot (no jitter); unit sits tight
+        // right after it, so a short unit like "B" isn't pushed to the right.
+        // While loading, nudge the lone spinner one symbol left of the unit.
+        var nx = sx + numW - nw;
+        if (sz.loading) nx -= F.textWidth('0');
+        F.draw(ctx, numStr, nx, sy, col);
+        F.draw(ctx, unitStr, sx + numW, sy, col);
+    };
+
+    // Shared popup chrome: rounded frame + grey header band (icon + name + size
+    // line). Body is drawn by the caller below HDR.
+    BootMenuScene.prototype._drawPopupChrome = function(canvas, p, name, fx, fy, fw, fh, HDR) {
+        var ctx = canvas.ctx;
+        new ResponsiveFrame({
+            x: fx, y: fy, width: fw, height: fh, anchorH: 'left', anchorV: 'top',
+            strokeColor: '#000', showStroke: true, fillColor: '#fff', showFill: true, cornerRadius: 5
+        }).render(canvas);
+        var CR = 5;
+        ctx.fillStyle = '#D9D9D9';
+        for (var by = 1; by < HDR; by++) {
+            var off = (by < CR) ? (CR - by) : 1;
+            var left = fx + off, right = fx + fw - 1 - off;
+            if (right >= left) ctx.fillRect(left, fy + by, right - left + 1, 1);
+        }
+        var hicon = headerIcon(p.name, p.origin);
+        var nameX = fx + 8;
+        if (hicon) {
+            if (hicon.grayscale) canvas.drawSprite(hicon, fx + 8, fy + 6, '#000');
+            else canvas.drawIcon(hicon, fx + 8, fy + 6, '#000');
+            nameX = fx + 8 + hicon.w + 4;
+        }
+        Born2bSportyV2FlipCTL.draw(ctx, name, nameX, fy + 6, '#000');
+    };
+
+    // Fit a string into maxW px, trimming with '..' if needed.
+    function fitText(F, s, maxW) {
+        s = String(s);
+        if (F.textWidth(s) <= maxW) return s;
+        while (s.length > 1 && F.textWidth(s + '..') > maxW) s = s.slice(0, -1);
+        return s + '..';
+    }
+
+    // "Last used" for the Info popup: 'now' -> Running, empty/never -> never,
+    // else "X ago (YYYY-MM-DD HH:MM:SS)".
+    function infoLastUsed(lu) {
+        if (lu === 'now') return 'Running';
+        if (!lu || lu === 'never') return 'never';
+        var a = usedAgo(lu);
+        var rel = a ? a.replace(/^Used /, '') : '';
+        return rel ? (rel + ' (' + lu + ')') : lu;
+    }
 
     // Edit popup: profile header (icon + name + size) over a grey band, then
     // the actions (Rename / Clone / Delete), the selected one framed.
     BootMenuScene.prototype._renderEditPopup = function(canvas) {
         var ctx = canvas.ctx;
         var p = this._profiles[this.selectedIndex] || {};
-        var name = profileDisplay(p.name, p.origin) + (isFactory(p.name, p.origin) ? ' profile' : '');
+        var name = plainName(p.name, p.origin);
         var F = HaxrCorp4090FlipCTL, HDR = 38, rowH = 16;
 
-        // Fixed size-line slot widths (measured once) — also used to size the frame.
-        if (this._numSlotW == null) {
-            var mx0 = F.textWidth('00.0');
-            for (var k0 = 0; k0 < this._spinFrames.length; k0++) mx0 = Math.max(mx0, F.textWidth(this._spinFrames[k0]));
-            this._numSlotW = mx0;
-            var mu0 = 0, u0 = [' B', ' KiB', ' MiB', ' GiB'];
-            for (var j0 = 0; j0 < u0.length; j0++) mu0 = Math.max(mu0, F.textWidth(u0[j0]));
-            this._unitSlotW = mu0;
-        }
-        var fieldW0 = this._numSlotW + this._unitSlotW;
-        var sizeLineW = F.textWidth('Total: ') + fieldW0 + F.textWidth('   Exclusive: ') + fieldW0;
-
-        // Header name line width (icon + gap + bold name).
+        var sizeLineW = this._sizeLineWidth(F);
         var hicon = headerIcon(p.name, p.origin);
         var nameLineW = 8 + (hicon ? hicon.w + 4 : 0) + Born2bSportyV2FlipCTL.textWidth(name) + 8;
 
@@ -661,65 +804,8 @@ var BootMenuScene = (function() {
         var fx = Math.round((canvas.w - fw) / 2);
         var fy = Math.round((canvas.h - fh) / 2);
 
-        new ResponsiveFrame({
-            x: fx, y: fy, width: fw, height: fh, anchorH: 'left', anchorV: 'top',
-            strokeColor: '#000', showStroke: true, fillColor: '#fff', showFill: true, cornerRadius: 5
-        }).render(canvas);
-
-        // Grey header band, filled inside the frame stroke and following the
-        // 5px rounded top corners so it doesn't punch holes in the outline.
-        var CR = 5;
-        ctx.fillStyle = '#D9D9D9';
-        for (var by = 1; by < HDR; by++) {
-            var off = (by < CR) ? (CR - by) : 1;   // 1px past the corner diagonal, else inside the stroke
-            var left = fx + off, right = fx + fw - 1 - off;
-            if (right >= left) ctx.fillRect(left, fy + by, right - left + 1, 1);
-        }
-
-        var nameX = fx + 8;
-        if (hicon) {
-            // Grayscale icons use drawSprite; binary ones (desktop/minimal/
-            // router) use drawIcon's row-per-element format.
-            if (hicon.grayscale) canvas.drawSprite(hicon, fx + 8, fy + 6, '#000');
-            else canvas.drawIcon(hicon, fx + 8, fy + 6, '#000');
-            nameX = fx + 8 + hicon.w + 4;
-        }
-        Born2bSportyV2FlipCTL.draw(ctx, name, nameX, fy + 6, '#000');
-
-        // Total + Exclusive. Number and unit each sit in a fixed-width slot so
-        // nothing shifts horizontally: not the spinner (- \ | /) while loading,
-        // not between loading and loaded, and not between B/KB/MB/GB units or
-        // different number widths.
-        var sz = this._size, F = HaxrCorp4090FlipCTL, sy = fy + 24, col = '#666666';
-        if (this._numSlotW == null) {
-            var mx = F.textWidth('00.0');   // widest number we expect
-            for (var k = 0; k < this._spinFrames.length; k++) mx = Math.max(mx, F.textWidth(this._spinFrames[k]));
-            this._numSlotW = mx;
-            var mu = 0, units = [' B', ' KiB', ' MiB', ' GiB'];
-            for (var j = 0; j < units.length; j++) mu = Math.max(mu, F.textWidth(units[j]));
-            this._unitSlotW = mu;
-        }
-        var numW = this._numSlotW, unitW = this._unitSlotW, fieldW = numW + unitW;
-        var l1 = 'Total: ', l2 = '   Exclusive: ';
-        var w1 = F.textWidth(l1), w2 = F.textWidth(l2);
-        var x = fx + Math.floor((fw - (w1 + fieldW + w2 + fieldW)) / 2);
-        var spin = this._spinFrames[this._spinIndex];
-        var drawField = function(sx, bytes) {
-            var numStr, unitStr;
-            if (sz.loading) { numStr = spin; unitStr = ' B'; }
-            else { var pr = sizeParts(bytes); numStr = pr[0]; unitStr = ' ' + pr[1]; }
-            var nw = F.textWidth(numStr);
-            // number/spinner right-aligned at the slot edge, unit right-aligned in
-            // its slot: the trailing letter (B) never moves when B -> KB/MB/GB
-            // (the higher unit just grows a letter to the left), and the number
-            // sits tight against the unit.
-            F.draw(ctx, numStr, sx + numW - nw, sy, col);
-            F.draw(ctx, unitStr, sx + numW + unitW - F.textWidth(unitStr), sy, col);
-        };
-        F.draw(ctx, l1, x, sy, col); x += w1;
-        drawField(x, sz.total);     x += fieldW;
-        F.draw(ctx, l2, x, sy, col); x += w2;
-        drawField(x, sz.exclusive);
+        this._drawPopupChrome(canvas, p, name, fx, fy, fw, fh, HDR);
+        this._drawSizeLine(canvas, fx, fw, fy + 24);
 
         // Confirm / busy / error take over the options area.
         if (this._confirm || this._busy || this._actionError) {
@@ -751,7 +837,70 @@ var BootMenuScene = (function() {
                 this._editSelector.render(canvas);
             }
             var lw = HaxrCorp4090FlipCTL.textWidth(label);
-            HaxrCorp4090FlipCTL.draw(ctx, label, fx + Math.floor((fw - lw) / 2), rowY + 3, '#000');
+            if (label === 'Auto Start') {
+                // Heart on the left ONLY when this profile is the auto-start one
+                // (the heart marks the enabled state); whole group centred. Its
+                // bottom aligns with the text.
+                var heart = (p.name === this._autoStartProfile) ? ic('auto_start_heart') : null;
+                var hw = heart ? heart.w : 0, hgap = heart ? 4 : 0;
+                var gx = fx + Math.floor((fw - (hw + hgap + lw)) / 2);
+                if (heart) {
+                    if (heart.grayscale) canvas.drawSprite(heart, gx, rowY + 5, '#000');
+                    else canvas.drawIcon(heart, gx, rowY + 5, '#000');
+                }
+                HaxrCorp4090FlipCTL.draw(ctx, label, gx + hw + hgap, rowY + 3, '#000');
+            } else {
+                HaxrCorp4090FlipCTL.draw(ctx, label, fx + Math.floor((fw - lw) / 2), rowY + 3, '#000');
+            }
+        }
+    };
+
+    // Info popup: same chrome as Edit, but the grey header carries all the disk
+    // metrics (Total/Exclusive, then On disk + Compression), and the body below
+    // is the read-only fields — Parent, Origin, Last used, DTBO (system + user).
+    BootMenuScene.prototype._renderInfoPopup = function(canvas) {
+        var ctx = canvas.ctx;
+        var p = this._profiles[this.selectedIndex] || {};
+        var name = plainName(p.name, p.origin);
+        var F = HaxrCorp4090FlipCTL, HDR = 38, lineH = 11, padH = 8;
+
+        var sz = this._size || {};
+        var spin = this._spinFrames[this._spinIndex];
+        var dsys, dusr;
+        if (sz.loading || !sz.dtbo) { dsys = spin; dusr = spin; }
+        else {
+            dsys = (sz.dtbo.system && sz.dtbo.system.length) ? sz.dtbo.system.join(' ') : 'none';
+            dusr = (sz.dtbo.user && sz.dtbo.user.length) ? sz.dtbo.user.join(' ') : 'none';
+        }
+        // drop the "(id)" suffix and the leading '@' subvol marker
+        var parent  = dispName((p.parent || '-').replace(/\s*\(\d+\)\s*$/, ''));
+        var factory = dispName(p.origin || '-');
+        var lines = [
+            'Cloned from: ' + parent,
+            'Factory: ' + factory,
+            'Last used: ' + infoLastUsed(p.lastUsed),
+            'DTBO system: ' + dsys,
+            'DTBO user: ' + dusr
+        ];
+
+        var bodyW = 0;
+        for (var i = 0; i < lines.length; i++) bodyW = Math.max(bodyW, F.textWidth(lines[i]));
+        var sizeLineW = this._sizeLineWidth(F);
+        var hicon = headerIcon(p.name, p.origin);
+        var nameLineW = 8 + (hicon ? hicon.w + 4 : 0) + Born2bSportyV2FlipCTL.textWidth(name) + 8;
+
+        var fw = Math.min(252, Math.max(sizeLineW, nameLineW, bodyW + padH * 2) + 12);
+        var fh = HDR + lines.length * lineH + 8;
+        var fx = Math.round((canvas.w - fw) / 2);
+        var fy = Math.round((canvas.h - fh) / 2);
+
+        this._drawPopupChrome(canvas, p, name, fx, fy, fw, fh, HDR);
+        this._drawSizeLine(canvas, fx, fw, fy + 24);   // "Size: <exclusive>"
+
+        var ly = fy + HDR + 4;
+        for (i = 0; i < lines.length; i++) {
+            F.draw(ctx, fitText(F, lines[i], fw - padH * 2), fx + padH, ly, '#000');
+            ly += lineH;
         }
     };
 

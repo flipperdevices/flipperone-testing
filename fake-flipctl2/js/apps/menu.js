@@ -417,6 +417,7 @@ var MenuScene = (function() {
 
         var iconMap = {
             'Settings':         Icons.system,
+            'Boot Menu':        (typeof Icons !== 'undefined') ? Icons.flipper_os : null,
             'TV Media Box':     (typeof Icons !== 'undefined') ? Icons.media : null,
             'Desktop Computer': (typeof Icons !== 'undefined') ? Icons.desktop_computer : null
             // 'Network' / 'Files' / 'Apps' / 'Testing' have no static

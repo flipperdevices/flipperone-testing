@@ -3278,6 +3278,35 @@ var wifiScanCache = { ready: false, networks: [] };
 // is a ~2-4s tree walk (no quotas), so results are memoised per subvol name.
 var profileSizeCache = {};
 var PROFILE_SIZE_TTL = 60000;
+
+// DTBO overlays applied to a profile, read from its BLS entry's
+// devicetree-overlay line (/boot/loader/entries is shared, so every profile's
+// entry is readable here). Split system (kernel dir) vs user (/etc/kernel/dtbo
+// drop-ins) by path. Returns { system: [names], user: [names] }.
+function readProfileDtbo(name) {
+    var dir = '/boot/loader/entries', out = { system: [], user: [] };
+    var files;
+    try { files = fs.readdirSync(dir); } catch (e) { return out; }
+    var esc = name.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+    var reSub = new RegExp('rootflags=subvol=' + esc + '(?:\\s|$)', 'm');
+    var chosen = null;
+    files.filter(function(f) { return /\.conf$/.test(f); }).sort().forEach(function(f) {
+        var txt;
+        try { txt = fs.readFileSync(dir + '/' + f, 'utf8'); } catch (e) { return; }
+        var opt = txt.match(/^options\s+.*/m);
+        if (opt && reSub.test(opt[0])) chosen = txt;   // sorted asc → last match is newest kernel
+    });
+    if (!chosen) return out;
+    var ov = chosen.match(/^devicetree-overlay\s+(.*)$/m);
+    if (!ov) return out;
+    ov[1].trim().split(/\s+/).forEach(function(p) {
+        if (!p) return;
+        var base = p.split('/').pop();
+        if (p.indexOf('/etc/kernel/dtbo/') >= 0) out.user.push(base);
+        else out.system.push(base);
+    });
+    return out;
+}
 // Timestamp of the first successful `nmcli dev wifi rescan`. Until
 // it's set we treat an empty list as "scan still in progress" and
 // hold `ready` at false — otherwise the client would prematurely
@@ -5161,12 +5190,20 @@ var server = http.createServer(function(req, res) {
                 var kind = cols[base] || 'profile';
                 if (kind !== 'profile' && kind !== 'old') return;   // profiles + _old backups
                 var origin = cols[base + 6] || '';
+                var parent = cols[base + 5] || '';
+                // ORIGIN may carry the stock's id as "name (id)" (like PARENT).
+                var originId = '';
+                var om = origin.match(/^(.*?)\s+\((\d+)\)$/);
+                if (om) { origin = om[1]; originId = om[2]; }
                 profiles.push({
                     name:     cols[0],
                     booted:   booted,
+                    id:       cols[base + 1] || '',
                     created:  cols[base + 2] || '',
                     lastUsed: cols[base + 3] || '',
+                    parent:   (parent === '-' ? '' : parent),
                     origin:   (origin === '-' ? '' : origin),
+                    originId: originId,
                     old:      kind === 'old'
                 });
             });
@@ -5292,27 +5329,30 @@ var server = http.createServer(function(req, res) {
         return;
     }
     // ── /api/boot/profile-size ──────────────────────────────────
-    // GET ?name=<@profile> → { name, total, exclusive } human size strings
-    // (e.g. "3.5GiB") from `btrfs-show-space -q <@profile>` (btrfs filesystem
-    // du, no quotas). Slow (~2-4s tree walk), so the Edit popup shows a spinner
-    // while it loads; results are memoised per subvol for PROFILE_SIZE_TTL. The
-    // strings are displayed verbatim — the client does not reformat sizes.
+    // GET ?name=<@profile>[&full=1] → { name, total, exclusive, dtbo } and, when
+    // full=1, also { referenced, compression } from compsize. Sizes are human
+    // strings (e.g. "3.5GiB") shown verbatim. Slow (a tree walk; full adds a
+    // compsize walk), so popups show a spinner; memoised per subvol+mode.
     if (req.method === 'GET' && req.url.indexOf('/api/boot/profile-size') === 0) {
         var pq = req.url.split('?')[1] || '';
         var pmatch = pq.match(/(?:^|&)name=([^&]+)/);
         var pName = pmatch ? decodeURIComponent(pmatch[1]) : '';
+        var pFull = /(?:^|&)full=1(?:&|$)/.test(pq);
         if (!/^@[A-Za-z0-9._-]+$/.test(pName)) {
             res.writeHead(400, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'Invalid name' }));
             return;
         }
-        var cached = profileSizeCache[pName];
+        var ckey = pName + (pFull ? '|full' : '');
+        var cached = profileSizeCache[ckey];
         if (cached && (Date.now() - cached.at) < PROFILE_SIZE_TTL) {
             res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ name: pName, total: cached.total, exclusive: cached.exclusive }));
+            res.end(JSON.stringify({ name: pName, total: cached.total, exclusive: cached.exclusive,
+                referenced: cached.referenced, compression: cached.compression, dtbo: cached.dtbo }));
             return;
         }
-        exec('sudo btrfs-show-space -q ' + pName, { encoding: 'utf8', timeout: 30000 }, function(err, stdout) {
+        var cmd = 'sudo btrfs-show-space ' + (pFull ? '' : '-q ') + pName;
+        exec(cmd, { encoding: 'utf8', timeout: 45000 }, function(err, stdout) {
             if (err) {
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ name: pName, total: null, exclusive: null, error: 'btrfs-show-space failed' }));
@@ -5320,11 +5360,18 @@ var server = http.createServer(function(req, res) {
             }
             var tm = String(stdout).match(/TOTAL=(\S+)/);
             var em = String(stdout).match(/UNIQUE=(\S+)/);
-            var total     = tm ? tm[1] : null;
-            var exclusive = em ? em[1] : null;
-            profileSizeCache[pName] = { total: total, exclusive: exclusive, at: Date.now() };
+            var rm = String(stdout).match(/REFERENCED=(\S+)/);
+            var cm = String(stdout).match(/COMPRESSION=(\S+)/);
+            var total      = tm ? tm[1] : null;
+            var exclusive  = em ? em[1] : null;
+            var referenced = rm ? rm[1] : null;
+            var compression = cm ? cm[1] : null;
+            var dtbo = readProfileDtbo(pName);
+            profileSizeCache[ckey] = { total: total, exclusive: exclusive, referenced: referenced,
+                compression: compression, dtbo: dtbo, at: Date.now() };
             res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ name: pName, total: total, exclusive: exclusive }));
+            res.end(JSON.stringify({ name: pName, total: total, exclusive: exclusive,
+                referenced: referenced, compression: compression, dtbo: dtbo }));
         });
         return;
     }

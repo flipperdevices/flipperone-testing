@@ -67,6 +67,10 @@ var MenuLine = (function() {
         // Optional row height override (px) used for vertically centering the
         // icon; lets a scene draw tighter rows. Default is the stock H (20).
         this.rowHeight = options.rowHeight || H;
+        // Optional small icon drawn right after the label text (e.g. an
+        // auto-start heart marker). Default none.
+        this.suffixIcon = options.suffixIcon || null;
+        this.suffixIconGap = options.suffixIconGap != null ? options.suffixIconGap : 3;
     }
 
     function spriteFrameHeight(sprite) {
@@ -180,6 +184,14 @@ var MenuLine = (function() {
         var textY = y + TEXT_DRAW_Y + this.labelYOffset;
         var labelY = active ? (textY + this.activeLabelYNudge) : textY;
         font.draw(canvas.ctx, this.text, textLeft, labelY, textColor);
+
+        // Optional marker icon right after the label (e.g. auto-start heart).
+        if (this.suffixIcon) {
+            var siX = textLeft + font.textWidth(this.text) + this.suffixIconGap;
+            var siY = labelY + 2;   // bottom-align the marker with the label text
+            if (this.suffixIcon.grayscale) canvas.drawSprite(this.suffixIcon, siX, siY, textColor);
+            else canvas.drawIcon(this.suffixIcon, siX, siY, textColor);
+        }
 
         var status = this.statusProvider ? this.statusProvider() : this.status;
         if (status) {
