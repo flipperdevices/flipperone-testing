@@ -2014,7 +2014,29 @@ var Icons = (function() {
         ]
     };
 
+    // auto_start_heart icon (auto-generated from PNG)
+    var auto_start_heart = {
+        w: 10,
+        h: 9,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0xff,            0xf0,            0x00,            0xff,            0xf0,            0x00,            0xff,            0xf0,  // row 0
+            0x00,            0xfc,            0x00,            0x00,            0x00,            0x00,            0x00,            0x03,  // row 1
+            0xf0,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,  // row 2
+            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,  // row 3
+            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,            0x00,  // row 4
+            0x00,            0x00,            0x00,            0x00,            0x00,            0xfc,            0x00,            0x00,  // row 5
+            0x00,            0x00,            0x00,            0x03,            0xf0,            0x00,            0xff,            0xf0,  // row 6
+            0x00,            0x00,            0x00,            0x00,            0xff,            0xf0,            0x00,            0xff,  // row 7
+            0xff,            0xc0,            0x00,            0x00,            0x3f,            0xff,            0xf0,            0x00,  // row 8
+            0xff,            0xff,            0xff,            0x00,            0x0f,            0xff,            0xff,            0xf0,  // row 9
+            0x00 
+        ]
+    };
+
     return {
+        auto_start_heart: auto_start_heart,
         minimal_small: minimal_small,
         small_desktop: small_desktop,
         router_small: router_small,
