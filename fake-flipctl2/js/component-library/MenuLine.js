@@ -52,6 +52,25 @@ var MenuLine = (function() {
         this.activeLabelYNudge = (typeof options.activeLabelYNudge === 'number')
             ? options.activeLabelYNudge
             : 1;
+        // Optional fixed icon-column width. When set, the icon is centered
+        // in a slot of this width and the label always starts past it, so
+        // rows with differently-sized icons keep their labels aligned.
+        // Default 0 keeps the stock "label right after the icon" behaviour.
+        this.iconBoxW = options.iconBoxW || 0;
+        // Optional font override for the label + status. When set, this
+        // single font is used in every state (no Busy9px/Born2b swap), so
+        // the label has no bold/baseline change on selection.
+        this.font = options.font || null;
+        // Optional vertical shift (px) for the label + status text, e.g. to
+        // sit them lower against small, vertically-centered icons.
+        this.labelYOffset = options.labelYOffset || 0;
+        // Optional row height override (px) used for vertically centering the
+        // icon; lets a scene draw tighter rows. Default is the stock H (20).
+        this.rowHeight = options.rowHeight || H;
+        // Optional small icon drawn right after the label text (e.g. an
+        // auto-start heart marker). Default none.
+        this.suffixIcon = options.suffixIcon || null;
+        this.suffixIconGap = options.suffixIconGap != null ? options.suffixIconGap : 3;
     }
 
     function spriteFrameHeight(sprite) {
@@ -104,9 +123,14 @@ var MenuLine = (function() {
         var useAnimated = active && this.iconAnimated;
         var iconSource  = useAnimated ? this.iconAnimated : (this.icon || this.iconAnimated);
 
-        var textLeft = x + ICON_PAD;
+        // A fixed icon column (iconBoxW) reserves a constant slot so labels
+        // line up across rows even when icons differ in width; the icon is
+        // centered in that slot. Without it, text follows the icon directly.
+        var boxW = this.iconBoxW || 0;
+        var textLeft = x + ICON_PAD + boxW;
         if (iconSource) {
-            var iconX = x + ICON_PAD;
+            var slotW = boxW || iconSource.w;
+            var iconX = x + ICON_PAD + Math.floor((slotW - iconSource.w) / 2);
             // Vertically center the icon in the line so short icons
             // (e.g. nmap_eye at 9 px) don't ride high. For animated
             // icons the visible "frame" height is sprite.h / frames,
@@ -117,7 +141,7 @@ var MenuLine = (function() {
                 ? Math.floor(iconSource.h / frameCount)
                 : iconSource.h;
             var iconY = y + Math.max(ICON_PAD,
-                Math.round((H - iconVisH) / 2));
+                Math.round((this.rowHeight - iconVisH) / 2));
             // Optional per-icon nudge baked into the asset definition.
             // Lets specific icons compensate for whitespace inside
             // their bitmap without forcing every other icon to absorb
@@ -141,7 +165,10 @@ var MenuLine = (function() {
             } else {
                 canvas.drawIcon(iconSource, iconX, iconY, iconColor);
             }
-            textLeft = iconX + iconSource.w + TEXT_GAP;
+            // Fixed column: label past the slot. Otherwise keep the stock
+            // behaviour exactly (label right after the icon, offsetX included).
+            textLeft = boxW ? (x + ICON_PAD + boxW + TEXT_GAP)
+                            : (iconX + iconSource.w + TEXT_GAP);
         }
 
         // Label font swaps: Busy9pxFlipCTL in DEFAULT, Born2bSportyV2FlipCTL
@@ -152,11 +179,19 @@ var MenuLine = (function() {
         // down — Born2bSporty's cap baseline sits visually high
         // against the selector frame, so + 1 puts it on the same
         // optical row as the Busy9pxFlipCTL default.
-        var font       = active ? Born2bSportyV2FlipCTL : Busy9pxFlipCTL;
-        var statusFont = Busy9pxFlipCTL;
-        var textY = y + TEXT_DRAW_Y;
+        var font       = this.font || (active ? Born2bSportyV2FlipCTL : Busy9pxFlipCTL);
+        var statusFont = this.font || Busy9pxFlipCTL;
+        var textY = y + TEXT_DRAW_Y + this.labelYOffset;
         var labelY = active ? (textY + this.activeLabelYNudge) : textY;
         font.draw(canvas.ctx, this.text, textLeft, labelY, textColor);
+
+        // Optional marker icon right after the label (e.g. auto-start heart).
+        if (this.suffixIcon) {
+            var siX = textLeft + font.textWidth(this.text) + this.suffixIconGap;
+            var siY = labelY + 2;   // bottom-align the marker with the label text
+            if (this.suffixIcon.grayscale) canvas.drawSprite(this.suffixIcon, siX, siY, textColor);
+            else canvas.drawIcon(this.suffixIcon, siX, siY, textColor);
+        }
 
         var status = this.statusProvider ? this.statusProvider() : this.status;
         if (status) {
