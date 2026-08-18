@@ -5143,9 +5143,11 @@ var server = http.createServer(function(req, res) {
     }
     // ── /api/boot/profiles ──────────────────────────────────────
     // GET → { profiles: [...] }: bootable btrfs profiles via list-profiles
-    // (name, booted, created, lastUsed) for the Boot Menu. Columns are
-    // parsed positionally (NAME [<- booted] KIND ID CREATED LAST USED ...);
-    // the "<- booted" marker shifts them by one. Skips _old leftovers.
+    // (name, booted, created, lastUsed, origin) for the Boot Menu. Columns
+    // are parsed positionally (NAME [<- booted] KIND ID CREATED LAST USED RO
+    // PARENT ORIGIN); the "<- booted" marker shifts them by one. `origin` is
+    // origin_stock_name — the client derives base/icon and factory-vs-user
+    // from it. Skips _old leftovers.
     if (req.url === '/api/boot/profiles' && req.method === 'GET') {
         exec('sudo list-profiles', { encoding: 'utf8', timeout: 20000 }, function(err, stdout) {
             var profiles = [], started = false;
@@ -5156,16 +5158,136 @@ var server = http.createServer(function(req, res) {
                 var cols = t.split(/\s{2,}/);
                 var booted = false, base = 1;
                 if (/^<-\s*booted$/.test(cols[1] || '')) { booted = true; base = 2; }
-                if ((cols[base] || 'profile') !== 'profile') return;   // skip _old etc.
+                var kind = cols[base] || 'profile';
+                if (kind !== 'profile' && kind !== 'old') return;   // profiles + _old backups
+                var origin = cols[base + 6] || '';
                 profiles.push({
                     name:     cols[0],
                     booted:   booted,
                     created:  cols[base + 2] || '',
-                    lastUsed: cols[base + 3] || ''
+                    lastUsed: cols[base + 3] || '',
+                    origin:   (origin === '-' ? '' : origin),
+                    old:      kind === 'old'
                 });
             });
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ profiles: profiles, error: err ? 'list-profiles failed' : null }));
+        });
+        return;
+    }
+    // ── /api/boot/profile/clone ─────────────────────────────────
+    // POST { source, dest } → create-profile -y <source> <dest>: a writable
+    // copy of an existing profile under a new @<Base>__<label>__ name. Both
+    // names are validated to the safe subvol charset (letters/digits/_/-),
+    // which also makes them shell-safe for the exec.
+    if (req.url === '/api/boot/profile/clone' && req.method === 'POST') {
+        readJsonBody(req, function(e, data) {
+            var source = (data && data.source) || '';
+            var dest   = (data && data.dest) || '';
+            var ok = /^@[A-Za-z0-9_-]+$/;
+            if (!ok.test(source) || !ok.test(dest)) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Invalid name' }));
+                return;
+            }
+            exec('sudo create-profile -y ' + source + ' ' + dest,
+                 { encoding: 'utf8', timeout: 60000 }, function(err, stdout, stderr) {
+                if (err) {
+                    var msg = String(stderr || stdout || 'clone failed').trim().split('\n').pop();
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ ok: false, error: msg }));
+                    return;
+                }
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: true, name: dest }));
+            });
+        });
+        return;
+    }
+    // ── /api/boot/profile/rename ────────────────────────────────
+    // POST { name, dest } → rename-profile <name> <dest>: rename a profile
+    // (or an _old backup) and reissue its BLS entry. Both names validated to
+    // the safe subvol charset.
+    if (req.url === '/api/boot/profile/rename' && req.method === 'POST') {
+        readJsonBody(req, function(e, data) {
+            var name = (data && data.name) || '';
+            var dest = (data && data.dest) || '';
+            var ok = /^@[A-Za-z0-9_-]+$/;
+            if (!ok.test(name) || !ok.test(dest)) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Invalid name' }));
+                return;
+            }
+            exec('sudo rename-profile ' + name + ' ' + dest, { encoding: 'utf8', timeout: 60000 }, function(err, stdout, stderr) {
+                if (err) {
+                    var msg = String(stderr || stdout || 'rename failed').trim().split('\n').pop();
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ ok: false, error: msg }));
+                    return;
+                }
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: true, name: dest }));
+            });
+        });
+        return;
+    }
+    // ── /api/boot/profile/delete ────────────────────────────────
+    // POST { name } → delete-profile -y <name>. delete-profile refuses the
+    // booted profile and reserved subvolumes; that error is surfaced verbatim.
+    if (req.url === '/api/boot/profile/delete' && req.method === 'POST') {
+        readJsonBody(req, function(e, data) {
+            var name = (data && data.name) || '';
+            if (!/^@[A-Za-z0-9_-]+$/.test(name)) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Invalid name' }));
+                return;
+            }
+            exec('sudo delete-profile -y ' + name, { encoding: 'utf8', timeout: 60000 }, function(err, stdout, stderr) {
+                if (err) {
+                    var msg = String(stderr || stdout || 'delete failed').trim().split('\n').pop();
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ ok: false, error: msg }));
+                    return;
+                }
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: true }));
+            });
+        });
+        return;
+    }
+    // ── /api/boot/profile/factory-reset ─────────────────────────
+    // POST { name, origin } → create-profile -y <origin> <name>: rebuild the
+    // profile from its origin stock, keeping the old copy as <name>_old_<ts>.
+    // Fails (surfaced) if the exact origin stock is not on disk. When <name>
+    // is the profile we are booted from, the running system stays on the _old
+    // copy, so we soft-reboot into the fresh one right after.
+    if (req.url === '/api/boot/profile/factory-reset' && req.method === 'POST') {
+        readJsonBody(req, function(e, data) {
+            var name   = (data && data.name) || '';
+            var origin = (data && data.origin) || '';
+            var ok = /^@[A-Za-z0-9_-]+$/;
+            if (!ok.test(name) || !ok.test(origin)) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Invalid name' }));
+                return;
+            }
+            exec('sudo create-profile -y ' + origin + ' ' + name, { encoding: 'utf8', timeout: 120000 }, function(err, stdout, stderr) {
+                if (err) {
+                    var msg = String(stderr || stdout || 'reset failed').trim().split('\n').pop();
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ ok: false, error: msg }));
+                    return;
+                }
+                exec('findmnt -no FSROOT /', { encoding: 'utf8' }, function(e2, fsroot) {
+                    var bootedSubvol = String(fsroot || '').trim().replace(/^\//, '');
+                    var rebooting = (bootedSubvol === name);
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ ok: true, rebooting: rebooting }));
+                    // reset of the booted profile: reboot into the fresh copy once the
+                    // response is on its way (the running root is the moved-aside _old copy)
+                    if (rebooting) setTimeout(function() { exec('sudo systemctl reboot', function() {}); }, 1500);
+                });
+            });
         });
         return;
     }

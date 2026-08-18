@@ -36,15 +36,67 @@ var BootMenuScene = (function() {
     // Display name of a profile: drop the leading '@' subvol marker.
     function dispName(n) { return String(n || '').replace(/^@/, ''); }
 
-    // Boot-menu icon for a profile, chosen by its name.
-    function bootIcon(name) {
-        var n = (name || '').toLowerCase();
-        if (n.indexOf('minimal') >= 0)  return ic('minimal_small');
-        if (n.indexOf('graphics') >= 0) return ic('no_graphics_boot_menu');
-        if (n.indexOf('desktop') >= 0)  return ic('small_desktop');
-        if (n.indexOf('router') >= 0)   return ic('router_small');
-        if (n.indexOf('media') >= 0 || n.indexOf('tv') >= 0) return ic('media_small');
-        return ic('flipper_os');
+    // Base name from origin_stock_name ("@Desktop_944_stock" -> "Desktop").
+    function originBase(origin) {
+        var m = String(origin || '').match(/^@?(.+)_\d+_stock$/);
+        return m ? m[1] : '';
+    }
+
+    // Factory (undeletable) profile: its subvol name (minus '@') equals its origin
+    // base. Anything else derived from a stock is a user profile.
+    function isFactory(name, origin) {
+        var base = originBase(origin);
+        return base !== '' && dispName(name) === base;
+    }
+
+    // Strip a create-profile "_old_<ts>" backup suffix; '' if there is none.
+    var OLD_RE = /_old_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d$/;
+
+    // Menu/display name: factory -> base ("Desktop"); user @Base__label__ -> "[label]"
+    // with '-' shown as space; an _old_<ts> backup -> the original's name + " (old)";
+    // anything else (legacy user) -> name minus '@' verbatim.
+    function profileDisplay(name, origin) {
+        var raw = dispName(name);
+        if (OLD_RE.test(raw)) return profileDisplay('@' + raw.replace(OLD_RE, ''), origin) + ' (old)';
+        var m = raw.match(/^(.+?)__(.+)__$/);
+        if (m) return '[' + m[2].replace(/-/g, ' ') + ']';
+        return raw;
+    }
+
+    // Editable label text for Rename: the user @Base__label__ label with '-'
+    // shown as space (backup suffix stripped); legacy names come back whole.
+    function profileLabel(name) {
+        var raw = dispName(name).replace(OLD_RE, '');
+        var m = raw.match(/^(.+?)__(.+)__$/);
+        return m ? m[2].replace(/-/g, ' ') : raw;
+    }
+
+    // Free text -> a safe subvol label (spaces -> '-', drop everything else).
+    function encodeLabel(text) {
+        return String(text || '').trim().replace(/\s+/g, '-').replace(/[^A-Za-z0-9-]/g, '').replace(/^-+|-+$/g, '');
+    }
+
+    // Icon family key from a base name (or a bare name as fallback).
+    function iconKey(s) {
+        var n = String(s || '').toLowerCase();
+        if (n.indexOf('graphics') >= 0) return 'graphics';
+        if (n.indexOf('minimal') >= 0)  return 'minimal';
+        if (n.indexOf('desktop') >= 0)  return 'desktop';
+        if (n.indexOf('router') >= 0)   return 'router';
+        if (n.indexOf('media') >= 0 || n.indexOf('tv') >= 0) return 'media';
+        return '';
+    }
+
+    // Boot-menu icon for a profile, chosen by its origin base (falls back to the name).
+    function bootIcon(name, origin) {
+        switch (iconKey(originBase(origin)) || iconKey(name)) {
+            case 'graphics': return ic('no_graphics_boot_menu');
+            case 'minimal':  return ic('minimal_small');
+            case 'desktop':  return ic('small_desktop');
+            case 'router':   return ic('router_small');
+            case 'media':    return ic('media_small');
+            default:         return ic('flipper_os');
+        }
     }
 
     // "Used <when>" relative time (mockup style: singular units). Sentinels:
@@ -74,15 +126,16 @@ var BootMenuScene = (function() {
         return m ? [m[1], m[2]] : [String(s), ''];
     }
 
-    // Larger (14px) icon for the Edit popup header.
-    function headerIcon(name) {
-        var n = (name || '').toLowerCase();
-        if (n.indexOf('graphics') >= 0) return ic('no_graphics_boot_menu');
-        if (n.indexOf('minimal') >= 0) return ic('minimal');
-        if (n.indexOf('desktop') >= 0) return ic('desktop');
-        if (n.indexOf('router') >= 0)  return ic('router');
-        if (n.indexOf('media') >= 0 || n.indexOf('tv') >= 0) return ic('media');
-        return ic('flipper_os');
+    // Larger (14px) icon for the Edit popup header, same base logic as bootIcon.
+    function headerIcon(name, origin) {
+        switch (iconKey(originBase(origin)) || iconKey(name)) {
+            case 'graphics': return ic('no_graphics_14px');
+            case 'minimal':  return ic('minimal');
+            case 'desktop':  return ic('desktop');
+            case 'router':   return ic('router');
+            case 'media':    return ic('media');
+            default:         return ic('flipper_os');
+        }
     }
 
     function BootMenuScene(sceneManager) {
@@ -121,7 +174,10 @@ var BootMenuScene = (function() {
         this._profiles    = [];
         this._editOpen    = false;
         this._editIndex   = 0;
-        this._editOptions = ['Rename', 'Clone', 'Delete'];
+        this._editOptions = ['Rename', 'Clone', 'Factory Reset', 'Delete'];   // recomputed per profile in _openEdit
+        this._busy        = null;   // action-in-progress message (e.g. 'Cloning')
+        this._actionError = null;   // last action error, dismissed by a key press
+        this._confirm     = null;   // { kind, msg1, msg2 } confirmation before a destructive action
 
         // Profile size (Total + Exclusive), fetched async when the popup
         // opens; a rotating spinner shows while it loads.
@@ -134,6 +190,9 @@ var BootMenuScene = (function() {
     }
 
     BootMenuScene.prototype.enter = function() {
+        // Resuming from a pushed child (the Rename keyboard) must not reset the
+        // list or reopen the countdown — keep the Edit popup exactly as it was.
+        if (this._resumingFromChild) { this._resumingFromChild = false; return; }
         if (this._timer) { clearInterval(this._timer); this._timer = null; }
         this._autoStart = true;   // will start once the profiles arrive
         this._startAt = 0;
@@ -180,7 +239,7 @@ var BootMenuScene = (function() {
     BootMenuScene.prototype._setProfiles = function(list) {
         this._profiles = list;
         this.items = list.map(function(p) {
-            return new MenuLine({ text: dispName(p.name), width: 224, icon: bootIcon(p.name),
+            return new MenuLine({ text: profileDisplay(p.name, p.origin), width: 224, icon: bootIcon(p.name, p.origin),
                                   status: usedAgo(p.lastUsed) || null, iconBoxW: ICON_BOX_W,
                                   // single font in every state -> no baseline
                                   // shift when the row becomes selected. Text
@@ -229,12 +288,23 @@ var BootMenuScene = (function() {
         this._cancelAutoStart();
         this._editOpen = true;
         this._editIndex = 0;
+        // Options by profile kind: _old backups get Clone + Delete; factory can't
+        // be renamed or deleted (Clone / Factory Reset); users get everything.
+        var p = this._profiles[this.selectedIndex] || {};
+        this._editOptions = p.old
+            ? ['Rename', 'Clone', 'Delete']
+            : isFactory(p.name, p.origin)
+                ? ['Clone', 'Factory Reset']
+                : ['Rename', 'Clone', 'Factory Reset', 'Delete'];
         this._fetchSize();
         if (window.requestRender) window.requestRender();
     };
 
     BootMenuScene.prototype._closeEdit = function() {
         this._editOpen = false;
+        this._busy = null;
+        this._actionError = null;
+        this._confirm = null;
         this._stopSpinner();
     };
 
@@ -277,13 +347,151 @@ var BootMenuScene = (function() {
 
     // Input while the Edit popup is open (captures everything).
     BootMenuScene.prototype._editInput = function(action) {
+        // While an action is running, swallow input; an error waits for any key.
+        if (this._busy) return;
+        if (this._actionError) { this._actionError = null; if (window.requestRender) window.requestRender(); return; }
+        // A pending confirmation: OK proceeds, Back cancels, everything else waits.
+        if (this._confirm) {
+            if (action === 'ok' || action === 'run') {
+                var kind = this._confirm.kind; this._confirm = null;
+                if (kind === 'delete')      this._doDelete();
+                else if (kind === 'reset')  this._doFactoryReset();
+                return;
+            }
+            if (action === 'back' || action === 'esc') { this._confirm = null; if (window.requestRender) window.requestRender(); }
+            return;
+        }
         var opts = this._editOptions;
         if (action === 'up')        { this._editIndex = (this._editIndex - 1 + opts.length) % opts.length; }
         else if (action === 'down') { this._editIndex = (this._editIndex + 1) % opts.length; }
         else if (action === 'back' || action === 'esc') { this._closeEdit(); }
-        else if (action === 'ok' || action === 'run')   { this._closeEdit(); }   // mockup: select closes
+        else if (action === 'ok' || action === 'run')   { this._runEditAction(opts[this._editIndex]); return; }
         else return;
         if (window.requestRender) window.requestRender();
+    };
+
+    BootMenuScene.prototype._runEditAction = function(label) {
+        var p = this._profiles[this.selectedIndex] || {};
+        if (label === 'Rename') { this._doRename(); return; }
+        if (label === 'Clone') { this._doClone(); return; }
+        if (label === 'Delete') {
+            this._confirm = { kind: 'delete', msg1: 'Delete this profile?', msg2: null };
+        } else if (label === 'Factory Reset') {
+            this._confirm = { kind: 'reset', msg1: 'Reset to factory state?',
+                              msg2: p.booted ? 'Device will reboot.' : null };
+        } else {
+            return;   // Rename wired in a later step
+        }
+        if (window.requestRender) window.requestRender();
+    };
+
+    // Fire a POST action, showing `busyMsg` + spinner; onOk(data) on success,
+    // otherwise the error is surfaced for a key press to dismiss.
+    BootMenuScene.prototype._postAction = function(url, body, busyMsg, onOk) {
+        var self = this;
+        this._busy = busyMsg;
+        this._startSpinner();
+        if (window.requestRender) window.requestRender();
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', url, true);
+        xhr.setRequestHeader('Content-Type', 'application/json');
+        xhr.onreadystatechange = function() {
+            if (xhr.readyState !== 4) return;
+            var ok = false, err = '', data = {};
+            try { data = JSON.parse(xhr.responseText); ok = data.ok; err = data.error || ''; } catch (e) { err = 'Action failed'; }
+            self._busy = null; self._stopSpinner();
+            if (ok) { onOk(data); }
+            else    { self._actionError = String(err || 'Action failed').replace(/^Error:\s*/, ''); }
+            if (window.requestRender) window.requestRender();
+        };
+        xhr.send(JSON.stringify(body));
+    };
+
+    // Rename: push the shared on-screen keyboard (as Wi-Fi does), seeded with
+    // the current label. On Save we build @<Base>__<label>__ and POST; the popup
+    // stays open underneath (enter() is guarded) to show the busy/result.
+    BootMenuScene.prototype._doRename = function() {
+        var self = this, p = this._profiles[this.selectedIndex] || {};
+        if (!p.name || typeof TextInputScreen === 'undefined' || !this.sceneManager) return;
+        var base    = originBase(p.origin) || dispName(p.name).replace(/__.*$/, '');
+        var oldName = p.name;
+        // For an _old backup, keep its exact "_old_<ts>" suffix so the user can
+        // keep the "(old)" flag by leaving it in the text, or drop it (promoting
+        // the backup to a normal profile) by deleting it.
+        var oldSuffix = '';
+        if (p.old) { var mo = dispName(p.name).match(/(_old_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d)$/); oldSuffix = mo ? mo[1] : ''; }
+        var taken = {};
+        for (var i = 0; i < this._profiles.length; i++) taken[this._profiles[i].name] = true;
+        var destOf = function(text) {
+            var keepOld = false, t = String(text);
+            if (p.old) { var m = t.match(/^(.*)\(old\)\s*$/i); if (m) { keepOld = true; t = m[1]; } }
+            var e = encodeLabel(t);
+            if (!e) return '';
+            return '@' + base + '__' + e + '__' + (keepOld ? oldSuffix : '');
+        };
+
+        this._resumingFromChild = true;   // don't let enter() reset us on pop
+        var screen = new TextInputScreen({
+            displayName: 'Rename',
+            title:       'Profile name',
+            initialText: profileLabel(p.name) + (p.old ? ' (old)' : ''),
+            validate: function(text) {
+                var d = destOf(text);
+                if (!d) return 'Name required';
+                if (d !== oldName && taken[d]) return 'Name already exists';
+                return '';
+            },
+            onSave: function(text) {
+                var dest = destOf(text);
+                if (!dest || dest === oldName) return;   // no change -> just close
+                self._postAction('/api/boot/profile/rename', { name: oldName, dest: dest }, 'Renaming', function() {
+                    self._closeEdit(); self._fetchProfiles();
+                });
+            }
+        });
+        this.sceneManager.push(screen);   // push() calls screen.enter()
+    };
+
+    BootMenuScene.prototype._doDelete = function() {
+        var self = this, p = this._profiles[this.selectedIndex] || {};
+        if (!p.name) return;
+        this._postAction('/api/boot/profile/delete', { name: p.name }, 'Deleting', function() {
+            self._closeEdit(); self._fetchProfiles();
+        });
+    };
+
+    BootMenuScene.prototype._doFactoryReset = function() {
+        var self = this, p = this._profiles[this.selectedIndex] || {};
+        if (!p.name) return;
+        this._postAction('/api/boot/profile/factory-reset', { name: p.name, origin: p.origin },
+                         'Resetting', function(data) {
+            if (data.rebooting) { self._busy = 'Rebooting'; if (window.requestRender) window.requestRender(); }
+            else { self._closeEdit(); self._fetchProfiles(); }
+        });
+    };
+
+    // Clone the selected profile: auto-named @<Base>__<src>-clone__ (shown "[… clone]"),
+    // no prompt. On success the list refreshes with the new clone.
+    BootMenuScene.prototype._buildCloneDest = function(p) {
+        var base = originBase(p.origin) || dispName(p.name);
+        var raw = dispName(p.name).replace(OLD_RE, '');   // clone the live copy, not the _old suffix
+        var m = raw.match(/^(.+?)__(.+)__$/);
+        var src = (m ? m[2] : raw).replace(/[^A-Za-z0-9-]/g, '-');
+        var lbl = src + '-clone';
+        var taken = {};
+        for (var i = 0; i < this._profiles.length; i++) taken[this._profiles[i].name] = true;
+        var cand = '@' + base + '__' + lbl + '__', n = 2;
+        while (taken[cand]) { cand = '@' + base + '__' + lbl + '-' + n + '__'; n++; }
+        return cand;
+    };
+
+    BootMenuScene.prototype._doClone = function() {
+        var self = this, p = this._profiles[this.selectedIndex] || {};
+        if (!p.name) return;
+        var dest = this._buildCloneDest(p);
+        this._postAction('/api/boot/profile/clone', { source: p.name, dest: dest }, 'Cloning', function() {
+            self._closeEdit(); self._fetchProfiles();
+        });
     };
 
     BootMenuScene.prototype.handleInput = function(action) {
@@ -409,9 +617,49 @@ var BootMenuScene = (function() {
     BootMenuScene.prototype._renderEditPopup = function(canvas) {
         var ctx = canvas.ctx;
         var p = this._profiles[this.selectedIndex] || {};
-        var name = dispName(p.name || '') + ' profile';
+        var name = profileDisplay(p.name, p.origin) + (isFactory(p.name, p.origin) ? ' profile' : '');
+        var F = HaxrCorp4090FlipCTL, HDR = 38, rowH = 16;
 
-        var fx = 6, fy = 14, fw = 244, fh = 116, HDR = 38;
+        // Fixed size-line slot widths (measured once) — also used to size the frame.
+        if (this._numSlotW == null) {
+            var mx0 = F.textWidth('00.0');
+            for (var k0 = 0; k0 < this._spinFrames.length; k0++) mx0 = Math.max(mx0, F.textWidth(this._spinFrames[k0]));
+            this._numSlotW = mx0;
+            var mu0 = 0, u0 = [' B', ' KiB', ' MiB', ' GiB'];
+            for (var j0 = 0; j0 < u0.length; j0++) mu0 = Math.max(mu0, F.textWidth(u0[j0]));
+            this._unitSlotW = mu0;
+        }
+        var fieldW0 = this._numSlotW + this._unitSlotW;
+        var sizeLineW = F.textWidth('Total: ') + fieldW0 + F.textWidth('   Exclusive: ') + fieldW0;
+
+        // Header name line width (icon + gap + bold name).
+        var hicon = headerIcon(p.name, p.origin);
+        var nameLineW = 8 + (hicon ? hicon.w + 4 : 0) + Born2bSportyV2FlipCTL.textWidth(name) + 8;
+
+        // Body width + height depend on what the body currently shows.
+        var bodyW = 0, bodyH;
+        if (this._confirm) {
+            bodyW = Math.max(F.textWidth(this._confirm.msg1),
+                             this._confirm.msg2 ? F.textWidth(this._confirm.msg2) : 0,
+                             F.textWidth('OK = yes    Back = no'));
+            bodyH = this._confirm.msg2 ? 44 : 32;
+        } else if (this._actionError) {
+            bodyW = Math.max(F.textWidth(this._actionError), F.textWidth('Press any key'));
+            bodyH = 32;
+        } else if (this._busy) {
+            bodyW = F.textWidth(this._busy + ' /');
+            bodyH = 22;
+        } else {
+            for (var oi = 0; oi < this._editOptions.length; oi++) bodyW = Math.max(bodyW, F.textWidth(this._editOptions[oi]));
+            bodyW += 28;   // room for the selector frame around the widest option
+            bodyH = this._editOptions.length * rowH;
+        }
+
+        // Frame sized to the widest of header/size/body, centered on the screen.
+        var fw = Math.min(252, Math.max(sizeLineW, nameLineW, bodyW) + 12);
+        var fh = HDR + bodyH + 8;
+        var fx = Math.round((canvas.w - fw) / 2);
+        var fy = Math.round((canvas.h - fh) / 2);
 
         new ResponsiveFrame({
             x: fx, y: fy, width: fw, height: fh, anchorH: 'left', anchorV: 'top',
@@ -428,7 +676,6 @@ var BootMenuScene = (function() {
             if (right >= left) ctx.fillRect(left, fy + by, right - left + 1, 1);
         }
 
-        var hicon = headerIcon(p.name);
         var nameX = fx + 8;
         if (hicon) {
             // Grayscale icons use drawSprite; binary ones (desktop/minimal/
@@ -473,6 +720,25 @@ var BootMenuScene = (function() {
         drawField(x, sz.total);     x += fieldW;
         F.draw(ctx, l2, x, sy, col); x += w2;
         drawField(x, sz.exclusive);
+
+        // Confirm / busy / error take over the options area.
+        if (this._confirm || this._busy || this._actionError) {
+            var F2 = HaxrCorp4090FlipCTL;
+            var cy = fy + HDR + Math.floor((fh - HDR) / 2) - 10;
+            var self2 = this;
+            var line = function(txt, yy, cc) { F2.draw(ctx, txt, fx + Math.floor((fw - F2.textWidth(txt)) / 2), yy, cc); };
+            if (this._confirm) {
+                line(this._confirm.msg1, cy, '#000');
+                if (this._confirm.msg2) line(this._confirm.msg2, cy + 12, '#000');
+                line('OK = yes    Back = no', cy + (this._confirm.msg2 ? 26 : 16), '#999999');
+            } else if (this._actionError) {
+                line(this._actionError, cy, '#000');
+                line('Press any key', cy + 16, '#999999');
+            } else {
+                line(this._busy + ' ' + this._spinFrames[this._spinIndex], cy + 4, '#666666');
+            }
+            return;
+        }
 
         // Actions, centred; the selected one in a rounded frame.
         var oy = fy + HDR + 5, rowH = 16;

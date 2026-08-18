@@ -85,7 +85,11 @@ var FlipCanvas = (function() {
     // Middle button — both top corners rounded
     FlipCanvas.prototype.drawMiddleButton = function(text, x, w, pressed, disabled) {
         var y = this.h - BTN_H;
-        var c = disabled ? { bg: '#CCC', fg: '#999' } : _btnColors(pressed);
+        // Disabled: keep the normal (white) fill; only the outline and text go
+        // grey, so the button reads as inactive without a solid grey block.
+        var base = _btnColors(pressed);
+        var c = disabled ? { bg: '#ffffff', fg: '#999', border: '#999' }
+                         : { bg: base.bg, fg: base.fg, border: '#000' };
         this.ctx.fillStyle = c.bg;
         // Fill main areas (4px radius)
         this.ctx.fillRect(x + 3, y,      w - 6, 1);         // Row 0: 4px from edges
@@ -94,8 +98,8 @@ var FlipCanvas = (function() {
         this.ctx.fillRect(x,     y + 3,  w,     1);         // Row 3: 1px from edges
         this.ctx.fillRect(x,     y + 4,  w,     BTN_H - 4); // Rows 4+: full width
 
-        // Draw 1px border pixels on top of fill (always black)
-        this.ctx.fillStyle = '#000';
+        // Draw 1px border pixels on top of fill (black, or grey when disabled)
+        this.ctx.fillStyle = c.border;
         // Top border (full width)
         this.ctx.fillRect(x + 3, y, w - 6, 1);
         // Left border corner pixels
