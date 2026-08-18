@@ -2055,7 +2055,34 @@ var Icons = (function() {
         ]
     };
 
+    // no_graphics_14px icon (auto-generated from PNG)
+    var no_graphics_14px = {
+        w: 14,
+        h: 14,
+        bitsPerPixel: 6,
+        grayscale: true,
+        d: [
+            0x00,            0x00,            0x3f,            0xff,            0xff,            0xff,            0xff,            0xff,            0xc0,            0x00,            0x00,  // row 0
+            0x00,            0x03,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xfc,  // row 1
+            0x00,            0x00,            0x03,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,  // row 2
+            0xfc,            0x00,            0x00,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,  // row 3
+            0xff,            0xff,            0xf0,            0x00,            0xff,            0xff,            0xc0,            0x03,            0xff,            0xff,            0xff,  // row 4
+            0xff,            0xff,            0xff,            0xf0,            0x00,            0xff,            0xff,            0xc0,            0x03,            0xff,            0xff,  // row 5
+            0xfc,            0x00,            0x3f,            0xff,            0xf0,            0x00,            0xff,            0xff,            0xff,            0xff,            0xff,  // row 6
+            0xff,            0xff,            0xff,            0xff,            0xff,            0xf0,            0x00,            0xff,            0xff,            0xff,            0xff,  // row 7
+            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xf0,            0x00,            0xff,            0xff,            0xff,  // row 8
+            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xf0,            0x00,            0xff,            0xff,  // row 9
+            0xff,            0x03,            0xff,            0xff,            0xfc,            0x0f,            0xff,            0xff,            0xf0,            0x00,            0xff,  // row 10
+            0xff,            0xff,            0xfc,            0x00,            0x00,            0x03,            0xff,            0xff,            0xff,            0xf0,            0x00,  // row 11
+            0x03,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xfc,            0x00,  // row 12
+            0x00,            0x03,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xff,            0xfc,  // row 13
+            0x00,            0x00,            0x00,            0x00,            0x3f,            0xff,            0xff,            0xff,            0xff,            0xff,            0xc0,  // row 14
+            0x00,            0x00,            0x00 
+        ]
+    };
+
     return {
+        no_graphics_14px: no_graphics_14px,
         auto_start_heart_small: auto_start_heart_small,
         auto_start_heart: auto_start_heart,
         minimal_small: minimal_small,
