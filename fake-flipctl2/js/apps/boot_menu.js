@@ -187,6 +187,7 @@ var BootMenuScene = (function() {
         this._actionError = null;   // last action error, dismissed by a key press
         this._confirm     = null;   // { kind, msg1, msg2 } confirmation before a destructive action
         this._autoStartProfile = null;   // subvol name of the auto-start profile (only one; not persisted yet)
+        this._booting     = null;   // display name of the profile being kexec-booted
 
         // Profile size (Total + Exclusive), fetched async when the popup
         // opens; a rotating spinner shows while it loads.
@@ -580,19 +581,50 @@ var BootMenuScene = (function() {
             this._ensureVisible();
             if (window.requestRender) window.requestRender();
         } else if (action === 'ok') {
-            var line = this.items[this.selectedIndex];
-            line.state = MenuLine.STATE_PRESSED;
-            if (window.requestRender) window.requestRender();
-            setTimeout(function() {
-                line.state = MenuLine.STATE_SELECTED;
-                if (window.requestRender) window.requestRender();
-            }, 120);
+            this._bootSelected();
         }
+    };
+
+    // Enter boots the selected profile via kexec (server runs boot-profile).
+    BootMenuScene.prototype._bootSelected = function() {
+        var self = this, p = this._profiles[this.selectedIndex] || {};
+        if (!p.name || this._booting) return;
+        this._booting = profileDisplay(p.name, p.origin);
+        this._startSpinner();
+        if (window.requestRender) window.requestRender();
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/boot/profile/boot', true);
+        xhr.setRequestHeader('Content-Type', 'application/json');
+        xhr.onreadystatechange = function() {
+            if (xhr.readyState !== 4) return;
+            var ok = false;
+            try { ok = JSON.parse(xhr.responseText).ok; } catch (e) {}
+            if (!ok) { self._booting = null; self._stopSpinner(); if (window.requestRender) window.requestRender(); }
+            // on success the device kexecs; the page reloads when it returns.
+        };
+        xhr.send(JSON.stringify({ name: p.name }));
     };
 
     BootMenuScene.prototype.render = function(canvas) {
         var ctx = canvas.ctx;
         canvas.clear('#fff');
+
+        // Booting: full-screen takeover with a spinner until the kexec hands over.
+        if (this._booting) {
+            var bF = HaxrCorp4090FlipCTL;
+            var bsp = (typeof AnimatedIcons !== 'undefined') ? AnimatedIcons.spinner_22x20px : null;
+            if (bsp) {
+                var bfr = Math.floor(bsp.h / (bsp.frames || 1));
+                var bidx = Math.floor(Date.now() / 100) % (bsp.frames || 1);
+                canvas.drawSpriteFrame(bsp, Math.floor((canvas.w - bsp.w) / 2), 34, bidx, '#000');
+                void bfr;
+            }
+            var bt = 'Booting';
+            bF.draw(ctx, bt, Math.floor((canvas.w - bF.textWidth(bt)) / 2), 74, '#000');
+            var bn = this._booting;
+            bF.draw(ctx, bn, Math.floor((canvas.w - bF.textWidth(bn)) / 2), 88, '#000');
+            return;
+        }
 
         // Grey header background (the progress bar's black fill sweeps over it).
         canvas.drawRect(0, 0, canvas.w, HEADER_H, '#D9D9D9');

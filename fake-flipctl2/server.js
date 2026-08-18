@@ -5268,6 +5268,24 @@ var server = http.createServer(function(req, res) {
         });
         return;
     }
+    // ── /api/boot/profile/boot ──────────────────────────────────
+    // POST { name } → boot-profile <name>: kexec straight into the profile
+    // (assembles its DTB from the BLS entry, no firmware/U-Boot cycle). Replies
+    // first, then fires the kexec so the response flushes before we hand over.
+    if (req.url === '/api/boot/profile/boot' && req.method === 'POST') {
+        readJsonBody(req, function(e, data) {
+            var name = (data && data.name) || '';
+            if (!/^@[A-Za-z0-9_-]+$/.test(name)) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Invalid name' }));
+                return;
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, booting: true }));
+            setTimeout(function() { exec('sudo boot-profile ' + name, function() {}); }, 800);
+        });
+        return;
+    }
     // ── /api/boot/profile/delete ────────────────────────────────
     // POST { name } → delete-profile -y <name>. delete-profile refuses the
     // booted profile and reserved subvolumes; that error is surfaced verbatim.
