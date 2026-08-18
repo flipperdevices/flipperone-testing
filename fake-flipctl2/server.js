@@ -5178,6 +5178,11 @@ var server = http.createServer(function(req, res) {
     // origin_stock_name — the client derives base/icon and factory-vs-user
     // from it. Skips _old leftovers.
     if (req.url === '/api/boot/profiles' && req.method === 'GET') {
+      // the auto-boot marker is a subvol id in the metadata partition (flipmeta
+      // get boot); the matching profile gets autoBoot:true. Absent -> exit 2.
+      exec('sudo flipmeta get boot', { encoding: 'utf8', timeout: 10000 }, function(be, bootOut) {
+        var bootId = String(bootOut || '').trim();
+        if (!/^\d+$/.test(bootId)) bootId = '';
         exec('sudo list-profiles', { encoding: 'utf8', timeout: 20000 }, function(err, stdout) {
             var profiles = [], started = false;
             (stdout || '').split('\n').forEach(function(raw) {
@@ -5195,21 +5200,24 @@ var server = http.createServer(function(req, res) {
                 var originId = '';
                 var om = origin.match(/^(.*?)\s+\((\d+)\)$/);
                 if (om) { origin = om[1]; originId = om[2]; }
+                var pid = cols[base + 1] || '';
                 profiles.push({
                     name:     cols[0],
                     booted:   booted,
-                    id:       cols[base + 1] || '',
+                    id:       pid,
                     created:  cols[base + 2] || '',
                     lastUsed: cols[base + 3] || '',
                     parent:   (parent === '-' ? '' : parent),
                     origin:   (origin === '-' ? '' : origin),
                     originId: originId,
-                    old:      kind === 'old'
+                    old:      kind === 'old',
+                    autoBoot: (bootId !== '' && pid === bootId)
                 });
             });
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ profiles: profiles, error: err ? 'list-profiles failed' : null }));
         });
+      });
         return;
     }
     // ── /api/boot/profile/clone ─────────────────────────────────
@@ -5283,6 +5291,30 @@ var server = http.createServer(function(req, res) {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ ok: true, booting: true }));
             setTimeout(function() { exec('sudo boot-profile ' + name, function() {}); }, 800);
+        });
+        return;
+    }
+    // ── /api/boot/profile/autostart ─────────────────────────────
+    // POST { id } → flipmeta set boot <id>: persist the auto-boot marker (the
+    // profile's subvolume id) in the metadata partition. Exactly one at a time.
+    if (req.url === '/api/boot/profile/autostart' && req.method === 'POST') {
+        readJsonBody(req, function(e, data) {
+            var id = String((data && data.id) || '');
+            if (!/^\d+$/.test(id)) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Invalid id' }));
+                return;
+            }
+            exec('sudo flipmeta set boot ' + id, { encoding: 'utf8', timeout: 20000 }, function(err, stdout, stderr) {
+                if (err) {
+                    var msg = String(stderr || stdout || 'flipmeta failed').trim().split('\n').pop();
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ ok: false, error: msg }));
+                    return;
+                }
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: true }));
+            });
         });
         return;
     }

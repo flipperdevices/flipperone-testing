@@ -186,7 +186,8 @@ var BootMenuScene = (function() {
         this._busy        = null;   // action-in-progress message (e.g. 'Cloning')
         this._actionError = null;   // last action error, dismissed by a key press
         this._confirm     = null;   // { kind, msg1, msg2 } confirmation before a destructive action
-        this._autoStartProfile = null;   // subvol name of the auto-start profile (only one; not persisted yet)
+        // Auto-boot marker: the server flags the profile matching `flipmeta get
+        // boot` (a subvol id) with autoBoot; setting it writes flipmeta set boot.
         this._booting     = null;   // display name of the profile being kexec-booted
 
         // Profile size (Total + Exclusive), fetched async when the popup
@@ -270,7 +271,7 @@ var BootMenuScene = (function() {
                                   // lowered to sit against the icon bottom.
                                   font: HaxrCorp4090FlipCTL, activeLabelYNudge: 0,
                                   labelYOffset: 0, rowHeight: ROW_H,
-                                  suffixIcon: (p.name === self._autoStartProfile) ? ic('auto_start_heart') : null });
+                                  suffixIcon: p.autoBoot ? ic('auto_start_heart') : null });
         });
         this.loading = false;
         this.selectedIndex = 0;
@@ -279,16 +280,6 @@ var BootMenuScene = (function() {
         // Begin the auto-start countdown now that the data is in, unless a key
         // press already cancelled it while loading.
         if (this._autoStart) this._startCountdown();
-        if (window.requestRender) window.requestRender();
-    };
-
-    // Refresh the auto-start heart markers on the existing rows in place (no
-    // refetch), so toggling keeps the current selection/scroll.
-    BootMenuScene.prototype._applyAutoStartIcons = function() {
-        for (var i = 0; i < this.items.length; i++) {
-            this.items[i].suffixIcon = (this._profiles[i] && this._profiles[i].name === this._autoStartProfile)
-                ? ic('auto_start_heart') : null;
-        }
         if (window.requestRender) window.requestRender();
     };
 
@@ -423,14 +414,7 @@ var BootMenuScene = (function() {
 
     BootMenuScene.prototype._runEditAction = function(label) {
         var p = this._profiles[this.selectedIndex] || {};
-        if (label === 'Auto Start') {
-            // Only one auto-start profile; selecting toggles it (exclusive).
-            // Not persisted yet — in-memory for now.
-            this._autoStartProfile = (this._autoStartProfile === p.name) ? null : p.name;
-            this._applyAutoStartIcons();
-            this._closeEdit();
-            return;
-        }
+        if (label === 'Auto Start') { this._doSetAutoStart(); return; }
         if (label === 'Rename') { this._doRename(); return; }
         if (label === 'Clone') { this._doClone(); return; }
         if (label === 'Delete') {
@@ -515,6 +499,16 @@ var BootMenuScene = (function() {
         var self = this, p = this._profiles[this.selectedIndex] || {};
         if (!p.name) return;
         this._postAction('/api/boot/profile/delete', { name: p.name }, 'Deleting', function() {
+            self._closeEdit(); self._fetchProfiles();
+        });
+    };
+
+    // Make this profile the auto-boot one (flipmeta set boot <id>); the heart
+    // re-reads from flipmeta on the refetch.
+    BootMenuScene.prototype._doSetAutoStart = function() {
+        var self = this, p = this._profiles[this.selectedIndex] || {};
+        if (!p.id) return;
+        this._postAction('/api/boot/profile/autostart', { id: p.id }, 'Saving', function() {
             self._closeEdit(); self._fetchProfiles();
         });
     };
@@ -873,7 +867,7 @@ var BootMenuScene = (function() {
                 // Heart on the left ONLY when this profile is the auto-start one
                 // (the heart marks the enabled state); whole group centred. Its
                 // bottom aligns with the text.
-                var heart = (p.name === this._autoStartProfile) ? ic('auto_start_heart') : null;
+                var heart = p.autoBoot ? ic('auto_start_heart') : null;
                 var hw = heart ? heart.w : 0, hgap = heart ? 4 : 0;
                 var gx = fx + Math.floor((fw - (hw + hgap + lw)) / 2);
                 if (heart) {
