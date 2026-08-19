@@ -244,7 +244,14 @@ var MessageBox = (function() {
                 if (width <= maxWidth) {
                     currentLine = testLine;
                 } else {
-                    if (currentLine) lines.push(currentLine);
+                    if (currentLine) { lines.push(currentLine); currentLine = ''; }
+                    // hard-break a single word too long to fit on its own line
+                    while (HaxrCorp4090FlipCTL.textWidth(word) > maxWidth) {
+                        var k = word.length;
+                        while (k > 1 && HaxrCorp4090FlipCTL.textWidth(word.slice(0, k)) > maxWidth) k--;
+                        lines.push(word.slice(0, k));
+                        word = word.slice(k);
+                    }
                     currentLine = word;
                 }
             }

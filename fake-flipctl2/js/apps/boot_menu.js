@@ -631,8 +631,10 @@ var BootMenuScene = (function() {
             }
             var bt = 'Booting';
             bF.draw(ctx, bt, Math.floor((canvas.w - bF.textWidth(bt)) / 2), 74, '#000');
-            var bn = this._booting;
-            bF.draw(ctx, bn, Math.floor((canvas.w - bF.textWidth(bn)) / 2), 88, '#000');
+            var bnl = wrapText(bF, this._booting, canvas.w - 16);
+            for (var bi = 0; bi < bnl.length; bi++) {
+                bF.draw(ctx, bnl[bi], Math.floor((canvas.w - bF.textWidth(bnl[bi])) / 2), 88 + bi * 12, '#000');
+            }
             return;
         }
 
@@ -882,12 +884,13 @@ var BootMenuScene = (function() {
         if (this._confirm || this._busy || this._actionError) {
             var F2 = HaxrCorp4090FlipCTL;
             var cy = fy + HDR + Math.floor((fh - HDR) / 2) - 10;
-            var self2 = this;
             var line = function(txt, yy, cc) { F2.draw(ctx, txt, fx + Math.floor((fw - F2.textWidth(txt)) / 2), yy, cc); };
             if (this._confirm) {
-                line(this._confirm.msg1, cy, '#000');
-                if (this._confirm.msg2) line(this._confirm.msg2, cy + 12, '#000');
-                line('OK = yes    Back = no', cy + (this._confirm.msg2 ? 26 : 16), '#999999');
+                var cl = [{ t: this._confirm.msg1, c: '#000' }];
+                if (this._confirm.msg2) cl.push({ t: this._confirm.msg2, c: '#000' });
+                cl.push({ t: 'OK = yes    Back = no', c: '#999999' });
+                var ctop = fy + HDR + Math.floor(((fh - HDR) - cl.length * 12) / 2);
+                for (var ci = 0; ci < cl.length; ci++) line(cl[ci].t, ctop + ci * 12, cl[ci].c);
             } else if (this._actionError) {
                 var el = wrapText(F2, this._actionError, 240);
                 var top = fy + HDR + Math.floor(((fh - HDR) - (el.length * 12 + 12)) / 2);
