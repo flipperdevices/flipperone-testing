@@ -340,6 +340,7 @@ var BootMenuScene = (function() {
         this._cancelAutoStart();
         this._infoOpen = true;
         this._fetchSize();   // exclusive is enough for the Info popup (no compsize)
+        this._fetchDtbo();   // cheap, lands well before the size walk finishes
         if (window.requestRender) window.requestRender();
     };
 
@@ -354,7 +355,7 @@ var BootMenuScene = (function() {
         var p = this._profiles[this.selectedIndex] || {};
         var name = p.name || '';
         this._size = { name: name, loading: true, total: null, exclusive: null,
-                       referenced: null, compression: null, dtbo: null };
+                       referenced: null, compression: null };
         this._startSpinner();
         if (!name) { this._size.loading = false; this._stopSpinner(); return; }
         var self = this;
@@ -366,8 +367,30 @@ var BootMenuScene = (function() {
             var d = {};
             try { d = JSON.parse(xhr.responseText); } catch (e) {}
             self._size = { name: name, loading: false, total: d.total || null, exclusive: d.exclusive || null,
-                           referenced: d.referenced || null, compression: d.compression || null, dtbo: d.dtbo || null };
+                           referenced: d.referenced || null, compression: d.compression || null };
             self._stopSpinner();
+            if (window.requestRender) window.requestRender();
+        };
+        xhr.send();
+    };
+
+    // DTBO overlays for the selected profile, fetched apart from the slow size
+    // walk so the Info popup can paint them right away.
+    BootMenuScene.prototype._fetchDtbo = function() {
+        var p = this._profiles[this.selectedIndex] || {};
+        var name = p.name || '';
+        this._dtbo = { name: name, loading: true, system: null, user: null };
+        if (!name) { this._dtbo.loading = false; return; }
+        var self = this;
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', '/api/boot/profile-dtbo?name=' + encodeURIComponent(name), true);
+        xhr.onreadystatechange = function() {
+            if (xhr.readyState !== 4) return;
+            if (self._dtbo.name !== name) return;   // selection moved on; ignore
+            var d = {};
+            try { d = JSON.parse(xhr.responseText); } catch (e) {}
+            var dt = d.dtbo || {};
+            self._dtbo = { name: name, loading: false, system: dt.system || [], user: dt.user || [] };
             if (window.requestRender) window.requestRender();
         };
         xhr.send();
@@ -891,12 +914,13 @@ var BootMenuScene = (function() {
         var F = HaxrCorp4090FlipCTL, HDR = 38, lineH = 11, padH = 8;
 
         var sz = this._size || {};
+        var dt = this._dtbo || {};
         var spin = this._spinFrames[this._spinIndex];
         var dsys, dusr;
-        if (sz.loading || !sz.dtbo) { dsys = spin; dusr = spin; }
+        if (dt.loading || !dt.system) { dsys = spin; dusr = spin; }
         else {
-            dsys = (sz.dtbo.system && sz.dtbo.system.length) ? sz.dtbo.system.join(' ') : 'none';
-            dusr = (sz.dtbo.user && sz.dtbo.user.length) ? sz.dtbo.user.join(' ') : 'none';
+            dsys = dt.system.length ? dt.system.join(' ') : 'none';
+            dusr = (dt.user && dt.user.length) ? dt.user.join(' ') : 'none';
         }
         // drop the "(id)" suffix and the leading '@' subvol marker
         var parent  = dispName((p.parent || '-').replace(/\s*\(\d+\)\s*$/, ''));

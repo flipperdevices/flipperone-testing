@@ -5428,12 +5428,29 @@ var server = http.createServer(function(req, res) {
                     // response is on its way (the running root is the moved-aside _old copy)
                     if (rebooting) setTimeout(function() { exec('sudo systemctl reboot', function() {}); }, 1500);
                 });
-            });
+            }
         });
         return;
     }
     // ── /api/boot/profile-size ──────────────────────────────────
-    // GET ?name=<@profile>[&full=1] → { name, total, exclusive, dtbo } and, when
+    // ── /api/boot/profile-dtbo ──────────────────────────────────
+    // GET ?name=<@profile> → { name, dtbo:{system,user} }. Cheap (reads the
+    // profile's BLS entry), so the Info popup fetches it separately and paints
+    // DTBO immediately instead of waiting on the slow size tree walk.
+    if (req.method === 'GET' && req.url.indexOf('/api/boot/profile-dtbo') === 0) {
+        var dq = req.url.split('?')[1] || '';
+        var dmatch = dq.match(/(?:^|&)name=([^&]+)/);
+        var dName = dmatch ? decodeURIComponent(dmatch[1]) : '';
+        if (!/^@[A-Za-z0-9._-]+$/.test(dName)) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Invalid name' }));
+            return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ name: dName, dtbo: readProfileDtbo(dName) }));
+        return;
+    }
+    // GET ?name=<@profile>[&full=1] → { name, total, exclusive } and, when
     // full=1, also { referenced, compression } from compsize. Sizes are human
     // strings (e.g. "3.5GiB") shown verbatim. Slow (a tree walk; full adds a
     // compsize walk), so popups show a spinner; memoised per subvol+mode.
@@ -5452,7 +5469,7 @@ var server = http.createServer(function(req, res) {
         if (cached && (Date.now() - cached.at) < PROFILE_SIZE_TTL) {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ name: pName, total: cached.total, exclusive: cached.exclusive,
-                referenced: cached.referenced, compression: cached.compression, dtbo: cached.dtbo }));
+                referenced: cached.referenced, compression: cached.compression }));
             return;
         }
         var cmd = 'sudo btrfs-show-space ' + (pFull ? '' : '-q ') + pName;
@@ -5470,12 +5487,11 @@ var server = http.createServer(function(req, res) {
             var exclusive  = em ? em[1] : null;
             var referenced = rm ? rm[1] : null;
             var compression = cm ? cm[1] : null;
-            var dtbo = readProfileDtbo(pName);
             profileSizeCache[ckey] = { total: total, exclusive: exclusive, referenced: referenced,
-                compression: compression, dtbo: dtbo, at: Date.now() };
+                compression: compression, at: Date.now() };
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ name: pName, total: total, exclusive: exclusive,
-                referenced: referenced, compression: compression, dtbo: dtbo }));
+                referenced: referenced, compression: compression }));
         });
         return;
     }
