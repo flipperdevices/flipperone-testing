@@ -123,6 +123,11 @@ var BootMenuScene = (function() {
         return u(Math.floor(d / 365), 'year');
     }
 
+    // Gap (px) placed after the "Size:" label and after the number slot. The
+    // font's textWidth under-reports by 1px vs what draw() advances, so slots
+    // butted directly together overlap; an explicit gap keeps them clear.
+    var SIZE_GAP = 4;
+
     // Split a human size string ("3.5GiB") into [number, unit] so the two parts
     // can be drawn in fixed-width slots. The server sends sizes already
     // formatted (btrfs-show-space); we never reformat them here. null -> ['?',''].
@@ -606,7 +611,7 @@ var BootMenuScene = (function() {
     BootMenuScene.prototype._bootSelected = function() {
         var self = this, p = this._profiles[this.selectedIndex] || {};
         if (!p.name || this._booting) return;
-        this._booting = profileDisplay(p.name, p.origin);
+        this._booting = plainName(p.name, p.origin);
         this._startSpinner();
         if (window.requestRender) window.requestRender();
         var xhr = new XMLHttpRequest();
@@ -736,41 +741,46 @@ var BootMenuScene = (function() {
 
     // Lazily measure the fixed size-line slot widths (number + unit).
     BootMenuScene.prototype._ensureSlots = function(F) {
-        if (this._numSlotW != null) return;
-        var mx = F.textWidth('00.0');
-        for (var k = 0; k < this._spinFrames.length; k++) mx = Math.max(mx, F.textWidth(this._spinFrames[k]));
-        this._numSlotW = mx;
-        var mu = 0, u = [' B', ' KB', ' MB', ' GB'];
+        if (this._spinSlotW != null) return;
+        // Fixed slot for the spinner only: its frames (-\|/) differ in width, so
+        // a slot stops the number position jittering frame to frame while loading.
+        var sp = 0;
+        for (var k = 0; k < this._spinFrames.length; k++) sp = Math.max(sp, F.textWidth(this._spinFrames[k]));
+        this._spinSlotW = sp;
+        // Widest values, for sizing the popup: "1023.0" is the largest number
+        // numfmt --format='%.1f' emits before rolling to the next unit.
+        this._maxNumW = F.textWidth('1023.0');
+        var mu = 0, u = ['B', 'KB', 'MB', 'GB'];
         for (var j = 0; j < u.length; j++) mu = Math.max(mu, F.textWidth(u[j]));
-        this._unitSlotW = mu;
+        this._maxUnitW = mu;
     };
 
     BootMenuScene.prototype._sizeLineWidth = function(F) {
         this._ensureSlots(F);
-        return F.textWidth('Size: ') + this._numSlotW + this._unitSlotW;
+        return F.textWidth('Size:') + SIZE_GAP + this._maxNumW + SIZE_GAP + this._maxUnitW;
     };
 
-    // Single "Size: X" line, fixed-width slots so nothing shifts (spinner while
-    // loading; number + B/KB/MB/GB unit right-aligned in their slots).
+    // Single "Size: <number> <unit>" line, centred. The number is measured and
+    // the unit placed right after it (SIZE_GAP between each part), so it never
+    // overlaps regardless of digit count. While loading, a fixed spinner slot
+    // keeps the animation from jittering; the unit is dropped until the value
+    // lands.
     BootMenuScene.prototype._drawSizeLine = function(canvas, fx, fw, sy) {
         var ctx = canvas.ctx, F = HaxrCorp4090FlipCTL, col = '#666666';
         this._ensureSlots(F);
-        var sz = this._size, numW = this._numSlotW, unitW = this._unitSlotW;
-        var lbl = 'Size: ', lblW = F.textWidth(lbl);
-        var x = fx + Math.floor((fw - (lblW + numW + unitW)) / 2);
+        var sz = this._size;
+        var lbl = 'Size:', lblW = F.textWidth(lbl);
+        var numStr, unitStr, slotW;
+        if (sz.loading) { numStr = this._spinFrames[this._spinIndex]; unitStr = ''; slotW = this._spinSlotW; }
+        else { var pr = sizeParts(sz.exclusive); numStr = pr[0]; unitStr = pr[1] || 'B'; slotW = F.textWidth(numStr); }
+        var unitPart = unitStr ? SIZE_GAP + F.textWidth(unitStr) : 0;
+        var totalW = lblW + SIZE_GAP + slotW + unitPart;
+        var x = fx + Math.floor((fw - totalW) / 2);
         F.draw(ctx, lbl, x, sy, col);
-        var sx = x + lblW;
-        var numStr, unitStr;
-        if (sz.loading) { numStr = this._spinFrames[this._spinIndex]; unitStr = ' B'; }
-        else { var pr = sizeParts(sz.exclusive); numStr = pr[0]; unitStr = ' ' + pr[1]; }
-        var nw = F.textWidth(numStr);
-        // number/spinner right-aligned in its slot (no jitter); unit sits tight
-        // right after it, so a short unit like "B" isn't pushed to the right.
-        // While loading, nudge the lone spinner one symbol left of the unit.
-        var nx = sx + numW - nw;
-        if (sz.loading) nx -= F.textWidth('0');
+        var sx = x + lblW + SIZE_GAP;
+        var nx = sx + slotW - F.textWidth(numStr);   // right-align in slot (0 for a real number)
         F.draw(ctx, numStr, nx, sy, col);
-        F.draw(ctx, unitStr, sx + numW, sy, col);
+        if (unitStr) F.draw(ctx, unitStr, sx + slotW + SIZE_GAP, sy, col);
     };
 
     // Shared popup chrome: rounded frame + grey header band (icon + name + size
