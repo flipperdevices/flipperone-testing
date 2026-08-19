@@ -1,0 +1,182 @@
+# Design tokens for the Flipper One 256x144 panel.
+#
+# Single source of truth. build.rs generates the Rust and Slint theme from this
+# file; nothing else may contain a colour literal or a layout constant.
+#
+# Every value here was read out of fake-flipctl2 source, not out of its
+# CLAUDE.md. Where the two disagree the code wins and the discrepancy is
+# recorded in docs/inventory.md.
+
+[meta]
+panel_width = 256
+panel_height = 144
+
+# All colours are pure greys (r == g == b). The panel is 8-bit greyscale:
+# flipper-one-display.c takes XRGB8888 and runs drm_fb_xrgb8888_to_gray8, so a
+# non-grey token would shift under the luma conversion. tests/tokens.rs enforces
+# this.
+[color]
+# Canvas ground and primary ink.
+white         = "#ffffff"   # canvas.clear, button default bg, popup body
+black         = "#000000"   # text, frames, icons, scrollbar, press fill
+
+# Greys, each attributed to its only use.
+divider       = "#cccccc"   # menu.js DIVIDER_COLOR, between adjacent MenuLines
+disabled_bg   = "#cccccc"   # canvas.js disabled button ground
+disabled_fg   = "#999999"   # canvas.js disabled button text
+status_dim    = "#999999"   # MenuLine right-aligned status text, DEFAULT state
+chevron_flash = "#222222"   # MenuLine < > arrow tap flash
+popup_edge    = "#d0d0d0"   # drawPopupLeft shadow edge
+keycap_dim    = "#888888"   # keyboard language-switcher label
+field_label   = "#6d6d6d"   # desktop.js field labels: Temperature, Hostname:, IPv4:
+
+# Status bar defaults. Callers may override the triple; Desktop passes
+# bg = eee / fg = black.
+bar_bg        = "#000000"
+bar_fg        = "#ffffff"
+bar_dim       = "#cccccc"   # empty 5G signal bars
+bar_bg_light  = "#eeeeee"   # Desktop override
+bar_fg_light  = "#000000"
+
+# Modal scrim. Composited at overlay_alpha over whatever is behind it.
+overlay       = "#ffffff"
+
+[alpha]
+overlay = 0.75
+
+# Every measurement is an integer pixel count. No fractional layout, no scale
+# factor.
+[metric]
+margin_h            = 8     # centred-content left/right margin
+pad_left            = 4     # ui.js PAD_LEFT, status bar and simple-list text
+scrollbar_w         = 3     # ui.js SCROLLBAR_W
+
+status_bar_h        = 13    # ui.js STATUS_BAR_H
+status_pad_top      = 3     # ui.js STATUS_BAR_PAD_TOP
+
+item_h              = 12    # ui.js ITEM_H, plain simple-list row
+
+menu_line_h         = 20    # MenuLine.js H (14px icon + 3 + 3)
+menu_line_w         = 224   # MenuLine.js DEFAULT_W
+icon_pad            = 3     # MenuLine.js ICON_PAD
+icon_text_gap       = 4     # MenuLine.js TEXT_GAP
+text_draw_y         = 3     # MenuLine.js TEXT_DRAW_Y, puts cap top at line y+6
+status_pad_r        = 5     # MenuLine.js STATUS_PAD_R
+
+list_container_x    = 5     # menu.js CONTAINER_X
+# menu.js's value, and the shipping device's. Five 20px rows plus four dividers is
+# 104px, so the list occupies y25..y128 and leaves y129 blank: a one-pixel gap
+# above the 14px strip at y130. Do not close that gap to "use every row" - it puts
+# every row one pixel below the device and the last row hard against the buttons.
+list_container_y    = 25
+list_container_w    = 224   # menu.js CONTAINER_W
+list_viewport_h     = 104   # menu.js, = 5 * 20 + 4 dividers
+
+selector_x          = 4     # menu.js SELECTOR_X
+selector_w_scroll   = 244   # menu.js SELECTOR_W_WITH_SCROLL
+selector_w_full     = 247   # menu.js SELECTOR_W_NO_SCROLL
+selector_h          = 22    # menu.js SELECTOR_H
+selector_y_offset   = -1    # menu.js SELECTOR_Y_OFFSET
+
+scrollbar_x         = 253   # menu.js SCROLLBAR_X
+scrollbar_y         = 15    # menu.js SCROLLBAR_Y
+scrollbar_h         = 127   # menu.js SCROLLBAR_H
+scrollbar_thumb_pad = 1     # menu.js SCROLLBAR_THUMB_PAD
+scrollbar_thumb_min = 5     # ui.js Scrollbar, floor on computed thumb height
+
+# Horizontal geometry from the Figma export `soft_button_bar`: 5 * 48 + 4 * 4 =
+# 256 exactly, so the slots tile evenly and both outer edges land flush. canvas.js
+# anchored its right button at `screenW - w` instead, leaving a 10px hole.
+#
+# Height stays at canvas.js's 14, matching what the device actually shows. The
+# Figma frame is 17 and the two disagree; 14 is the decision.
+button_h            = 14
+button_w            = 48
+button_gap          = 4
+# 4px stair on both top corners of every button, including the outer two. Bottom
+# corners are square and the buttons run to the bottom of the panel, so there is
+# no bottom border.
+button_corner       = 4
+
+popup_item_h        = 13    # ui.js POPUP_ITEM_H
+popup_pad           = 3     # ui.js POPUP_PAD
+
+key_w               = 15    # ui.js keyboard BTN_W
+key_h               = 16    # ui.js keyboard BTN_H
+key_wide_w          = 35    # shift / space / language, all equal
+key_gap             = 0     # canvas.js BTN_GAP
+keyboard_w          = 250   # ui.js CONTAINER_W
+keyboard_h          = 77    # ui.js CONTAINER_H
+
+msgbox_pad          = 6     # MessageBox.js padding
+msgbox_line_h       = 12    # MessageBox.js line advance
+msgbox_right_pad    = 12    # MessageBox.js textRightPadding
+
+tab_h               = 17    # canvas.js TAB_H
+
+# Left edge of the power-flow icon on the idle screen.
+#
+# desktop.js derives this from the CPU reading's measured width
+# (`cpuTempEndX(cpuTempC) + 34`), which makes the icon slide: '1' has an advance of
+# 3 in HaxrCorp while every other digit has 6, so the reading is 3px narrower
+# whenever it contains a 1, and the whole power block jumps. Pinning the position
+# reproduces the intended 34px gap from a reference reading of "55.5" without the
+# jitter. The reference reading "55.5" puts it at
+# 82 + 15 + 3 + 19 + 1 + 4 + 1 + 5 + 34 = 164, nudged 2px left by eye to 162.
+power_icon_x        = 162
+
+# Dimensionless counts. Kept apart from [metric] because those are pixel lengths;
+# a count used as a length is a type error in the generated Slint theme.
+[count]
+list_visible_rows = 5    # menu.js VISIBLE_COUNT
+msgbox_max_chars  = 25   # MessageBox.js maxLineLength
+
+# drawRoundRect / drawRoundFrame accept these three only; anything else falls
+# back to a square rect.
+[radius]
+small = 2   # popup item selection
+menu  = 3   # MenuSelectorFrame, dialog body
+box   = 4   # MessageBox, bottom-bar button top corners, keyboard container
+
+[timing]
+press_flash_ms   = 30    # bottom-bar button, next scene usually replaces the view
+press_commit_ms  = 150   # popup item and keyboard key, the flash must be seen
+icon_frame_ms    = 200   # animated icon strip, 5 fps
+cursor_blink_ms  = 500   # BlinkingKeyboardCursor default
+kb_peek_wave_ms  = 160   # ui.js KB_PEEK_WAVE_MS
+
+# System-wide rules, decided once and applied everywhere.
+[rule]
+# Long text wraps to a second line rather than truncating or scrolling. Applies
+# wherever there is vertical room: dialogs, MessageBox, titles, detail screens.
+#
+# MenuLine is the one place it cannot apply: a 20px row cannot hold two 16px
+# lines, so a label longer than its row is truncated there. Growing the row would
+# make list height variable and break the five-row viewport.
+overflow = "wrap"
+# Disabled controls keep their white ground and grey only the outline and the
+# label. canvas.js was inconsistent here, filling middle slots white but left and
+# right slots #cccccc; white everywhere is the resolution.
+disabled = "outline-only"
+
+# The three fonts are packed 1bpp bitmap tables with a per-glyph advance width,
+# generated from the flipctl-fonts TTFs by ttf-to-js.py. rows/cols are the glyph
+# frame; advance comes from the table, so text width is a sum, never a
+# multiplication.
+[font.title]
+name = "HaxrCorp4090FlipCTL"
+rows = 13
+cols = 16
+use  = "status bar, titles, dialogs, message box, most scenes"
+
+[font.row]
+name = "Busy9pxFlipCTL"
+rows = 16
+cols = 16
+use  = "MenuLine label and status in DEFAULT state"
+
+[font.row_active]
+name = "Born2bSportyV2FlipCTL"
+rows = 18
+cols = 16
+use  = "MenuLine label and status in SELECTED and PRESSED states"

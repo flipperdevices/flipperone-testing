@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/flipper-ui",
+    "bin/flipper-ui-demo",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/flipperdevices/flipctl"
+
+[workspace.dependencies]
+flipper-ui = { path = "crates/flipper-ui" }
+
+# Size matters most for flipperos-installer, which is maskrom-loaded. These
+# settings are the ones Phase 2 measures against.
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

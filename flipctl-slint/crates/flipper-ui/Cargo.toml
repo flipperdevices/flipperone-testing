@@ -1,0 +1,49 @@
+[package]
+name = "flipper-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared UI component library for the Flipper One 256x144 panel"
+
+[features]
+default = []
+# DRM/KMS panel sink and raw evdev input. Off by default so host-side tests and
+# the golden-image harness build without touching /dev.
+device = ["drm"]
+# Built-in browser remote view. Default off so flipperos-installer and
+# flipper-boot-menu never pay for it.
+remote = []
+# Slint software renderer targeting Gray8. No backend: we own KMS and input, so
+# `renderer-software` is taken on its own and the LinuxKMS backend (with its
+# libinput/libxkbcommon/fontconfig tree) is never pulled in.
+slint = ["dep:slint", "dep:slint-build", "dep:i-slint-common"]
+
+[dependencies]
+# getifaddrs, for the idle screen's IPv4 addresses. procfs exposes IPv6 as text
+# but has no IPv4 equivalent, and a UI process should not be shelling out to `ip`.
+libc = "0.2"
+drm = { version = "0.14", optional = true }
+
+# Not used directly. Present only to switch fontique's fontconfig binding to
+# dlopen, which the `slint` facade does not re-export. Cargo unifies features
+# across the graph, so this reaches the fontique that i-slint-core pulls in via
+# parley and removes libfontconfig (plus freetype, expat, png, brotli, bz2) from
+# the link line. We embed glyphs at compile time and never enumerate system
+# fonts, so nothing looks for the library at runtime either.
+[dependencies.i-slint-common]
+version = "=1.17.1"
+features = ["fontconfig-dlopen"]
+optional = true
+
+[dependencies.slint]
+version = "1.17"
+default-features = false
+features = ["compat-1-2", "renderer-software", "std", "unsafe-single-threaded"]
+optional = true
+
+[build-dependencies]
+toml = "0.8"
+slint-build = { version = "1.17", optional = true }
+
+[dev-dependencies]
+png = "0.17"

@@ -1,0 +1,154 @@
+// The status bar.
+//
+// Geometry transcribed from ui.js `drawStatusBar` / `drawBattery` /
+// `drawSignalBars`. Every offset here is one the prototype computes, including
+// the two places where an element is deliberately raised a pixel for optical
+// alignment against the battery glyph.
+//
+// The sprites are the prototype's own 6-bit greyscale assets, converted to alpha
+// masks by tools/js-sprite-to-png.py. `drawSprite` paints each pixel in the
+// scene's ink colour at `opacity = (63 - grey) / 63`, which is exactly an alpha
+// mask plus a tint, so `colorize` reproduces it. The charging bolt is the one
+// exception: the prototype draws it with `drawSpriteLiteral`, keeping each
+// pixel's own value, so it is a real greyscale image and is not colorized.
+import { FlipperTheme } from "@theme";
+
+export component StatusBar inherits Rectangle {
+    in property <int> battery: -1;
+    in property <bool> charging;
+    in property <bool> wifi_connected;
+    in property <int> wifi_quality;
+    // 0 down, 1 real, 2 usb gadget.
+    in property <int> ethernet;
+    in property <bool> recording;
+    in property <bool> modem_available;
+    in property <string> access_tech: "--";
+    in property <int> modem_quality;
+
+    // Inverted by default. A scene may override the pair; Desktop passes a light
+    // ground with dark ink.
+    in property <color> ground: FlipperTheme.bar_bg;
+    in property <color> ink: FlipperTheme.bar_fg;
+    in property <color> dim: FlipperTheme.bar_dim;
+
+    width: 100%;
+    height: FlipperTheme.status_bar_h;
+    background: root.ground;
+
+    property <length> top: FlipperTheme.status_pad_top;
+
+    // Left cluster, laid out left to right by a running cursor. Each element
+    // appears only when its interface does, and each advances the cursor by its
+    // own width, so the order is stable and the gaps do not move.
+    property <length> modem_w: root.modem_available ? 10px + tech.width + 2px : 0px;
+    property <length> wifi_x: 2px + root.modem_w;
+    property <length> eth_x: root.wifi_x + (root.wifi_connected ? 9px : 0px);
+    property <length> rec_x: root.eth_x + (root.ethernet != 0 ? 15px : 0px);
+
+    // Five bars, 1px wide on a 2px pitch, heights 3 to 7, sharing a bottom edge.
+    // `filled` is ceil(quality / 20), so any signal at all lights the first bar.
+    if root.modem_available: Rectangle {
+        x: 2px;
+        y: root.top;
+        width: 9px;
+        height: 7px;
+        background: transparent;
+        for bar[i] in [3, 4, 5, 6, 7]: Rectangle {
+            x: i * 2px;
+            y: (7 - bar) * 1px;
+            width: 1px;
+            height: bar * 1px;
+            background: i < Math.ceil(root.modem_quality / 20) ? root.ink : root.dim;
+        }
+    }
+
+    tech := Text {
+        x: 2px + 10px;
+        y: root.top;
+        text: root.modem_available ? root.access_tech : "";
+        font-size: 16px;
+        color: root.ink;
+    }
+
+    if root.wifi_connected: Image {
+        x: root.wifi_x;
+        y: root.top;
+        width: 7px;
+        height: 7px;
+        // Five buckets, matching wifiIcon() in ui.js.
+        source: root.wifi_quality >= 80 ? @image-url("../assets/icons/wifi_100.png")
+            : root.wifi_quality >= 60 ? @image-url("../assets/icons/wifi_75.png")
+            : root.wifi_quality >= 40 ? @image-url("../assets/icons/wifi_50.png")
+            : root.wifi_quality >= 20 ? @image-url("../assets/icons/wifi_25.png")
+            : @image-url("../assets/icons/wifi_0.png");
+        colorize: root.ink;
+    }
+
+    if root.ethernet != 0: Image {
+        x: root.eth_x;
+        y: root.top;
+        width: 13px;
+        height: 7px;
+        source: root.ethernet == 2
+            ? @image-url("../assets/icons/usb_ethetrnet_status_bar.png")
+            : @image-url("../assets/icons/ethernet_statusbar.png");
+        colorize: root.ink;
+    }
+
+    if root.recording: Image {
+        x: root.rec_x;
+        y: root.top;
+        width: 7px;
+        height: 7px;
+        source: @image-url("../assets/icons/records_status_bar.png");
+        colorize: root.ink;
+    }
+
+    // Right cluster: percentage, then the battery glyph 2px from the edge.
+    //
+    // Both are raised relative to the rest of the bar, as the prototype has them:
+    // the glyph by 1px so its optical centre matches the bar's midline, and the
+    // text by 2px so it sits level with the glyph.
+    property <length> battery_x: root.width - 2px - 16px;
+
+    battery_text := Text {
+    // Slint's `Text.width` is the sum of glyph advances. The prototype's
+    // `textWidth()` returns that sum minus one, because the last glyph's trailing
+    // spacing column carries no ink and should not push the text away from the
+    // edge it is aligned to. Every position derived from a text width therefore
+    // subtracts 1px here.
+        x: root.battery_x - 1px - (self.width - 1px);
+        y: root.top - 2px;
+        text: root.battery >= 0 ? root.battery + "%" : "--%";
+        font-size: 16px;
+        color: root.ink;
+    }
+
+    Image {
+        x: root.battery_x;
+        y: root.top - 1px;
+        width: 16px;
+        height: 9px;
+        source: @image-url("../assets/icons/battery_statusbar.png");
+        colorize: root.ink;
+    }
+
+    // Charge level, drawn inside the glyph: 10px of travel starting 2px in.
+    Rectangle {
+        x: root.battery_x + 2px;
+        y: root.top + 1px;
+        width: Math.round(10 * Math.max(0, root.battery) / 100) * 1px;
+        height: 5px;
+        background: root.ink;
+    }
+
+    // Three-tone bolt, flush with the glyph's top-left. Not colorized: dark stays
+    // dark and light stays light so the battery shows through around it.
+    if root.charging: Image {
+        x: root.battery_x;
+        y: root.top - 1px;
+        width: 16px;
+        height: 9px;
+        source: @image-url("../assets/icons/charging_status_bar.png");
+    }
+}

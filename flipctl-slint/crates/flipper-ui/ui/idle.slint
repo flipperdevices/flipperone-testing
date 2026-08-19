@@ -1,0 +1,316 @@
+// The idle screen, the root of the UI.
+//
+// Geometry transcribed from apps/desktop.js. Every offset there is expressed
+// relative to the status bar, so they are written here the same way. Field labels
+// are #6d6d6d and their values black, which is the one place the design uses a
+// mid-grey for text rather than for a divider.
+import { FlipperTheme } from "@theme";
+import { StatusBar } from "statusbar.slint";
+import { SoftButton } from "frame.slint";
+
+export struct IdleLink {
+    name: string,
+    v4: string,
+    v6: string,
+}
+
+// A centred label and value pair, treated as one block. desktop.js measures
+// label + gap + value and centres the total, so the value moves as the label's
+// width changes rather than each being centred independently.
+component CentredPair inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    in property <length> label_dy: 0;
+    // The value carries its own nudge: on the hostname row desktop.js drops the
+    // label a pixel, which left the name reading a pixel high against it.
+    in property <length> value_dy: 0;
+    // 4 for the profile and hostname rows; 3 between an IPv4:/IPv6: label and its
+    // address, per drawEthCard's GAP_LBL.
+    in property <length> gap: 4px;
+    background: transparent;
+    height: 12px;
+
+    // See statusbar.slint: the prototype's textWidth is one less than Slint's.
+    property <length> total: (lbl.width - 1px) + (root.value == "" ? 0 : root.gap + (val.width - 1px));
+    property <length> left: Math.floor((root.width - root.total) / 1px / 2) * 1px;
+
+    lbl := Text {
+        x: root.left;
+        // The grey label sits one pixel below the value's baseline, a deliberate
+        // tweak in desktop.js for the label only.
+        y: root.label_dy;
+        text: root.label;
+        color: FlipperTheme.field_label;
+    }
+    val := Text {
+        x: root.left + (lbl.width - 1px) + root.gap;
+        y: root.value_dy;
+        text: root.value;
+        color: FlipperTheme.black;
+    }
+}
+
+// A temperature: the number, a superscript degree ring, then C. The ring hangs
+// 2px below the digit baseline so it reads as a true superscript.
+component Reading inherits Rectangle {
+    in property <int> tenths;
+    // While the first read is in flight desktop.js draws no value but still lays
+    // the next block out as though the number were "55.5", so the power icon does
+    // not jump when the reading arrives. The children hide; the width stays.
+    in property <bool> known: true;
+    background: transparent;
+    width: (ref.width - 1px) + 1px + 4px + 1px + (unit.width - 1px);
+    height: 11px;
+
+    // The number is laid out in a fixed-width cell measured from a reference
+    // reading, so the degree ring and the C do not shift when a digit's advance
+    // changes. "55.5" is the reference because 5 has the common 6px advance.
+    ref := Text {
+        x: 0; y: 0;
+        text: "55.5";
+        visible: false;
+    }
+    num := Text {
+        x: 0; y: 0;
+        text: root.known
+            ? Math.floor(root.tenths / 10) + "." + Math.mod(Math.abs(root.tenths), 10)
+            : "55.5";
+        visible: root.known;
+        color: FlipperTheme.black;
+    }
+    Image {
+        visible: root.known;
+        x: (ref.width - 1px) + 1px;
+        y: 2px;
+        width: 4px; height: 4px;
+        source: @image-url("../assets/icons/degree_symbol.png");
+        colorize: FlipperTheme.black;
+    }
+    unit := Text {
+        x: (ref.width - 1px) + 1px + 4px + 1px;
+        y: 0;
+        visible: root.known;
+        text: "C";
+        color: FlipperTheme.black;
+    }
+}
+
+// A link's first line: interface name, then the IPv4 label, then the address.
+//
+// The name and the address are black and only the label is grey, and the two gaps
+// differ (4 after the name, 3 after the label). drawEthCard centres the three as
+// one block.
+component EthLine inherits Rectangle {
+    in property <string> name;
+    in property <string> label;
+    in property <string> value;
+    background: transparent;
+    height: 12px;
+
+    property <length> gap_name: 4px;
+    property <length> gap_label: 3px;
+    // See statusbar.slint: the prototype's textWidth is one less than Slint's.
+    property <length> total: (nm.width - 1px) + root.gap_name + (lb.width - 1px)
+        + (root.value == "" ? 0 : root.gap_label + (vl.width - 1px));
+    property <length> left: Math.floor((root.width - root.total) / 1px / 2) * 1px;
+
+    // y is set explicitly on all three. Without it Slint centres the text in the
+    // 12px row, and a 13-row glyph frame then lands a pixel low.
+    nm := Text {
+        x: root.left;
+        y: 0;
+        text: root.name;
+        color: FlipperTheme.black;
+    }
+    lb := Text {
+        x: root.left + (nm.width - 1px) + root.gap_name;
+        y: 0;
+        text: root.label;
+        color: FlipperTheme.field_label;
+    }
+    vl := Text {
+        x: root.left + (nm.width - 1px) + root.gap_name + (lb.width - 1px) + root.gap_label;
+        y: 0;
+        text: root.value;
+        color: FlipperTheme.black;
+    }
+}
+
+export component IdleBody inherits Rectangle {
+    width: 100%;
+    height: 100%;
+    background: FlipperTheme.white;
+    in property <int> battery: -1;
+    in property <bool> charging;
+    in property <bool> wifi_connected;
+    in property <int> wifi_quality;
+    in property <int> ethernet;
+    in property <bool> modem_available;
+    in property <string> access_tech: "--";
+    in property <int> modem_quality;
+
+    // Tenths of a degree, and milliwatts. -32768 means unknown, so the readout is
+    // omitted rather than showing a placeholder number.
+    in property <int> battery_temp: -32768;
+    in property <int> cpu_temp: -32768;
+    in property <int> power_mw: -32768;
+    in property <string> hostname;
+    in property <string> profile;
+    in property <[IdleLink]> links;
+    in property <[string]> hints;
+    in property <int> pressed_slot: -1;
+
+    property <length> bar: FlipperTheme.status_bar_h;
+
+    StatusBar {
+        x: 0; y: 0;
+        battery: root.battery;
+        charging: root.charging;
+        wifi_connected: root.wifi_connected;
+        wifi_quality: root.wifi_quality;
+        ethernet: root.ethernet;
+        modem_available: root.modem_available;
+        access_tech: root.access_tech;
+        modem_quality: root.modem_quality;
+    }
+
+    // Three full-width rules: below the readouts, between the profile and
+    // hostname rows, and below the hostname.
+    Rectangle {
+        x: 0; y: root.bar + 34px; width: parent.width; height: 1px;
+        background: FlipperTheme.divider;
+    }
+    Rectangle {
+        x: 0; y: root.bar + 48px; width: parent.width; height: 1px;
+        background: FlipperTheme.divider;
+    }
+    Rectangle {
+        x: 0; y: root.bar + 62px; width: parent.width; height: 1px;
+        background: FlipperTheme.divider;
+    }
+
+    // Battery temperature: label at x57, glyph at x36. The glyph is 9x16 and sits
+    // 14px below the bar; the CPU and power glyphs sit one pixel lower so all
+    // three bottom-align.
+    Text {
+        x: 57px; y: root.bar + 3px;
+        text: "Temperature";
+        color: FlipperTheme.field_label;
+    }
+    Image {
+        x: 36px; y: root.bar + 14px; width: 9px; height: 16px;
+        source: @image-url("../assets/icons/battery_vertical.png");
+        colorize: FlipperTheme.black;
+    }
+    // Deliberate divergence from the prototype.
+    //
+    // drawThermalCard centres each reading on its own icon
+    // (`textY = iconY + floor((icon.h - 7) / 2) - 1`), and because the battery
+    // glyph is 9x16 at y+14 while the CPU's is 15x15 at y+15, that lands the two
+    // numbers one pixel apart. The icons bottom-align, so the offset reads as a
+    // misalignment rather than as intent. Both readings sit level here: +4 against
+    // the battery icon and +3 against the CPU's puts both cap rows on 33..39.
+    Reading {
+        x: 36px + 9px + 3px;
+        y: root.bar + 14px + 4px;
+        tenths: root.battery_temp;
+        known: root.battery_temp != -32768;
+    }
+
+    Image {
+        x: 82px; y: root.bar + 15px; width: 15px; height: 15px;
+        source: @image-url("../assets/icons/cpu_15px.png");
+        colorize: FlipperTheme.black;
+    }
+    cpu := Reading {
+        x: 82px + 15px + 3px;
+        y: root.bar + 15px + 3px;
+        tenths: root.cpu_temp;
+        known: root.cpu_temp != -32768;
+    }
+
+    // Power flow. desktop.js places this icon a fixed 34px past where the CPU
+    // reading ends, so the gap holds however wide the number is.
+    Text {
+        x: 163px; y: root.bar + 3px;
+        text: "Power flow";
+        color: FlipperTheme.field_label;
+    }
+    // Fixed, not derived from the reading's width: see tokens.toml. A digit-width
+    // change would otherwise slide the whole power block sideways.
+    property <length> power_x: FlipperTheme.power_icon_x;
+    Image {
+        x: root.power_x; y: root.bar + 15px; width: 14px; height: 15px;
+        source: @image-url("../assets/icons/power_usage.png");
+        colorize: FlipperTheme.black;
+    }
+    if root.power_mw != -32768: Text {
+        x: root.power_x + 14px + 3px;
+        y: root.bar + 15px + 3px;
+        // Sign convention from drawPowerCard: + into the battery, - out of it,
+        // and a leading space at zero so the column does not jitter as it crosses.
+        // Two decimals, as drawPowerCard's toFixed(2) gives. The hundredths need
+        // a leading zero: 20mW is "0.02", not "0.2".
+        property <int> mw: Math.abs(root.power_mw);
+        property <int> hundredths: Math.round(Math.mod(self.mw, 1000) / 10);
+        text: (root.power_mw > 0 ? "+" : (root.power_mw < 0 ? "-" : " "))
+            + Math.floor(self.mw / 1000)
+            + "."
+            + (self.hundredths < 10 ? "0" : "")
+            + self.hundredths
+            + " W";
+        color: FlipperTheme.black;
+    }
+
+    // Profile and hostname rows, each a centred label/value pair.
+    CentredPair {
+        x: 0; y: root.bar + 36px; width: parent.width;
+        label: "Profile:";
+        value: root.profile;
+    }
+    CentredPair {
+        x: 0; y: root.bar + 49px; width: parent.width;
+        label: "Hostname:";
+        value: root.hostname;
+        label_dy: 1px;
+        value_dy: 1px;
+    }
+
+    // One card per link, two lines each.
+    for link[i] in root.links: Rectangle {
+        x: 0;
+        y: root.bar + 65px + i * 26px;
+        width: parent.width;
+        height: 24px;
+        background: transparent;
+        EthLine {
+            x: 0; y: 0; width: parent.width;
+            name: link.name;
+            label: "IPv4:";
+            value: link.v4;
+        }
+        CentredPair {
+            x: 0; y: 12px; width: parent.width;
+            label: "IPv6:";
+            value: link.v6;
+            gap: 3px;
+        }
+    }
+
+    // Soft-button strip, same component and slot geometry as the menu.
+    for hint[i] in root.hints: Rectangle {
+        x: i * (FlipperTheme.button_w + FlipperTheme.button_gap);
+        y: parent.height - FlipperTheme.button_h;
+        width: FlipperTheme.button_w;
+        height: FlipperTheme.button_h;
+        background: transparent;
+        if hint != "": SoftButton {
+            width: parent.width;
+            label: hint;
+            pressed: i == root.pressed_slot;
+            flush_left: i == 0;
+            flush_right: i == 4;
+        }
+    }
+}
+

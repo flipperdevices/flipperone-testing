@@ -1,0 +1,199 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Flipper One</title>
+<style>
+  html, body {
+    margin: 0; height: 100%;
+    background: #14171C;
+    display: flex; align-items: center; justify-content: center;
+    font: 12px system-ui, sans-serif; color: #fff;
+    overflow: hidden;
+  }
+  #wrap { position: relative; display: inline-block; isolation: isolate; line-height: 0; }
+  /* Layers, low to high: amber ground, the live panel multiplied over it so
+     black ink stays black and white becomes backlight, then the device photo
+     whose transparent screen cutout reveals the panel. */
+  #glow { position: absolute; z-index: 0; background: #FF8200; }
+  #panel {
+    position: absolute; z-index: 1;
+    image-rendering: pixelated;
+    mix-blend-mode: multiply;
+  }
+  #photo {
+    position: relative; z-index: 2; display: block;
+    width: auto; height: auto; max-width: 98vw; max-height: 92vh;
+    pointer-events: none;
+  }
+  .zone {
+    position: absolute; z-index: 3; box-sizing: border-box;
+    cursor: pointer; touch-action: none;
+    display: flex; align-items: center; justify-content: center;
+    background: transparent; border: none;
+  }
+  .zone span {
+    pointer-events: none; display: none;
+    font: bold 14px monospace; color: #fff;
+    text-shadow: 0 1px 2px rgba(0,0,0,.9);
+  }
+  .show .zone { background: rgba(255,130,0,.35); border: 1px solid rgba(255,255,255,.85); }
+  .show .zone span { display: block; }
+  #hud {
+    position: fixed; top: 8px; left: 8px; z-index: 10;
+    background: #1D2026; padding: 6px 10px; border-radius: 5px;
+    display: flex; gap: 12px; align-items: center; user-select: none;
+  }
+  #hud label { cursor: pointer; }
+  #stat { font-variant-numeric: tabular-nums; opacity: .7; }
+</style>
+
+<div id="hud">
+  <label><input type="checkbox" id="toggle"> Show controls</label>
+  <span id="stat">connecting</span>
+</div>
+
+<div id="wrap">
+  <div id="glow"></div>
+  <canvas id="panel" width="256" height="144"></canvas>
+  <img id="photo" src="device.png" alt="">
+</div>
+
+<script>
+// The screen cutout, as fractions of the photo. Same numbers the prototype used.
+const SCREEN = { l: 33.94, t: 28.89, w: 28.76, h: 30.65 };
+
+// Physical buttons, as fractions of the photo. `a` is the wire name of the key,
+// which must match FlipperKey::name() on the device.
+const ZONES = [
+  // Bottom soft row, left to right: esc view power edit run.
+  { a: 'esc',   k: 'Z',     l: .3411, t: .6301, w: .053, h: .053 },
+  { a: 'view',  k: 'X',     l: .3987, t: .6301, w: .053, h: .053 },
+  { a: 'power', k: 'C',     l: .4564, t: .6301, w: .053, h: .053 },
+  { a: 'edit',  k: 'V',     l: .5140, t: .6301, w: .053, h: .053 },
+  { a: 'run',   k: 'B',     l: .5716, t: .6301, w: .053, h: .053 },
+  // D-pad.
+  { a: 'up',    k: '↑', l: .7106, t: .3105, w: .045, h: .085 },
+  { a: 'left',  k: '←', l: .6636, t: .3990, w: .045, h: .086 },
+  { a: 'ok',    k: 'Enter', l: .7106, t: .3990, w: .045, h: .086, round: 1 },
+  { a: 'right', k: '→', l: .7576, t: .3990, w: .045, h: .086 },
+  { a: 'down',  k: '↓', l: .7106, t: .4885, w: .045, h: .085 },
+  // App switcher has a chamfered top-right corner; back is round.
+  { a: 'appsw', k: 'Tab',   l: .6596, t: .5535, w: .0615, h: .0811, cut: 1 },
+  { a: 'back',  k: 'Bksp',  l: .7780, t: .5655, w: .0515, h: .0969, round: 1 },
+  { a: 'ptt',   k: 'A',     l: .2255, t: .1536, w: .071,  h: .034 },
+];
+
+const KEYS = {
+  ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
+  Enter: 'ok', Escape: 'back', Backspace: 'back', Tab: 'appsw',
+  z: 'esc', x: 'view', c: 'power', v: 'edit', b: 'run', a: 'ptt',
+};
+
+const wrap = document.getElementById('wrap');
+const glow = document.getElementById('glow');
+const panel = document.getElementById('panel');
+const stat = document.getElementById('stat');
+const ctx = panel.getContext('2d');
+
+for (const k of ['left', 'top', 'width', 'height']) {
+  const v = SCREEN[k[0]] + '%';
+  glow.style[k] = v;
+  panel.style[k] = v;
+}
+
+function send(action, down) {
+  fetch('input', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key: action, down }),
+  }).catch(() => {});
+}
+
+for (const z of ZONES) {
+  const el = document.createElement('div');
+  el.className = 'zone';
+  el.style.left = (z.l * 100) + '%';
+  el.style.top = (z.t * 100) + '%';
+  el.style.width = (z.w * 100) + '%';
+  el.style.height = (z.h * 100) + '%';
+  if (z.round) el.style.borderRadius = '50%';
+  if (z.cut) el.style.clipPath = 'polygon(0 0, 27% 0, 100% 56%, 100% 100%, 0 100%)';
+  const label = document.createElement('span');
+  label.textContent = z.k;
+  el.appendChild(label);
+  // Held while the pointer is down, like the real button.
+  el.addEventListener('pointerdown', e => { e.preventDefault(); send(z.a, true); });
+  el.addEventListener('pointerup', () => send(z.a, false));
+  el.addEventListener('pointerleave', () => send(z.a, false));
+  wrap.appendChild(el);
+}
+
+document.getElementById('toggle').addEventListener('change', e => {
+  document.body.classList.toggle('show', e.target.checked);
+});
+
+addEventListener('keydown', e => {
+  const a = KEYS[e.key];
+  if (a && !e.repeat) { e.preventDefault(); send(a, true); }
+});
+addEventListener('keyup', e => {
+  const a = KEYS[e.key];
+  if (a) { e.preventDefault(); send(a, false); }
+});
+
+// Frame stream. Each frame is an 8-byte little-endian header (x, y, w, h) then
+// w*h bytes of 8-bit greyscale: exactly the bytes the panel received, for the
+// damaged region only, so a still screen costs nothing.
+const HEADER = 8;
+
+async function stream() {
+  let frames = 0;
+  const since = performance.now();
+  for (;;) {
+    try {
+      const res = await fetch('stream');
+      if (!res.ok || !res.body) throw new Error('stream ' + res.status);
+      const reader = res.body.getReader();
+      let buf = new Uint8Array(0);
+
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const merged = new Uint8Array(buf.length + value.length);
+        merged.set(buf);
+        merged.set(value, buf.length);
+        buf = merged;
+
+        // Drain every whole frame the buffer now holds.
+        for (;;) {
+          if (buf.length < HEADER) break;
+          const head = new DataView(buf.buffer, buf.byteOffset, HEADER);
+          const x = head.getUint16(0, true), y = head.getUint16(2, true);
+          const w = head.getUint16(4, true), h = head.getUint16(6, true);
+          const need = HEADER + w * h;
+          if (buf.length < need) break;
+
+          // Zero-area region: a keepalive for a still screen, nothing to draw.
+          if (w === 0 || h === 0) { buf = buf.subarray(need); continue; }
+
+          const grey = buf.subarray(HEADER, need);
+          const img = ctx.createImageData(w, h);
+          for (let i = 0, j = 0; i < grey.length; i++, j += 4) {
+            img.data[j] = img.data[j + 1] = img.data[j + 2] = grey[i];
+            img.data[j + 3] = 255;
+          }
+          ctx.putImageData(img, x, y);
+          buf = buf.subarray(need);
+          frames++;
+          const secs = (performance.now() - since) / 1000;
+          stat.textContent = frames + ' frames, ' + (frames / secs).toFixed(1) + ' fps';
+        }
+      }
+    } catch (e) {
+      stat.textContent = 'reconnecting';
+    }
+    await new Promise(r => setTimeout(r, 500));
+  }
+}
+stream();
+</script>

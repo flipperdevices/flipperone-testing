@@ -1,0 +1,228 @@
+// The menu selection frame, built from single-pixel rectangles.
+//
+// `border-radius` cannot render this element. Three things it has no way to
+// express:
+//   * the corner is a straight 45-degree stair, not a circular arc
+//   * a 1px drop shadow one row BELOW and one column RIGHT of the frame, i.e.
+//     outside the element's own bounds
+//   * two hand-placed pixels weighting the bottom-right cut
+//
+// Geometry transcribed from MenuSelectorFrame.js. The radius is fixed at 3,
+// which is the only value the selector uses; the stair rows are therefore
+// written out rather than generated.
+import { FlipperTheme } from "@theme";
+
+export component SelectorFrame {
+    // Size of the frame proper. The component is one pixel larger in each
+    // direction to hold the shadow.
+    in property <length> frame_w;
+    in property <length> frame_h;
+    in property <bool> filled;
+
+    width: frame_w + 1px;
+    height: frame_h + 1px;
+
+    // Body: a chamfered rectangle. The top and bottom three rows step in by
+    // 2, 1 and 0 pixels, so the fill follows the same diagonal as the stroke and
+    // the cut corners stay transparent.
+    if filled: Rectangle {
+        x: 0; y: 3px;
+        width: root.frame_w;
+        height: root.frame_h - 6px;
+        background: FlipperTheme.black;
+    }
+    if filled: Rectangle {
+        background: transparent;
+        for row[i] in [2, 1, 0]: Rectangle {
+            x: row * 1px;
+            y: i * 1px;
+            width: root.frame_w - row * 2px;
+            height: 1px;
+            background: FlipperTheme.black;
+        }
+        for row[i] in [0, 1, 2]: Rectangle {
+            x: row * 1px;
+            y: root.frame_h - 3px + i * 1px;
+            width: root.frame_w - row * 2px;
+            height: 1px;
+            background: FlipperTheme.black;
+        }
+    }
+
+    // Straight edges, each held back by the radius at both ends.
+    Rectangle {
+        x: 3px; y: 0;
+        width: root.frame_w - 6px; height: 1px;
+        background: FlipperTheme.black;
+    }
+    Rectangle {
+        x: 3px; y: root.frame_h - 1px;
+        width: root.frame_w - 6px; height: 1px;
+        background: FlipperTheme.black;
+    }
+    Rectangle {
+        x: 0; y: 3px;
+        width: 1px; height: root.frame_h - 6px;
+        background: FlipperTheme.black;
+    }
+    Rectangle {
+        x: root.frame_w - 1px; y: 3px;
+        width: 1px; height: root.frame_h - 6px;
+        background: FlipperTheme.black;
+    }
+
+    // Corner stairs: pixel i of each corner, i in 0..3.
+    for i in [0, 1, 2]: Rectangle {
+        x: i * 1px; y: (2 - i) * 1px;
+        width: 1px; height: 1px;
+        background: FlipperTheme.black;
+    }
+    for i in [0, 1, 2]: Rectangle {
+        x: root.frame_w - 3px + i * 1px; y: i * 1px;
+        width: 1px; height: 1px;
+        background: FlipperTheme.black;
+    }
+    for i in [0, 1, 2]: Rectangle {
+        x: i * 1px; y: root.frame_h - 3px + i * 1px;
+        width: 1px; height: 1px;
+        background: FlipperTheme.black;
+    }
+    for i in [0, 1, 2]: Rectangle {
+        x: root.frame_w - 3px + i * 1px; y: root.frame_h - 1px - i * 1px;
+        width: 1px; height: 1px;
+        background: FlipperTheme.black;
+    }
+
+    // Drop shadow. One pixel longer than the edge it shadows so the two runs
+    // meet at the bottom-right stair.
+    Rectangle {
+        x: 3px; y: root.frame_h;
+        width: root.frame_w - 5px; height: 1px;
+        background: FlipperTheme.black;
+    }
+    Rectangle {
+        x: root.frame_w; y: 3px;
+        width: 1px; height: root.frame_h - 5px;
+        background: FlipperTheme.black;
+    }
+
+    // The two pixels that give the bottom-right corner its weight.
+    Rectangle {
+        x: root.frame_w - 2px; y: root.frame_h - 1px;
+        width: 1px; height: 1px;
+        background: FlipperTheme.black;
+    }
+    Rectangle {
+        x: root.frame_w - 1px; y: root.frame_h - 2px;
+        width: 1px; height: 1px;
+        background: FlipperTheme.black;
+    }
+}
+
+// A bottom-bar soft button, built from single-pixel rectangles.
+//
+// Horizontal geometry measured pixel by pixel from the Figma export
+// (tests/reference/soft_button_bar.png). Each button is 48 wide on a 52 pitch, so
+// 5 * 48 + 4 * 4 = 256 and the row fills the panel exactly.
+//
+// The height is 14, matching the device rather than the export's 17. The export
+// and fake-flipctl2 disagree on it and 14 is the decision, so the reference test
+// checks the horizontal geometry and the chamfer rows, which are height
+// independent, rather than the whole strip.
+//
+// The corner is a 3px 45-degree diagonal: the fill steps in 3, 2, 1, 0 over the
+// first four rows, the top edge spans x+3 to x+w-4, and two explicit pixels at
+// (2,1) and (1,2) complete each corner. There is no bottom border, because the
+// strip runs to the bottom of the panel.
+//
+// The outer two slots are special, and the reference is unambiguous about it:
+// slot 0 has no left border and its top edge starts at x0; slot 4 has no right
+// border and its top edge runs to x255. A side that behaves that way is `flush`.
+export component SoftButton {
+    in property <string> label;
+    in property <bool> pressed;
+    in property <bool> disabled;
+    in property <bool> flush_left;
+    in property <bool> flush_right;
+
+    height: FlipperTheme.button_h;
+
+    // Disabled keeps the white fill and greys the label. canvas.js was
+    // inconsistent (white fill for middle slots, #cccccc for the outer two);
+    // white everywhere is the resolution.
+    property <color> ground: root.pressed && !root.disabled
+        ? FlipperTheme.black : FlipperTheme.white;
+    property <color> ink: root.disabled
+        ? FlipperTheme.disabled_fg
+        : (root.pressed ? FlipperTheme.white : FlipperTheme.black);
+    property <color> edge: root.disabled ? FlipperTheme.disabled_fg : FlipperTheme.black;
+
+    // Per-row inset on each side for the four chamfered rows. A flush side never
+    // steps in.
+    property <length> l0: root.flush_left ? 0 : 3px;
+    property <length> l1: root.flush_left ? 0 : 2px;
+    property <length> l2: root.flush_left ? 0 : 1px;
+    property <length> r0: root.flush_right ? 0 : 3px;
+    property <length> r1: root.flush_right ? 0 : 2px;
+    property <length> r2: root.flush_right ? 0 : 1px;
+
+    Rectangle {
+        x: root.l0; y: 0;
+        width: root.width - root.l0 - root.r0; height: 1px;
+        background: root.ground;
+    }
+    Rectangle {
+        x: root.l1; y: 1px;
+        width: root.width - root.l1 - root.r1; height: 1px;
+        background: root.ground;
+    }
+    Rectangle {
+        x: root.l2; y: 2px;
+        width: root.width - root.l2 - root.r2; height: 1px;
+        background: root.ground;
+    }
+    Rectangle {
+        x: 0; y: 3px;
+        width: root.width; height: root.height - 3px;
+        background: root.ground;
+    }
+
+    // Top edge, held back by whichever corners are chamfered.
+    Rectangle {
+        x: root.l0; y: 0;
+        width: root.width - root.l0 - root.r0; height: 1px;
+        background: root.edge;
+    }
+
+    if !root.flush_left: Rectangle {
+        x: 2px; y: 1px; width: 1px; height: 1px; background: root.edge;
+    }
+    if !root.flush_left: Rectangle {
+        x: 1px; y: 2px; width: 1px; height: 1px; background: root.edge;
+    }
+    if !root.flush_left: Rectangle {
+        x: 0; y: 3px; width: 1px; height: root.height - 3px; background: root.edge;
+    }
+
+    if !root.flush_right: Rectangle {
+        x: root.width - 3px; y: 1px; width: 1px; height: 1px; background: root.edge;
+    }
+    if !root.flush_right: Rectangle {
+        x: root.width - 2px; y: 2px; width: 1px; height: 1px; background: root.edge;
+    }
+    if !root.flush_right: Rectangle {
+        x: root.width - 1px; y: 3px; width: 1px; height: root.height - 3px; background: root.edge;
+    }
+
+    // Label: centred on an integer pixel, two rows down, which is canvas.js's
+    // `_btnText` offset for a 14px button and leaves the 7px caps sitting on rows
+    // 4..10. The width used for centring is the prototype's textWidth, one less
+    // than Slint's measured width; see statusbar.slint.
+    Text {
+        x: Math.floor((root.width - (self.width - 1px)) / 1px / 2) * 1px;
+        y: 2px;
+        text: root.label;
+        font-size: 16px;
+        color: root.ink;
+    }
+}

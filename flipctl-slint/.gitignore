@@ -1,0 +1,6 @@
+# Build output.
+target/
+
+# Written by the golden-image harness when a render does not match, so it sits
+# next to the golden for comparison. Never source.
+*.actual.png

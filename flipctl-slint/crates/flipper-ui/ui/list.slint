@@ -1,0 +1,297 @@
+// The list screen: status bar, up to five MenuLine rows with dividers, the
+// selector frame, and the five-slot bottom button bar.
+//
+// Geometry and colour come from @theme, generated from tokens.toml. Every value
+// the prototype pins is pinned here.
+//
+// The three fonts are pixel fonts on a 64-unit design-pixel grid at 1024
+// units/em, so they rasterise with zero partial coverage at 16px and only at
+// 16px. Font size is therefore never a free parameter.
+import "../../../third_party/flipctl-fonts/HaxrCorp4090-FlipCTL/HaxrCorp4090-FlipCTL.ttf";
+import "../../../third_party/flipctl-fonts/Busy9px-FlipCTL/Busy9px-FlipCTL.ttf";
+import "../../../third_party/flipctl-fonts/Born2bSportyV2-FlipCTL/Born2bSportyV2-FlipCTL.ttf";
+
+import { FlipperTheme } from "@theme";
+import { SelectorFrame, SoftButton } from "frame.slint";
+import { StatusBar } from "statusbar.slint";
+
+export struct ListItem {
+    label: string,
+    status: string,
+    // 0 none, else 1-based index into the icon table below.
+    icon: int,
+    // Frames in the icon's animated strip, 1 for a static icon.
+    frames: int,
+}
+
+// One menu row: a 14px icon inset 3px, the label 4px past it, and an optional
+// right-aligned status.
+//
+// Transcribed from component-library/MenuLine.js. Two details there are easy to
+// miss and both were wrong here first time round:
+//
+//   * the status text never changes font. The label swaps Busy9px for
+//     Born2bSportyV2 when the row is active; the status stays on Busy9px so the
+//     row's right-hand information keeps the same weight in every state, and only
+//     its colour changes.
+//   * the active label sits one pixel higher. Born2bSporty's caps read high
+//     against the selector frame, and this conversion of it sits 2px lower than
+//     the old Medium, so the prototype passes activeLabelYNudge: -1.
+component MenuLine inherits Rectangle {
+    in property <string> label;
+    in property <string> status;
+    in property <bool> selected;
+    in property <bool> pressed;
+    in property <int> icon;
+    in property <int> frames: 1;
+    // Advances every icon_frame_ms while a row is active. Driven from the render
+    // loop rather than animation-tick() so the loop knows to repaint.
+    in property <int> tick;
+
+    background: transparent;
+    height: FlipperTheme.menu_line_h;
+
+    property <bool> active: root.selected || root.pressed;
+    property <color> content: root.pressed ? FlipperTheme.white : FlipperTheme.black;
+
+    // A strip is one tall image; source-clip selects the frame. An unselected row
+    // shows frame 0, so the highlight jumps straight to frame 1, otherwise the
+    // first active frame is identical to the static one and the motion is missed.
+    property <int> frame: root.active && root.frames > 1
+        ? Math.mod(root.tick + 1, root.frames)
+        : 0;
+
+    if root.icon > 0: Image {
+        x: FlipperTheme.icon_pad;
+        y: FlipperTheme.icon_pad;
+        width: 14px;
+        height: 14px;
+        source-clip-x: 0;
+        source-clip-y: root.frame * 14;
+        source-clip-width: 14;
+        source-clip-height: 14;
+        source: root.icon == 1 ? @image-url("../assets/icons/desktop_computer.png")
+            : root.icon == 2 ? @image-url("../assets/icons/flipper_os.png")
+            : root.icon == 3 ? @image-url("../assets/icons/apps_animated.png")
+            : root.icon == 4 ? @image-url("../assets/icons/files_animated.png")
+            : root.icon == 5 ? @image-url("../assets/icons/network_animated.png")
+            : root.icon == 6 ? @image-url("../assets/icons/testing_animated.png")
+            : root.icon == 7 ? @image-url("../assets/icons/settings_animated.png")
+            : @image-url("../assets/icons/media.png");
+        colorize: root.content;
+    }
+
+    Text {
+        x: FlipperTheme.icon_pad + 14px + FlipperTheme.icon_text_gap;
+        y: root.active
+            ? FlipperTheme.text_draw_y - 1px
+            : FlipperTheme.text_draw_y;
+        text: root.label;
+        font-size: 16px;
+        font-family: root.active ? "Born2bSportyV2" : "Busy9px";
+        color: root.content;
+    }
+
+    Text {
+        // See the note in statusbar.slint: the prototype's textWidth is one less
+        // than Slint's measured width.
+        x: root.width - FlipperTheme.status_pad_r - (self.width - 1px);
+        y: FlipperTheme.text_draw_y;
+        text: root.status;
+        font-size: 16px;
+        font-family: "Busy9px";
+        color: root.pressed
+            ? FlipperTheme.white
+            : (root.selected ? FlipperTheme.black : FlipperTheme.status_dim);
+    }
+}
+
+export component MenuBody inherits Rectangle {
+    width: 100%;
+    height: 100%;
+    background: FlipperTheme.white;
+    in property <[ListItem]> items;
+    in property <int> selected;
+    // First visible row. Seven items in a five-row viewport, so the list scrolls.
+    in property <int> scroll;
+    in property <int> tick;
+    in property <bool> pressed;
+    in property <int> battery: -1;
+    in property <bool> charging;
+    in property <bool> wifi_connected;
+    in property <int> wifi_quality;
+    in property <int> ethernet;
+    in property <bool> recording;
+    in property <bool> modem_available;
+    in property <string> access_tech: "--";
+    in property <int> modem_quality;
+    // One entry per physical soft key, in silkscreen order: esc, view, power,
+    // edit, run. Slot i labels the key beneath it, so a model of any other length
+    // shifts every label onto the wrong key. An empty string draws no button.
+    in property <[string]> hints;
+    // false: Slint border-radius. true: the transcribed MenuSelectorFrame.
+    in property <bool> real_frame;
+
+    property <length> selector_y: FlipperTheme.list_container_y
+        + (root.selected - root.scroll) * (FlipperTheme.menu_line_h + 1px)
+        + FlipperTheme.selector_y_offset;
+    // The selector is narrower when the scrollbar is present, so it does not run
+    // under it.
+    property <length> selector_w: root.total > FlipperTheme.list_visible_rows
+        ? FlipperTheme.selector_w_scroll
+        : FlipperTheme.selector_w_full;
+    in property <int> total;
+
+    // Live status bar. Values come from status::StatusSource, which reads sysfs.
+    StatusBar {
+        x: 0;
+        y: 0;
+        battery: root.battery;
+        charging: root.charging;
+        wifi_connected: root.wifi_connected;
+        wifi_quality: root.wifi_quality;
+        ethernet: root.ethernet;
+        recording: root.recording;
+        modem_available: root.modem_available;
+        access_tech: root.access_tech;
+        modem_quality: root.modem_quality;
+    }
+
+    // Press flash, painted BEHIND the rows: the row then redraws its own
+    // content in white on top, which is how the prototype gets inverted text
+    // over a filled selector.
+    if root.pressed && !root.real_frame: Rectangle {
+        x: FlipperTheme.selector_x;
+        y: root.selector_y;
+        width: root.selector_w;
+        height: FlipperTheme.selector_h;
+        border-radius: FlipperTheme.menu;
+        background: FlipperTheme.black;
+    }
+
+    // Rows, stacked flush with a one-pixel divider between adjacent pairs.
+    //
+    // Only the viewport's worth is drawn, and positioned by `i - scroll`. Drawing
+    // every item and positioning by absolute index puts the off-screen rows on top
+    // of the button strip.
+    for item[i] in root.items: Rectangle {
+        x: FlipperTheme.list_container_x;
+        y: FlipperTheme.list_container_y
+            + (i - root.scroll) * (FlipperTheme.menu_line_h + 1px);
+        width: FlipperTheme.list_container_w;
+        height: FlipperTheme.menu_line_h;
+        background: transparent;
+        visible: i >= root.scroll && i < root.scroll + FlipperTheme.list_visible_rows;
+
+        MenuLine {
+            width: parent.width;
+            label: item.label;
+            status: item.status;
+            icon: item.icon;
+            frames: item.frames;
+            tick: root.tick;
+            selected: i == root.selected;
+            pressed: i == root.selected && root.pressed;
+        }
+
+        // No divider above the first visible row.
+        //
+        // The divider is positioned by the selector, not by the row: menu.js uses
+        // `dividerX = SELECTOR_X + SELECTOR_CORNER_R` and
+        // `dividerW = selectorW - 2 * SELECTOR_CORNER_R`, so it starts and ends
+        // exactly where the selector frame's straight edges do and tracks the
+        // scrollbar's presence with it. Using the row's own width instead makes it
+        // 14px short and 2px left of where it belongs.
+        if i > root.scroll: Rectangle {
+            x: FlipperTheme.selector_x + FlipperTheme.menu - parent.x;
+            y: -1px;
+            width: root.selector_w - 2 * FlipperTheme.menu;
+            height: 1px;
+            background: FlipperTheme.divider;
+        }
+    }
+
+    // Selector outline, painted on top of the rows and the dividers. Two pixels
+    // taller than the row and inset by one so it sits centred over it.
+    if !root.real_frame: Rectangle {
+        x: FlipperTheme.selector_x;
+        y: root.selector_y;
+        width: root.selector_w;
+        height: FlipperTheme.selector_h;
+        border-width: 1px;
+        border-radius: FlipperTheme.menu;
+        border-color: FlipperTheme.black;
+        background: transparent;
+    }
+    if root.real_frame: SelectorFrame {
+        x: FlipperTheme.selector_x;
+        y: root.selector_y;
+        frame_w: root.selector_w;
+        frame_h: FlipperTheme.selector_h;
+        filled: root.pressed;
+    }
+
+    // Bottom bar: five 48px slots, 2px gaps, 48 * 5 + 2 * 4 = 256 exactly. The
+    // outer slots run flush to the screen edge and so lose their outer stair.
+    // Scrollbar. Dotted 1px track over its full range with a 3px thumb centred on
+    // it, shown only when there is more than a viewport of items. Thumb height is
+    // max(5, round(range * visible / total)); thumb_pad keeps it clear of both
+    // ends. Transcribed from UI.Scrollbar.
+    if root.total > FlipperTheme.list_visible_rows: Rectangle {
+        x: FlipperTheme.scrollbar_x - 1px;
+        y: FlipperTheme.scrollbar_y;
+        width: FlipperTheme.scrollbar_w;
+        height: FlipperTheme.scrollbar_h;
+        background: transparent;
+
+        property <length> range: FlipperTheme.scrollbar_h - 2 * FlipperTheme.scrollbar_thumb_pad;
+        property <length> thumb_h: Math.max(
+            FlipperTheme.scrollbar_thumb_min / 1px,
+            Math.round(root.total > 0
+                ? (self.range / 1px) * FlipperTheme.list_visible_rows / root.total
+                : 0)
+        ) * 1px;
+        property <int> max_scroll: root.total - FlipperTheme.list_visible_rows;
+
+        for dot[i] in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+                       19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
+                       35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
+                       51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63]: Rectangle {
+            x: 1px;
+            y: dot * 2px;
+            width: 1px;
+            height: 1px;
+            background: dot * 2 < FlipperTheme.scrollbar_h / 1px
+                ? FlipperTheme.black : FlipperTheme.white;
+        }
+
+        Rectangle {
+            x: 0;
+            y: FlipperTheme.scrollbar_thumb_pad + Math.round(
+                (parent.max_scroll > 0
+                    ? ((parent.range - parent.thumb_h) / 1px) * root.scroll / parent.max_scroll
+                    : 0)) * 1px;
+            width: FlipperTheme.scrollbar_w;
+            height: parent.thumb_h;
+            background: FlipperTheme.black;
+        }
+    }
+
+    // Mirrors layout::soft_slot_x: a uniform grid, because 5 * 48 + 4 * 4 = 256
+    // makes both outer edges land flush without special-casing either end.
+    for hint[i] in root.hints: Rectangle {
+        x: i * (FlipperTheme.button_w + FlipperTheme.button_gap);
+        y: parent.height - FlipperTheme.button_h;
+        width: FlipperTheme.button_w;
+        height: FlipperTheme.button_h;
+        background: transparent;
+
+        if hint != "": SoftButton {
+            width: parent.width;
+            label: hint;
+            // The reference shows the outer slots without their outer border.
+            flush_left: i == 0;
+            flush_right: i == 4;
+        }
+    }
+}

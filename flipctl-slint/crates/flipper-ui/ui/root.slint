@@ -1,0 +1,94 @@
+// The one window.
+//
+// FlipperSlintPlatform hands out a single MinimalSoftwareWindow, and the last
+// component constructed binds itself to it, so two `Window` components cannot
+// coexist: whichever was built second owns the panel regardless of `show()`.
+// A device with one screen therefore wants one Window that switches bodies, which
+// is also the shape a scene stack needs later.
+import { FlipperTheme } from "@theme";
+import { MenuBody, ListItem } from "list.slint";
+import { IdleBody, IdleLink } from "idle.slint";
+
+export { ListItem, IdleLink }
+
+export enum Screen { idle, menu }
+
+export component Root inherits Window {
+    width: 256px;
+    height: 144px;
+    background: FlipperTheme.white;
+    default-font-family: "HaxrCorp 4090";
+    default-font-size: 16px;
+
+    in property <Screen> screen: Screen.idle;
+
+    // Status bar, shared by every screen.
+    in property <int> battery: -1;
+    in property <bool> charging;
+    in property <bool> wifi_connected;
+    in property <int> wifi_quality;
+    in property <int> ethernet;
+    in property <bool> recording;
+    in property <bool> modem_available;
+    in property <string> access_tech: "--";
+    in property <int> modem_quality;
+
+    // Idle screen.
+    in property <int> battery_temp: -32768;
+    in property <int> cpu_temp: -32768;
+    in property <int> power_mw: -32768;
+    in property <string> hostname;
+    in property <string> profile;
+    in property <[IdleLink]> links;
+    in property <[string]> idle_hints;
+    in property <int> idle_pressed_slot: -1;
+
+    // Menu.
+    in property <[ListItem]> items;
+    in property <int> selected;
+    in property <int> scroll;
+    in property <int> total;
+    in property <int> tick;
+    in property <bool> pressed;
+    in property <bool> real_frame: true;
+    in property <[string]> menu_hints;
+
+    if root.screen == Screen.idle: IdleBody {
+        battery: root.battery;
+        charging: root.charging;
+        wifi_connected: root.wifi_connected;
+        wifi_quality: root.wifi_quality;
+        ethernet: root.ethernet;
+        modem_available: root.modem_available;
+        access_tech: root.access_tech;
+        modem_quality: root.modem_quality;
+        battery_temp: root.battery_temp;
+        cpu_temp: root.cpu_temp;
+        power_mw: root.power_mw;
+        hostname: root.hostname;
+        profile: root.profile;
+        links: root.links;
+        hints: root.idle_hints;
+        pressed_slot: root.idle_pressed_slot;
+    }
+
+    if root.screen == Screen.menu: MenuBody {
+        battery: root.battery;
+        charging: root.charging;
+        wifi_connected: root.wifi_connected;
+        wifi_quality: root.wifi_quality;
+        ethernet: root.ethernet;
+        recording: root.recording;
+        modem_available: root.modem_available;
+        access_tech: root.access_tech;
+        modem_quality: root.modem_quality;
+        items: root.items;
+        selected: root.selected;
+        scroll: root.scroll;
+        total: root.total;
+        tick: root.tick;
+        pressed: root.pressed;
+        real_frame: root.real_frame;
+        hints: root.menu_hints;
+    }
+}

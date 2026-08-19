@@ -1,0 +1,17 @@
+[package]
+name = "flipper-ui-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Walks every flipper-ui component on the panel, a serial console or a browser"
+
+[features]
+default = []
+device = ["flipper-ui/device"]
+remote = ["flipper-ui/remote"]
+slint = ["flipper-ui/slint", "dep:png", "dep:slint"]
+
+[dependencies]
+flipper-ui.workspace = true
+png = { version = "0.17", optional = true }
+slint = { version = "1.17", default-features = false, features = ["compat-1-2", "renderer-software", "std", "unsafe-single-threaded"], optional = true }
