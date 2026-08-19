@@ -327,6 +327,8 @@ var BootMenuScene = (function() {
             : isFactory(p.name, p.origin)
                 ? ['Clone', 'Factory Reset', 'Auto Start']
                 : ['Rename', 'Clone', 'Factory Reset', 'Delete', 'Auto Start'];
+        // The booted profile cannot be deleted (delete-profile refuses it), so drop Delete.
+        if (p.booted) this._editOptions = this._editOptions.filter(function(o) { return o !== 'Delete'; });
         this._fetchSize();
         if (window.requestRender) window.requestRender();
     };
@@ -816,6 +818,28 @@ var BootMenuScene = (function() {
         return s + '..';
     }
 
+    // Word-wrap to lines no wider than maxW; a word longer than maxW (e.g. a long
+    // subvol name with no spaces) is hard-broken across lines.
+    function wrapText(F, s, maxW) {
+        var words = String(s).split(/\s+/), lines = [], cur = '';
+        for (var i = 0; i < words.length; i++) {
+            var w = words[i];
+            if (!w) continue;
+            var test = cur ? cur + ' ' + w : w;
+            if (F.textWidth(test) <= maxW) { cur = test; continue; }
+            if (cur) { lines.push(cur); cur = ''; }
+            while (F.textWidth(w) > maxW) {
+                var k = w.length;
+                while (k > 1 && F.textWidth(w.slice(0, k)) > maxW) k--;
+                lines.push(w.slice(0, k));
+                w = w.slice(k);
+            }
+            cur = w;
+        }
+        if (cur) lines.push(cur);
+        return lines.length ? lines : [''];
+    }
+
     // "Last used" for the Info popup: 'now' -> Running, empty/never -> never,
     // else "X ago (YYYY-MM-DD HH:MM:SS)".
     function infoLastUsed(lu) {
@@ -846,8 +870,10 @@ var BootMenuScene = (function() {
                              F.textWidth('OK = yes    Back = no'));
             bodyH = this._confirm.msg2 ? 44 : 32;
         } else if (this._actionError) {
-            bodyW = Math.max(F.textWidth(this._actionError), F.textWidth('Press any key'));
-            bodyH = 32;
+            var errLines = wrapText(F, this._actionError, 240);
+            for (var ei = 0; ei < errLines.length; ei++) bodyW = Math.max(bodyW, F.textWidth(errLines[ei]));
+            bodyW = Math.max(bodyW, F.textWidth('Press any key'));
+            bodyH = errLines.length * 12 + 20;
         } else if (this._busy) {
             bodyW = F.textWidth(this._busy + ' /');
             bodyH = 22;
@@ -877,8 +903,10 @@ var BootMenuScene = (function() {
                 if (this._confirm.msg2) line(this._confirm.msg2, cy + 12, '#000');
                 line('OK = yes    Back = no', cy + (this._confirm.msg2 ? 26 : 16), '#999999');
             } else if (this._actionError) {
-                line(this._actionError, cy, '#000');
-                line('Press any key', cy + 16, '#999999');
+                var el = wrapText(F2, this._actionError, 240);
+                var top = fy + HDR + Math.floor(((fh - HDR) - (el.length * 12 + 12)) / 2);
+                for (var li = 0; li < el.length; li++) line(el[li], top + li * 12, '#000');
+                line('Press any key', top + el.length * 12 + 2, '#999999');
             } else {
                 line(this._busy + ' ' + this._spinFrames[this._spinIndex], cy + 4, '#666666');
             }
