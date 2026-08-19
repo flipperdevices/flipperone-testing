@@ -350,6 +350,58 @@ fn the_soft_button_strip_matches_the_design_export() {
     );
 }
 
+/// A pressed menu row fills black and inverts its label and icon to white.
+///
+/// The fill has to be painted behind the row and the outline over it, exactly as
+/// the prototype's scene does. Drawing one filled selector after the row instead
+/// buries the row's own content: the label and the icon vanish into the fill
+/// rather than inverting, which measures as a solid black band.
+#[test]
+fn a_pressed_row_inverts_its_label_and_icon() {
+    let window = FlipperSlintPlatform::install();
+    let screen = Root::new().expect("create Root");
+    screen.set_screen(Screen::Menu);
+    list_screen(&screen, false);
+    screen.show().expect("show");
+
+    let stride = usize::from(theme::PANEL_W);
+    // Row 0's icon box and label area.
+    let icon = (8usize..22, 28usize..42);
+    let label = (24usize..120, 28usize..42);
+    let count = |frame: &[flipper_ui::Gray8], (xs, ys): (std::ops::Range<usize>, std::ops::Range<usize>), want: u8| {
+        ys.clone()
+            .flat_map(|y| xs.clone().map(move |x| (x, y)))
+            .filter(|(x, y)| frame[y * stride + x].0 == want)
+            .count()
+    };
+
+    screen.set_pressed(false);
+    slint::platform::update_timers_and_animations();
+    let rest = render_frame(&window).expect("rest");
+    let rest_icon_ink = count(&rest, icon.clone(), 0);
+    let rest_label_ink = count(&rest, label.clone(), 0);
+    assert!(rest_icon_ink > 0 && rest_label_ink > 0, "the row draws at rest");
+
+    screen.set_pressed(true);
+    slint::platform::update_timers_and_animations();
+    let down = render_frame(&window).expect("pressed");
+
+    assert!(
+        count(&down, icon.clone(), 255) > 0,
+        "the icon must invert to white, not vanish into the fill"
+    );
+    assert!(
+        count(&down, label.clone(), 255) > 0,
+        "the label must invert to white, not vanish into the fill"
+    );
+    // And it really is an inversion: what was ink is now ground and vice versa.
+    assert_eq!(
+        count(&down, label.clone(), 255),
+        rest_label_ink,
+        "the pressed label's white pixels should match the resting label's ink"
+    );
+}
+
 /// A pressed soft button fills black and inverts its label to white.
 ///
 /// Checked from the pixels because the flash lasts 30ms on the device, which is
@@ -461,4 +513,80 @@ fn the_power_block_does_not_move_with_the_cpu_reading() {
         Some(usize::try_from(theme::metric::POWER_ICON_X).unwrap()),
         "the power block should sit at the pinned x"
     );
+}
+
+/// An app's log shows a scrollbar exactly when its buffer is deeper than the
+/// window, and the thumb tracks the offset.
+///
+/// The bar hides when everything fits, which is the menu's rule too
+/// (`Scrollbar.shouldShow()` is `totalItems > visibleItems`). A default ping run
+/// produces seven lines against a window of eight, so no bar: that is correct, and
+/// it is why one is not visible without turning the count up.
+#[test]
+fn an_app_log_scrolls_when_it_overflows() {
+    let window = FlipperSlintPlatform::install();
+    let screen = Root::new().expect("create Root");
+    screen.set_screen(Screen::AppLog);
+    screen.set_app_title("Ping 1.1.1.1".into());
+    screen.show().expect("show");
+
+    let stride = usize::from(theme::PANEL_W);
+    // The bar sits one pixel left of scrollbar_x so the 3px thumb is centred on
+    // the dotted track, matching UI.Scrollbar.
+    let bar_x = usize::try_from(theme::metric::SCROLLBAR_X).unwrap() - 1;
+    let bar_w = usize::try_from(theme::metric::SCROLLBAR_W).unwrap();
+    let strip_top = usize::from(theme::PANEL_H) - usize::try_from(theme::metric::BUTTON_H).unwrap();
+    // Only the log area: the status bar is solid ink, so scanning from row 0 would
+    // report every one of its rows as thumb.
+    let thumb_rows = |frame: &[flipper_ui::Gray8]| -> Vec<usize> {
+        (usize::try_from(theme::metric::STATUS_BAR_H).unwrap()..strip_top)
+            .filter(|y| (bar_x..bar_x + bar_w).all(|x| frame[y * stride + x] == flipper_ui::Gray8(0)))
+            .collect()
+    };
+    let lines = |n: usize| {
+        slint::ModelRc::new(slint::VecModel::from(
+            (0..n)
+                .map(|i| slint::SharedString::from(format!("seq {i}")))
+                .collect::<Vec<_>>(),
+        ))
+    };
+
+    // Fits: no bar.
+    screen.set_app_lines(lines(7));
+    screen.set_app_log_total(7);
+    screen.set_app_log_offset(0);
+    slint::platform::update_timers_and_animations();
+    let fits = render_frame(&window).expect("frame");
+    assert!(
+        thumb_rows(&fits).is_empty(),
+        "no scrollbar when everything fits"
+    );
+
+    // Overflows, at the top: a thumb, high up.
+    screen.set_app_lines(lines(8));
+    screen.set_app_log_total(50);
+    screen.set_app_log_offset(0);
+    slint::platform::update_timers_and_animations();
+    let top = thumb_rows(&render_frame(&window).expect("frame"));
+    assert!(!top.is_empty(), "a deeper buffer must show a scrollbar");
+
+    // Same buffer, scrolled to the end: the thumb moves down.
+    screen.set_app_log_offset(42);
+    slint::platform::update_timers_and_animations();
+    let bottom = thumb_rows(&render_frame(&window).expect("frame"));
+    assert!(!bottom.is_empty(), "still a scrollbar at the bottom");
+    assert!(
+        bottom[0] > top[0],
+        "the thumb must track the offset: top started at {}, bottom at {}",
+        top[0],
+        bottom[0]
+    );
+    // And it stays inside the log area, clear of the status bar and the buttons.
+    for rows in [&top, &bottom] {
+        assert!(
+            rows[0] >= usize::try_from(theme::metric::STATUS_BAR_H).unwrap()
+                && *rows.last().unwrap() < strip_top,
+            "the thumb must stay between the status bar and the strip: {rows:?}"
+        );
+    }
 }

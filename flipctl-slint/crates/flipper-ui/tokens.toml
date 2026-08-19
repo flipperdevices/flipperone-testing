@@ -114,6 +114,16 @@ msgbox_right_pad    = 12    # MessageBox.js textRightPadding
 
 tab_h               = 17    # canvas.js TAB_H
 
+# Idle screen readout positions, all fixed. desktop.js places the battery and CPU
+# glyphs at literal x, which is why neither ever moved; only the power icon was
+# derived from measured text. Tokenised so the whole row is described in one place.
+battery_icon_x      = 36
+cpu_icon_x          = 82
+temp_label_x        = 57
+power_label_x       = 163
+# Gap between a glyph and its reading, from drawThermalCard.
+readout_gap         = 3
+
 # Left edge of the power-flow icon on the idle screen.
 #
 # desktop.js derives this from the CPU reading's measured width
@@ -129,6 +139,10 @@ power_icon_x        = 162
 # a count used as a length is a type error in the generated Slint theme.
 [count]
 list_visible_rows = 5    # menu.js VISIBLE_COUNT
+# Lines an app's log body shows. The body starts at status_bar_h + 18 and the soft
+# strip starts at 130, so 8 lines of item_h fit with the last one clear of the
+# buttons: 31 + 7 * 12 + 11 = 126.
+log_visible_lines = 8
 msgbox_max_chars  = 25   # MessageBox.js maxLineLength
 
 # drawRoundRect / drawRoundFrame accept these three only; anything else falls

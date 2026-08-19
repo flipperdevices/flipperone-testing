@@ -52,6 +52,10 @@ fn main() -> ExitCode {
     }
 }
 
+/// The app list and an app form supply their own soft labels; the list has none.
+#[cfg(feature = "slint")]
+const EMPTY_HINTS: [String; 0] = [];
+
 const USAGE: &str = "\
 usage: flipper-ui-demo [--panel [--kms-device PATH]] [--png PATH]
 
@@ -144,6 +148,36 @@ mod demo {
     pub const SOFT_LABELS: [&str; 5] = ["", "", "", "", ""];
 }
 
+/// Show a list of apps, or an app's own form, on the shared list body.
+#[cfg(feature = "slint")]
+fn apply_app_list(
+    screen: &flipper_ui::ui::Root,
+    rows: &[(String, String)],
+    selected: i32,
+    hints: &[String],
+) {
+    let items: Vec<flipper_ui::ui::ListItem> = rows
+        .iter()
+        .map(|(label, value)| flipper_ui::ui::ListItem {
+            label: label.as_str().into(),
+            status: value.as_str().into(),
+            // Apps have no icons yet. The column stays reserved so a manifest can
+            // name one later without the labels shifting.
+            icon: 0,
+            frames: 1,
+        })
+        .collect();
+    screen.set_app_total(items.len() as i32);
+    screen.set_app_selected(selected);
+    screen.set_app_items(slint::ModelRc::new(slint::VecModel::from(items)));
+    screen.set_app_hints(slint::ModelRc::new(slint::VecModel::from(
+        hints
+            .iter()
+            .map(|h| slint::SharedString::from(h.as_str()))
+            .collect::<Vec<_>>(),
+    )));
+}
+
 /// Copy the idle screen's own fields across.
 #[cfg(feature = "slint")]
 fn apply_idle(screen: &flipper_ui::ui::Root, idle: &flipper_ui::status::Idle) {
@@ -201,7 +235,7 @@ fn png(path: &str, press: Option<i32>) -> std::io::Result<()> {
     if let Some(now) = status.poll() {
         apply_status(&screen, now);
     }
-    apply_idle(&screen, &flipper_ui::StatusSource::read_idle());
+    apply_idle(&screen, &flipper_ui::status::Idle::read_all());
     if let Some(slot) = press {
         screen.set_idle_pressed_slot(slot);
     }
@@ -306,8 +340,25 @@ fn panel(
     let window = FlipperSlintPlatform::install();
     let screen = demo::build();
     screen.show().expect("show");
-    apply_idle(&screen, &flipper_ui::StatusSource::read_idle());
-    let mut idle_poll = Instant::now();
+    // Three cadences, by what actually moves: sensors every 5s as desktop.js
+    // does, addresses every 30s because a cable or a lease can change them, and
+    // hostname and profile once because the booted subvol cannot change without a
+    // reboot.
+    let mut idle = flipper_ui::status::Idle::read_all();
+    apply_idle(&screen, &idle);
+    let mut sensor_poll = Instant::now();
+    let mut link_poll = Instant::now();
+
+    // Apps live next to the binary's workspace root, so a deployed tree finds
+    // them without configuration.
+    let apps = flipper_ui::app::discover(std::path::Path::new("apps"));
+    eprintln!(
+        "apps           {} found: {:?}",
+        apps.len(),
+        apps.iter().map(|a| &a.name).collect::<Vec<_>>()
+    );
+    let mut app_selected = 0i32;
+    let mut running: Option<flipper_ui::RunningApp> = None;
 
     // Frame buffer is allocated once and reused, so the steady state does not
     // allocate. flipctl inherits this requirement; the boot menu and the
@@ -319,6 +370,7 @@ fn panel(
     // Slint's animation-tick so the loop knows a repaint is due.
     let mut tick = 0i32;
     let mut icon_tick = Instant::now();
+    let mut last_selected = selected;
     let flash = Duration::from_millis(timing::PRESS_FLASH_MS as u64);
     let mut flash_until: Option<Instant> = None;
     // Which soft slot is showing its pressed state, and what to do when the flash
@@ -418,6 +470,55 @@ fn panel(
             };
             let labelled_soft = slot.is_some_and(|i| !labels[i].is_empty());
 
+            // While an app is running it owns the keys, except Back, which is
+            // the way out of an app that has stopped responding.
+            if let Some(app) = running.as_mut() {
+                if screen.get_screen() == Screen::AppForm && event.key == FlipperKey::Back {
+                    app.stop();
+                    running = None;
+                    let rows: Vec<(String, String)> = apps
+                        .iter()
+                        .map(|a| (a.name.clone(), String::new()))
+                        .collect();
+                    apply_app_list(&screen, &rows, app_selected, &EMPTY_HINTS);
+                    screen.set_screen(Screen::Apps);
+                } else {
+                    app.send(event);
+                }
+                continue;
+            }
+
+            // The app list.
+            if screen.get_screen() == Screen::Apps {
+                match event.key {
+                    FlipperKey::Down if !apps.is_empty() => {
+                        app_selected = (app_selected + 1).rem_euclid(apps.len() as i32);
+                    }
+                    FlipperKey::Up if !apps.is_empty() => {
+                        app_selected = (app_selected - 1).rem_euclid(apps.len() as i32);
+                    }
+                    FlipperKey::Ok | FlipperKey::Run => {
+                        if let Some(entry) = apps.get(app_selected as usize) {
+                            match flipper_ui::RunningApp::spawn(entry) {
+                                Ok(app) => {
+                                    eprintln!("app            started {}", entry.name);
+                                    running = Some(app);
+                                }
+                                Err(e) => eprintln!("app            {} failed: {e}", entry.name),
+                            }
+                        }
+                    }
+                    FlipperKey::Back | FlipperKey::Escape => screen.set_screen(Screen::Menu),
+                    _ => {}
+                }
+                let rows: Vec<(String, String)> = apps
+                    .iter()
+                    .map(|a| (a.name.clone(), String::new()))
+                    .collect();
+                apply_app_list(&screen, &rows, app_selected, &EMPTY_HINTS);
+                continue;
+            }
+
             match (on_menu_now, event.key) {
                 // Back leaves the menu rather than the program: the menu is not
                 // the root screen any more.
@@ -432,6 +533,15 @@ fn panel(
                 }
                 (true, FlipperKey::Down) => selected = (selected + 1).rem_euclid(demo::ROWS),
                 (true, FlipperKey::Up) => selected = (selected - 1).rem_euclid(demo::ROWS),
+                (true, FlipperKey::Ok) if demo::MENU[selected as usize].0 == "Apps" => {
+                    let rows: Vec<(String, String)> = apps
+                        .iter()
+                        .map(|a| (a.name.clone(), String::new()))
+                        .collect();
+                    apply_app_list(&screen, &rows, app_selected, &EMPTY_HINTS);
+                    screen.set_screen(Screen::Apps);
+                    eprintln!("screen         apps");
+                }
                 (_, FlipperKey::Ok) => flash_until = Some(Instant::now() + flash),
                 // A labelled soft key inverts first and acts when the flash ends.
                 _ if labelled_soft => {
@@ -477,11 +587,64 @@ fn panel(
             );
         }
 
-        // Temperatures and power move slowly and the addresses barely at all, so
-        // this is polled far less often than the status bar.
-        if idle_poll.elapsed() >= Duration::from_secs(5) {
-            idle_poll = Instant::now();
-            apply_idle(&screen, &flipper_ui::StatusSource::read_idle());
+        // An app's scenes arrive on their own schedule, so they are pulled every
+        // iteration rather than on a timer.
+        if let Some(app) = running.as_mut() {
+            if app.poll().is_some() {
+                let scene = app.scene().clone();
+                screen.set_app_title(scene.title.as_str().into());
+                match scene.kind {
+                    flipper_ui::SceneKind::Log => {
+                        screen.set_app_lines(slint::ModelRc::new(slint::VecModel::from(
+                            scene
+                                .rows
+                                .iter()
+                                .map(|(l, _)| slint::SharedString::from(l.as_str()))
+                                .collect::<Vec<_>>(),
+                        )));
+                        screen.set_app_hints(slint::ModelRc::new(slint::VecModel::from(
+                            scene
+                                .hints
+                                .iter()
+                                .map(|h| slint::SharedString::from(h.as_str()))
+                                .collect::<Vec<_>>(),
+                        )));
+                        screen.set_app_log_total(scene.total);
+                        screen.set_app_log_offset(scene.offset);
+                        screen.set_screen(Screen::AppLog);
+                    }
+                    flipper_ui::SceneKind::Form => {
+                        apply_app_list(&screen, &scene.rows, scene.selected, &scene.hints);
+                        screen.set_screen(Screen::AppForm);
+                    }
+                }
+            }
+            // An app that exits returns the user to the list rather than leaving
+            // its last frame on screen forever.
+            if app.finished() {
+                eprintln!("app            exited");
+                running = None;
+                let rows: Vec<(String, String)> = apps
+                    .iter()
+                    .map(|a| (a.name.clone(), String::new()))
+                    .collect();
+                apply_app_list(&screen, &rows, app_selected, &EMPTY_HINTS);
+                screen.set_screen(Screen::Apps);
+            }
+        }
+
+        if sensor_poll.elapsed() >= Duration::from_secs(5) {
+            sensor_poll = Instant::now();
+            if idle.refresh_sensors() {
+                apply_idle(&screen, &idle);
+            }
+        }
+        if link_poll.elapsed() >= Duration::from_secs(30) {
+            link_poll = Instant::now();
+            if idle.refresh_links() {
+                apply_idle(&screen, &idle);
+                eprintln!("links          {} interface(s)", idle.links.len());
+            }
         }
 
         // Keep the selection inside the viewport. Navigation wraps, so jumping
@@ -496,7 +659,17 @@ fn panel(
         screen.set_scroll(scroll);
         screen.set_pressed(flash_until.is_some() && pressed_slot.is_none());
         screen.set_idle_pressed_slot(pressed_slot.map_or(-1, |i| i as i32));
-        if icon_tick.elapsed() >= Duration::from_millis(timing::ICON_FRAME_MS as u64) {
+        // The strip's phase restarts whenever the selection moves. MenuLine.js
+        // measures elapsed time from `_selectedAt`, not from a global clock, so the
+        // first frame drawn after a row lights up is frame 1. Without the reset a
+        // newly selected row can land on frame 0, which is what the unselected row
+        // was already showing, and the motion is missed entirely.
+        if selected != last_selected {
+            last_selected = selected;
+            tick = 0;
+            icon_tick = Instant::now();
+            screen.set_tick(tick);
+        } else if icon_tick.elapsed() >= Duration::from_millis(timing::ICON_FRAME_MS as u64) {
             icon_tick = Instant::now();
             tick += 1;
             screen.set_tick(tick);

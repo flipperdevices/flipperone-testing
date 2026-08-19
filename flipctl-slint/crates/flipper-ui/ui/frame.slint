@@ -18,6 +18,12 @@ export component SelectorFrame {
     in property <length> frame_w;
     in property <length> frame_h;
     in property <bool> filled;
+    // Fill and stroke are separable so a caller can paint the fill behind the row
+    // and the outline over it, which is what the prototype does: fill the
+    // selector, redraw the line on top in white, then stroke the frame. A single
+    // instance drawn after the row buries the row's own label and icon under the
+    // black fill.
+    in property <bool> stroke: true;
 
     width: frame_w + 1px;
     height: frame_h + 1px;
@@ -49,73 +55,77 @@ export component SelectorFrame {
         }
     }
 
-    // Straight edges, each held back by the radius at both ends.
-    Rectangle {
-        x: 3px; y: 0;
-        width: root.frame_w - 6px; height: 1px;
-        background: FlipperTheme.black;
-    }
-    Rectangle {
-        x: 3px; y: root.frame_h - 1px;
-        width: root.frame_w - 6px; height: 1px;
-        background: FlipperTheme.black;
-    }
-    Rectangle {
-        x: 0; y: 3px;
-        width: 1px; height: root.frame_h - 6px;
-        background: FlipperTheme.black;
-    }
-    Rectangle {
-        x: root.frame_w - 1px; y: 3px;
-        width: 1px; height: root.frame_h - 6px;
-        background: FlipperTheme.black;
-    }
+    if stroke: Rectangle {
+        background: transparent;
 
-    // Corner stairs: pixel i of each corner, i in 0..3.
-    for i in [0, 1, 2]: Rectangle {
-        x: i * 1px; y: (2 - i) * 1px;
-        width: 1px; height: 1px;
-        background: FlipperTheme.black;
-    }
-    for i in [0, 1, 2]: Rectangle {
-        x: root.frame_w - 3px + i * 1px; y: i * 1px;
-        width: 1px; height: 1px;
-        background: FlipperTheme.black;
-    }
-    for i in [0, 1, 2]: Rectangle {
-        x: i * 1px; y: root.frame_h - 3px + i * 1px;
-        width: 1px; height: 1px;
-        background: FlipperTheme.black;
-    }
-    for i in [0, 1, 2]: Rectangle {
-        x: root.frame_w - 3px + i * 1px; y: root.frame_h - 1px - i * 1px;
-        width: 1px; height: 1px;
-        background: FlipperTheme.black;
-    }
+        // Straight edges, each held back by the radius at both ends.
+        Rectangle {
+            x: 3px; y: 0;
+            width: root.frame_w - 6px; height: 1px;
+            background: FlipperTheme.black;
+        }
+        Rectangle {
+            x: 3px; y: root.frame_h - 1px;
+            width: root.frame_w - 6px; height: 1px;
+            background: FlipperTheme.black;
+        }
+        Rectangle {
+            x: 0; y: 3px;
+            width: 1px; height: root.frame_h - 6px;
+            background: FlipperTheme.black;
+        }
+        Rectangle {
+            x: root.frame_w - 1px; y: 3px;
+            width: 1px; height: root.frame_h - 6px;
+            background: FlipperTheme.black;
+        }
 
-    // Drop shadow. One pixel longer than the edge it shadows so the two runs
-    // meet at the bottom-right stair.
-    Rectangle {
-        x: 3px; y: root.frame_h;
-        width: root.frame_w - 5px; height: 1px;
-        background: FlipperTheme.black;
-    }
-    Rectangle {
-        x: root.frame_w; y: 3px;
-        width: 1px; height: root.frame_h - 5px;
-        background: FlipperTheme.black;
-    }
+        // Corner stairs: pixel i of each corner, i in 0..3.
+        for i in [0, 1, 2]: Rectangle {
+            x: i * 1px; y: (2 - i) * 1px;
+            width: 1px; height: 1px;
+            background: FlipperTheme.black;
+        }
+        for i in [0, 1, 2]: Rectangle {
+            x: root.frame_w - 3px + i * 1px; y: i * 1px;
+            width: 1px; height: 1px;
+            background: FlipperTheme.black;
+        }
+        for i in [0, 1, 2]: Rectangle {
+            x: i * 1px; y: root.frame_h - 3px + i * 1px;
+            width: 1px; height: 1px;
+            background: FlipperTheme.black;
+        }
+        for i in [0, 1, 2]: Rectangle {
+            x: root.frame_w - 3px + i * 1px; y: root.frame_h - 1px - i * 1px;
+            width: 1px; height: 1px;
+            background: FlipperTheme.black;
+        }
 
-    // The two pixels that give the bottom-right corner its weight.
-    Rectangle {
-        x: root.frame_w - 2px; y: root.frame_h - 1px;
-        width: 1px; height: 1px;
-        background: FlipperTheme.black;
-    }
-    Rectangle {
-        x: root.frame_w - 1px; y: root.frame_h - 2px;
-        width: 1px; height: 1px;
-        background: FlipperTheme.black;
+        // Drop shadow. One pixel longer than the edge it shadows so the two runs
+        // meet at the bottom-right stair.
+        Rectangle {
+            x: 3px; y: root.frame_h;
+            width: root.frame_w - 5px; height: 1px;
+            background: FlipperTheme.black;
+        }
+        Rectangle {
+            x: root.frame_w; y: 3px;
+            width: 1px; height: root.frame_h - 5px;
+            background: FlipperTheme.black;
+        }
+
+        // The two pixels that give the bottom-right corner its weight.
+        Rectangle {
+            x: root.frame_w - 2px; y: root.frame_h - 1px;
+            width: 1px; height: 1px;
+            background: FlipperTheme.black;
+        }
+        Rectangle {
+            x: root.frame_w - 1px; y: root.frame_h - 2px;
+            width: 1px; height: 1px;
+            background: FlipperTheme.black;
+        }
     }
 }
 

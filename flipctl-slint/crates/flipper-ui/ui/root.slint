@@ -8,10 +8,14 @@
 import { FlipperTheme } from "@theme";
 import { MenuBody, ListItem } from "list.slint";
 import { IdleBody, IdleLink } from "idle.slint";
+import { LogBody } from "log.slint";
 
 export { ListItem, IdleLink }
 
-export enum Screen { idle, menu }
+// Idle is the root. The menu opens over it, the app list over that, and an app's
+// own screens over that. `app_form` and `app_log` are the two scene types the app
+// protocol admits so far.
+export enum Screen { idle, menu, apps, app_form, app_log }
 
 export component Root inherits Window {
     width: 256px;
@@ -43,6 +47,17 @@ export component Root inherits Window {
     in property <[string]> idle_hints;
     in property <int> idle_pressed_slot: -1;
 
+    // App list and app scenes.
+    in property <[ListItem]> app_items;
+    in property <int> app_selected;
+    in property <int> app_total;
+    in property <string> app_title;
+    in property <[string]> app_lines;
+    in property <int> app_log_total;
+    in property <int> app_log_offset;
+    in property <[string]> app_hints;
+    in property <int> app_pressed_slot: -1;
+
     // Menu.
     in property <[ListItem]> items;
     in property <int> selected;
@@ -70,6 +85,44 @@ export component Root inherits Window {
         links: root.links;
         hints: root.idle_hints;
         pressed_slot: root.idle_pressed_slot;
+    }
+
+    // The app list and an app's form are both lists of label/value rows, so they
+    // reuse MenuBody rather than duplicating it. Only the model differs.
+    if root.screen == Screen.apps || root.screen == Screen.app_form: MenuBody {
+        battery: root.battery;
+        charging: root.charging;
+        wifi_connected: root.wifi_connected;
+        wifi_quality: root.wifi_quality;
+        ethernet: root.ethernet;
+        modem_available: root.modem_available;
+        access_tech: root.access_tech;
+        modem_quality: root.modem_quality;
+        items: root.app_items;
+        selected: root.app_selected;
+        scroll: 0;
+        total: root.app_total;
+        tick: root.tick;
+        pressed: root.pressed;
+        real_frame: true;
+        hints: root.app_hints;
+    }
+
+    if root.screen == Screen.app_log: LogBody {
+        battery: root.battery;
+        charging: root.charging;
+        wifi_connected: root.wifi_connected;
+        wifi_quality: root.wifi_quality;
+        ethernet: root.ethernet;
+        modem_available: root.modem_available;
+        access_tech: root.access_tech;
+        modem_quality: root.modem_quality;
+        title: root.app_title;
+        lines: root.app_lines;
+        total: root.app_log_total;
+        offset: root.app_log_offset;
+        hints: root.app_hints;
+        pressed_slot: root.app_pressed_slot;
     }
 
     if root.screen == Screen.menu: MenuBody {

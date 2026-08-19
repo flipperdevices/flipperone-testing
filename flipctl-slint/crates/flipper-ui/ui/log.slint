@@ -1,0 +1,126 @@
+// A scrolling text body, for an app's output.
+//
+// Twelve-pixel lines rather than the menu's 20px rows: ui.js's plain list uses
+// ITEM_H = 12, which fits nine lines under a title on a 144px panel. An app that
+// wants icons and a selector uses the form body instead.
+import { FlipperTheme } from "@theme";
+import { StatusBar } from "statusbar.slint";
+import { SoftButton } from "frame.slint";
+
+export component LogBody inherits Rectangle {
+    in property <string> title;
+    in property <[string]> lines;
+    // Where the window sits in the app's buffer, for the scrollbar.
+    in property <int> total;
+    in property <int> offset;
+    in property <[string]> hints;
+    in property <int> pressed_slot: -1;
+
+    // Status bar, shared with every other screen.
+    in property <int> battery: -1;
+    in property <bool> charging;
+    in property <bool> wifi_connected;
+    in property <int> wifi_quality;
+    in property <int> ethernet;
+    in property <bool> modem_available;
+    in property <string> access_tech: "--";
+    in property <int> modem_quality;
+
+    width: 100%;
+    height: 100%;
+    background: FlipperTheme.white;
+
+    StatusBar {
+        x: 0; y: 0;
+        battery: root.battery;
+        charging: root.charging;
+        wifi_connected: root.wifi_connected;
+        wifi_quality: root.wifi_quality;
+        ethernet: root.ethernet;
+        modem_available: root.modem_available;
+        access_tech: root.access_tech;
+        modem_quality: root.modem_quality;
+    }
+
+    // Title, then a rule, matching the idle screen's banded look.
+    Text {
+        x: FlipperTheme.margin_h;
+        y: FlipperTheme.status_bar_h + 2px;
+        text: root.title;
+        color: FlipperTheme.black;
+    }
+    Rectangle {
+        x: 0;
+        y: FlipperTheme.status_bar_h + 15px;
+        width: parent.width;
+        height: 1px;
+        background: FlipperTheme.divider;
+    }
+
+    // Lines from the rule down to the soft-button strip. Oldest first, so new
+    // output appears at the bottom.
+    //
+    // Clipped to what fits rather than trusting the app's count: an app that sends
+    // one line too many would otherwise draw over the buttons, which is what
+    // happened the first time ping ran.
+    for line[i] in root.lines: Text {
+        x: FlipperTheme.margin_h;
+        y: FlipperTheme.status_bar_h + 18px + i * FlipperTheme.item_h;
+        text: line;
+        visible: i < FlipperTheme.log_visible_lines;
+        color: FlipperTheme.black;
+    }
+
+    // Scrollbar, same rule as the menu's: a dotted 1px track with a 3px thumb
+    // centred on it, thumb height max(5, round(range * visible / total)). Shown
+    // only when the buffer is deeper than the window.
+    if root.total > FlipperTheme.log_visible_lines: Rectangle {
+        x: FlipperTheme.scrollbar_x - 1px;
+        y: FlipperTheme.status_bar_h + 18px;
+        width: FlipperTheme.scrollbar_w;
+        height: 130px - (FlipperTheme.status_bar_h + 18px);
+        background: transparent;
+
+        property <length> range: self.height - 2 * FlipperTheme.scrollbar_thumb_pad;
+        property <length> thumb_h: Math.max(
+            FlipperTheme.scrollbar_thumb_min / 1px,
+            Math.round((self.range / 1px) * FlipperTheme.log_visible_lines / root.total)
+        ) * 1px;
+        property <int> max_offset: Math.max(1, root.total - FlipperTheme.log_visible_lines);
+
+        for dot[i] in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+                       18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32,
+                       33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47]: Rectangle {
+            x: 1px;
+            y: dot * 2px;
+            width: 1px;
+            height: 1px;
+            visible: dot * 2px < parent.height;
+            background: FlipperTheme.black;
+        }
+
+        Rectangle {
+            x: 0;
+            y: FlipperTheme.scrollbar_thumb_pad + Math.round(
+                ((parent.range - parent.thumb_h) / 1px) * root.offset / parent.max_offset) * 1px;
+            width: FlipperTheme.scrollbar_w;
+            height: parent.thumb_h;
+            background: FlipperTheme.black;
+        }
+    }
+
+    for hint[i] in root.hints: Rectangle {
+        x: i * (FlipperTheme.button_w + FlipperTheme.button_gap);
+        y: parent.height - FlipperTheme.button_h;
+        width: FlipperTheme.button_w;
+        height: FlipperTheme.button_h;
+        background: transparent;
+        if hint != "": SoftButton {
+            width: parent.width;
+            label: hint;
+            pressed: i == root.pressed_slot;
+            flush_left: i == 0;
+            flush_right: i == 4;
+        }
+    }
+}

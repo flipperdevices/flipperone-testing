@@ -251,18 +251,47 @@ pub struct Idle {
     pub links: Vec<Link>,
 }
 
-impl StatusSource {
-    /// Read the idle screen's fields. Separate from `Status` because the status
-    /// bar polls far more often than this needs to.
-    pub fn read_idle() -> Idle {
-        Idle {
-            battery_temp: battery_temp(),
-            cpu_temp: cpu_temp(),
-            power_mw: power_mw(),
-            hostname: read("/proc/sys/kernel/hostname").unwrap_or_default(),
-            profile: booted_profile(),
-            links: links(),
-        }
+impl Idle {
+    /// Everything at once, for a first paint.
+    pub fn read_all() -> Self {
+        let mut idle = Self::default();
+        idle.read_identity();
+        idle.refresh_sensors();
+        idle.refresh_links();
+        idle
+    }
+
+    /// The fields that actually move: temperatures and power flow. Cheap, three
+    /// small files. desktop.js polls these every 5s and so do we.
+    ///
+    /// Returns whether anything changed, so an unchanged reading never dirties the
+    /// screen.
+    pub fn refresh_sensors(&mut self) -> bool {
+        let before = (self.battery_temp, self.cpu_temp, self.power_mw);
+        self.battery_temp = battery_temp();
+        self.cpu_temp = cpu_temp();
+        self.power_mw = power_mw();
+        before != (self.battery_temp, self.cpu_temp, self.power_mw)
+    }
+
+    /// Interface addresses. Worth re-reading because a cable or a DHCP renewal
+    /// changes them, but far less often than the sensors: this walks
+    /// /sys/class/net, parses /proc/net/if_inet6 and calls getifaddrs.
+    pub fn refresh_links(&mut self) -> bool {
+        let fresh = links();
+        let changed = fresh != self.links;
+        self.links = fresh;
+        changed
+    }
+
+    /// Hostname and booted profile, read once.
+    ///
+    /// The profile is the `rootflags=subvol=` the kernel booted with, so it cannot
+    /// change without a reboot. The hostname can in principle, but not without
+    /// something restarting anyway, and polling either on a timer is pure waste.
+    pub fn read_identity(&mut self) {
+        self.hostname = read("/proc/sys/kernel/hostname").unwrap_or_default();
+        self.profile = booted_profile();
     }
 }
 

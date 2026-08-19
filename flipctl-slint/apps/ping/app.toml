@@ -1,0 +1,6 @@
+# An app is a directory under apps/ holding one of these.
+#
+# `name` is what the Apps menu shows. `exec` is run with the app's own directory
+# as the working directory, so a script can find its own files by relative path.
+name = "Ping"
+exec = "ping.py"

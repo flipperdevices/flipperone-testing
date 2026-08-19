@@ -193,12 +193,12 @@ export component IdleBody inherits Rectangle {
     // 14px below the bar; the CPU and power glyphs sit one pixel lower so all
     // three bottom-align.
     Text {
-        x: 57px; y: root.bar + 3px;
+        x: FlipperTheme.temp_label_x; y: root.bar + 3px;
         text: "Temperature";
         color: FlipperTheme.field_label;
     }
     Image {
-        x: 36px; y: root.bar + 14px; width: 9px; height: 16px;
+        x: FlipperTheme.battery_icon_x; y: root.bar + 14px; width: 9px; height: 16px;
         source: @image-url("../assets/icons/battery_vertical.png");
         colorize: FlipperTheme.black;
     }
@@ -211,19 +211,19 @@ export component IdleBody inherits Rectangle {
     // misalignment rather than as intent. Both readings sit level here: +4 against
     // the battery icon and +3 against the CPU's puts both cap rows on 33..39.
     Reading {
-        x: 36px + 9px + 3px;
+        x: FlipperTheme.battery_icon_x + 9px + FlipperTheme.readout_gap;
         y: root.bar + 14px + 4px;
         tenths: root.battery_temp;
         known: root.battery_temp != -32768;
     }
 
     Image {
-        x: 82px; y: root.bar + 15px; width: 15px; height: 15px;
+        x: FlipperTheme.cpu_icon_x; y: root.bar + 15px; width: 15px; height: 15px;
         source: @image-url("../assets/icons/cpu_15px.png");
         colorize: FlipperTheme.black;
     }
     cpu := Reading {
-        x: 82px + 15px + 3px;
+        x: FlipperTheme.cpu_icon_x + 15px + FlipperTheme.readout_gap;
         y: root.bar + 15px + 3px;
         tenths: root.cpu_temp;
         known: root.cpu_temp != -32768;
@@ -232,7 +232,7 @@ export component IdleBody inherits Rectangle {
     // Power flow. desktop.js places this icon a fixed 34px past where the CPU
     // reading ends, so the gap holds however wide the number is.
     Text {
-        x: 163px; y: root.bar + 3px;
+        x: FlipperTheme.power_label_x; y: root.bar + 3px;
         text: "Power flow";
         color: FlipperTheme.field_label;
     }
@@ -245,7 +245,7 @@ export component IdleBody inherits Rectangle {
         colorize: FlipperTheme.black;
     }
     if root.power_mw != -32768: Text {
-        x: root.power_x + 14px + 3px;
+        x: root.power_x + 14px + FlipperTheme.readout_gap;
         y: root.bar + 15px + 3px;
         // Sign convention from drawPowerCard: + into the battery, - out of it,
         // and a leading space at zero so the column does not jitter as it crosses.

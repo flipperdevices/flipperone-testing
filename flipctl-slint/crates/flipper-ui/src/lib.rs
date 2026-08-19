@@ -5,6 +5,7 @@
 //! server for apps). Apps never link this crate; they talk to flipctl over
 //! flipper-proto.
 
+pub mod app;
 pub mod font;
 pub mod key;
 pub mod layout;
@@ -36,6 +37,7 @@ pub mod theme {
     include!(concat!(env!("OUT_DIR"), "/theme.rs"));
 }
 
+pub use app::{AppEntry, RunningApp, Scene, SceneKind};
 pub use font::BitmapFont;
 pub use key::{FlipperKey, KeyEvent};
 pub use platform::{Frame, FrameSink, InputSource};

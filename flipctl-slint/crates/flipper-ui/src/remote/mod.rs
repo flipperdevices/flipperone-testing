@@ -33,8 +33,13 @@ const MAX_FPS: u64 = 10;
 /// 8-byte little-endian header, then `w * h` bytes of 8-bit greyscale.
 const HEADER: usize = 8;
 
+/// How many frames may wait to be sent. Three is enough to carry a 30ms flash
+/// through a 100ms send interval without letting a stalled viewer accumulate
+/// megabytes.
+const QUEUE_DEPTH: usize = 3;
+
 struct Shared {
-    /// Latest full frame and its dimensions.
+    /// The last few frames, oldest first.
     ///
     /// Deliberately not a damage accumulator. Per-frame damage sounds like the
     /// thrifty choice, but a single shared accumulator is consumed by whichever
@@ -42,7 +47,16 @@ struct Shared {
     /// partial screen or nothing at all. A whole 256x144 greyscale frame is
     /// 36864 bytes, and at the 10fps cap that is 368 KB/s, which is free on any
     /// link this device has. Correctness is worth more than the bandwidth.
-    frame: Mutex<Option<StoredFrame>>,
+    ///
+    /// A short queue rather than a single slot, because the UI has states that
+    /// live for less than one send interval: a soft button's press flash is 30ms
+    /// against a 100ms cadence, so storing only the newest frame overwrites the
+    /// pressed frame before any viewer sees it. That looked like the press state
+    /// failing intermittently, and looked different per row because animated
+    /// icons commit every 200ms and shift the sender's phase. Keeping a couple of
+    /// frames means a state that appeared and vanished is still transmitted, in
+    /// order.
+    frames: Mutex<std::collections::VecDeque<StoredFrame>>,
     ready: Condvar,
     generation: AtomicU64,
     viewers: AtomicUsize,
@@ -82,7 +96,7 @@ impl RemoteView {
         let local = listener.local_addr()?;
 
         let shared = Arc::new(Shared {
-            frame: Mutex::new(None),
+            frames: Mutex::new(std::collections::VecDeque::new()),
             ready: Condvar::new(),
             generation: AtomicU64::new(0),
             viewers: AtomicUsize::new(0),
@@ -134,22 +148,18 @@ impl FrameSink for RemoteView {
         }
 
         {
-            let mut slot = self.shared.frame.lock().unwrap_or_else(|e| e.into_inner());
-            match slot.as_mut() {
-                Some(stored) => {
-                    stored.pixels.clear();
-                    stored.pixels.extend_from_slice(frame.pixels);
-                    stored.w = frame.w;
-                    stored.h = frame.h;
-                }
-                None => {
-                    *slot = Some(StoredFrame {
-                        pixels: frame.pixels.to_vec(),
-                        w: frame.w,
-                        h: frame.h,
-                    })
-                }
+            let mut queue = self.shared.frames.lock().unwrap_or_else(|e| e.into_inner());
+            // Bounded: a viewer that stalls must not grow this without limit. When
+            // it is full the oldest goes, because the newest screen matters more
+            // than a complete history.
+            if queue.len() >= QUEUE_DEPTH {
+                queue.pop_front();
             }
+            queue.push_back(StoredFrame {
+                pixels: frame.pixels.to_vec(),
+                w: frame.w,
+                h: frame.h,
+            });
         }
 
         self.shared.generation.fetch_add(1, Ordering::Release);
@@ -401,50 +411,61 @@ fn write_heartbeat(stream: &mut TcpStream) -> std::io::Result<()> {
 fn pump(stream: &mut TcpStream, shared: &Arc<Shared>) -> std::io::Result<()> {
     let frame_time = Duration::from_millis(1000 / MAX_FPS);
     let mut body = Vec::new();
-    // Start behind the current generation so whatever is already stored is sent
-    // immediately: a browser opening onto a still screen must see it at once.
-    let mut seen = shared.generation.load(Ordering::Acquire).wrapping_sub(1);
 
     loop {
-        let mut slot = shared.frame.lock().unwrap_or_else(|e| e.into_inner());
+        let mut queue = shared.frames.lock().unwrap_or_else(|e| e.into_inner());
         loop {
-            let generation = shared.generation.load(Ordering::Acquire);
-            if generation != seen && slot.is_some() {
-                seen = generation;
+            if !queue.is_empty() {
                 break;
             }
             let (guard, timed_out) = shared
                 .ready
-                .wait_timeout(slot, Duration::from_secs(2))
+                .wait_timeout(queue, Duration::from_secs(2))
                 .unwrap_or_else(|e| e.into_inner());
-            slot = guard;
+            queue = guard;
+            if !queue.is_empty() {
+                break;
+            }
             if timed_out.timed_out() {
                 // A still screen produces no frames, which is the point, but the
                 // connection must not look finished and a viewer that walked away
                 // must be noticed. An empty region does both: the page skips it,
                 // and a dead socket surfaces here as a write error.
-                drop(slot);
+                drop(queue);
                 write_heartbeat(stream)?;
-                slot = shared.frame.lock().unwrap_or_else(|e| e.into_inner());
+                queue = shared.frames.lock().unwrap_or_else(|e| e.into_inner());
             }
         }
+        let stored = queue.pop_front().expect("checked above");
+        drop(queue);
 
-        let stored = slot.as_ref().expect("checked above");
         body.clear();
         body.extend_from_slice(&0u16.to_le_bytes());
         body.extend_from_slice(&0u16.to_le_bytes());
         body.extend_from_slice(&stored.w.to_le_bytes());
         body.extend_from_slice(&stored.h.to_le_bytes());
         body.extend(stored.pixels.iter().map(|p| p.0));
-        let (w, h) = (stored.w, stored.h);
-        drop(slot);
 
-        debug_assert_eq!(body.len(), HEADER + usize::from(w) * usize::from(h));
+        debug_assert_eq!(
+            body.len(),
+            HEADER + usize::from(stored.w) * usize::from(stored.h)
+        );
         write!(stream, "{:x}\r\n", body.len())?;
         stream.write_all(&body)?;
         stream.write_all(b"\r\n")?;
         stream.flush()?;
 
-        std::thread::sleep(frame_time);
+        // Rate-limit the sustained stream, but never delay a backlog: the cap is
+        // there to bound bandwidth on a still-ish screen, not to add latency. A
+        // 30ms press flash arrives as two frames back to back, and pausing between
+        // them is what let the pressed one age out of the queue.
+        let backlog = !shared
+            .frames
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty();
+        if !backlog {
+            std::thread::sleep(frame_time);
+        }
     }
 }

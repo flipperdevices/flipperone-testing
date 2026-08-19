@@ -160,6 +160,16 @@ export component MenuBody inherits Rectangle {
     // Press flash, painted BEHIND the rows: the row then redraws its own
     // content in white on top, which is how the prototype gets inverted text
     // over a filled selector.
+    // The real frame's fill goes behind the row too, for the same reason.
+    if root.pressed && root.real_frame: SelectorFrame {
+        x: FlipperTheme.selector_x;
+        y: root.selector_y;
+        frame_w: root.selector_w;
+        frame_h: FlipperTheme.selector_h;
+        filled: true;
+        stroke: false;
+    }
+
     if root.pressed && !root.real_frame: Rectangle {
         x: FlipperTheme.selector_x;
         y: root.selector_y;
@@ -228,7 +238,8 @@ export component MenuBody inherits Rectangle {
         y: root.selector_y;
         frame_w: root.selector_w;
         frame_h: FlipperTheme.selector_h;
-        filled: root.pressed;
+        filled: false;
+        stroke: true;
     }
 
     // Bottom bar: five 48px slots, 2px gaps, 48 * 5 + 2 * 4 = 256 exactly. The
