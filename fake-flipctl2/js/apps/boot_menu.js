@@ -49,15 +49,10 @@ var BootMenuScene = (function() {
         return base !== '' && dispName(name) === base;
     }
 
-    // Strip a create-profile "_old_<ts>" backup suffix; '' if there is none.
-    var OLD_RE = /_old_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d$/;
-
     // Menu/display name: factory -> base ("Desktop"); user @Base__label__ -> "[label]"
-    // with '-' shown as space; an _old_<ts> backup -> the original's name + " (old)";
-    // anything else (legacy user) -> name minus '@' verbatim.
+    // with '-' shown as space; anything else (legacy user) -> name minus '@' verbatim.
     function profileDisplay(name, origin) {
         var raw = dispName(name);
-        if (OLD_RE.test(raw)) return profileDisplay('@' + raw.replace(OLD_RE, ''), origin) + ' (old)';
         var m = raw.match(/^(.+?)__(.+)__$/);
         if (m) return '[' + m[2].replace(/-/g, ' ') + ']';
         return raw;
@@ -70,9 +65,9 @@ var BootMenuScene = (function() {
     }
 
     // Editable label text for Rename: the user @Base__label__ label with '-'
-    // shown as space (backup suffix stripped); legacy names come back whole.
+    // shown as space; legacy names come back whole.
     function profileLabel(name) {
-        var raw = dispName(name).replace(OLD_RE, '');
+        var raw = dispName(name);
         var m = raw.match(/^(.+?)__(.+)__$/);
         return m ? m[2].replace(/-/g, ' ') : raw;
     }
@@ -319,14 +314,12 @@ var BootMenuScene = (function() {
         this._cancelAutoStart();
         this._editOpen = true;
         this._editIndex = 0;
-        // Options by profile kind: _old backups get Clone + Delete; factory can't
-        // be renamed or deleted (Clone / Factory Reset); users get everything.
+        // Options by profile kind: factory can't be renamed or deleted (Clone /
+        // Factory Reset); users get everything.
         var p = this._profiles[this.selectedIndex] || {};
-        this._editOptions = p.old
-            ? ['Rename', 'Clone', 'Delete', 'Auto Start']
-            : isFactory(p.name, p.origin)
-                ? ['Clone', 'Factory Reset', 'Auto Start']
-                : ['Rename', 'Clone', 'Factory Reset', 'Delete', 'Auto Start'];
+        this._editOptions = isFactory(p.name, p.origin)
+            ? ['Clone', 'Factory Reset', 'Auto Start']
+            : ['Rename', 'Clone', 'Factory Reset', 'Delete', 'Auto Start'];
         // The booted profile cannot be deleted (delete-profile refuses it), so drop Delete.
         if (p.booted) this._editOptions = this._editOptions.filter(function(o) { return o !== 'Delete'; });
         this._fetchSize();
@@ -488,26 +481,19 @@ var BootMenuScene = (function() {
         if (!p.name || typeof TextInputScreen === 'undefined' || !this.sceneManager) return;
         var base    = originBase(p.origin) || dispName(p.name).replace(/__.*$/, '');
         var oldName = p.name;
-        // For an _old backup, keep its exact "_old_<ts>" suffix so the user can
-        // keep the "(old)" flag by leaving it in the text, or drop it (promoting
-        // the backup to a normal profile) by deleting it.
-        var oldSuffix = '';
-        if (p.old) { var mo = dispName(p.name).match(/(_old_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d)$/); oldSuffix = mo ? mo[1] : ''; }
         var taken = {};
         for (var i = 0; i < this._profiles.length; i++) taken[this._profiles[i].name] = true;
         var destOf = function(text) {
-            var keepOld = false, t = String(text);
-            if (p.old) { var m = t.match(/^(.*)\(old\)\s*$/i); if (m) { keepOld = true; t = m[1]; } }
-            var e = encodeLabel(t);
+            var e = encodeLabel(text);
             if (!e) return '';
-            return '@' + base + '__' + e + '__' + (keepOld ? oldSuffix : '');
+            return '@' + base + '__' + e + '__';
         };
 
         this._resumingFromChild = true;   // don't let enter() reset us on pop
         var screen = new TextInputScreen({
             displayName: 'Rename',
             title:       'Profile name',
-            initialText: profileLabel(p.name) + (p.old ? ' (old)' : ''),
+            initialText: profileLabel(p.name),
             validate: function(text) {
                 var d = destOf(text);
                 if (!d) return 'Name required';
@@ -557,7 +543,7 @@ var BootMenuScene = (function() {
     // no prompt. On success the list refreshes with the new clone.
     BootMenuScene.prototype._buildCloneDest = function(p) {
         var base = originBase(p.origin) || dispName(p.name);
-        var raw = dispName(p.name).replace(OLD_RE, '');   // clone the live copy, not the _old suffix
+        var raw = dispName(p.name);
         var m = raw.match(/^(.+?)__(.+)__$/);
         var src = (m ? m[2] : raw).replace(/[^A-Za-z0-9-]/g, '-');
         var lbl = src + '-clone';

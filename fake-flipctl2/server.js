@@ -5236,7 +5236,7 @@ var server = http.createServer(function(req, res) {
                 var booted = false, base = 1;
                 if (/^<-\s*booted$/.test(cols[1] || '')) { booted = true; base = 2; }
                 var kind = cols[base] || 'profile';
-                if (kind !== 'profile' && kind !== 'old') return;   // profiles + _old backups
+                if (kind !== 'profile') return;   // profiles only; _old backups are auto-reaped, never listed
                 var origin = cols[base + 6] || '';
                 var parent = cols[base + 5] || '';
                 // ORIGIN may carry the stock's id as "name (id)" (like PARENT).
