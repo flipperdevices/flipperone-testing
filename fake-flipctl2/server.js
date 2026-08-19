@@ -3279,6 +3279,23 @@ var wifiScanCache = { ready: false, networks: [] };
 var profileSizeCache = {};
 var PROFILE_SIZE_TTL = 60000;
 
+// Subvolume id of a profile by exact name, parsed from list-profiles (same
+// positional columns as /api/boot/profiles). Empty string if not found.
+function profileSubvolId(name, cb) {
+    exec('sudo list-profiles', { encoding: 'utf8', timeout: 20000 }, function(err, stdout) {
+        if (err) { cb(err, ''); return; }
+        var id = '';
+        (stdout || '').split('\n').forEach(function(raw) {
+            var t = raw.trim();
+            if (!t || /^NAME\b/.test(t)) return;
+            var cols = t.split(/\s{2,}/);
+            var base = /^<-\s*booted$/.test(cols[1] || '') ? 2 : 1;
+            if (cols[0] === name) id = cols[base + 1] || '';
+        });
+        cb(null, id);
+    });
+}
+
 // DTBO overlays applied to a profile, read from its BLS entry's
 // devicetree-overlay line (/boot/loader/entries is shared, so every profile's
 // entry is readable here). Split system (kernel dir) vs user (/etc/kernel/dtbo
@@ -5329,15 +5346,31 @@ var server = http.createServer(function(req, res) {
                 res.end(JSON.stringify({ ok: false, error: 'Invalid name' }));
                 return;
             }
-            exec('sudo delete-profile -y ' + name, { encoding: 'utf8', timeout: 60000 }, function(err, stdout, stderr) {
-                if (err) {
-                    var msg = String(stderr || stdout || 'delete failed').trim().split('\n').pop();
-                    res.writeHead(200, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ ok: false, error: msg }));
-                    return;
-                }
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ ok: true }));
+            // If we are deleting the auto-boot target, its subvol id disappears;
+            // clear the marker afterwards so nothing autoboots a gone profile.
+            exec('sudo flipmeta get boot', { encoding: 'utf8', timeout: 10000 }, function(be, bootOut) {
+                var bootId = String(bootOut || '').trim();
+                if (!/^\d+$/.test(bootId)) bootId = '';
+                profileSubvolId(name, function(ie, delId) {
+                    var wasAuto = (bootId !== '' && bootId === delId);
+                    exec('sudo delete-profile -y ' + name, { encoding: 'utf8', timeout: 60000 }, function(err, stdout, stderr) {
+                        if (err) {
+                            var msg = String(stderr || stdout || 'delete failed').trim().split('\n').pop();
+                            res.writeHead(200, { 'Content-Type': 'application/json' });
+                            res.end(JSON.stringify({ ok: false, error: msg }));
+                            return;
+                        }
+                        if (wasAuto) {
+                            exec('sudo flipmeta del boot', { timeout: 20000 }, function() {
+                                res.writeHead(200, { 'Content-Type': 'application/json' });
+                                res.end(JSON.stringify({ ok: true }));
+                            });
+                        } else {
+                            res.writeHead(200, { 'Content-Type': 'application/json' });
+                            res.end(JSON.stringify({ ok: true }));
+                        }
+                    });
+                });
             });
         });
         return;
@@ -5358,13 +5391,34 @@ var server = http.createServer(function(req, res) {
                 res.end(JSON.stringify({ ok: false, error: 'Invalid name' }));
                 return;
             }
-            exec('sudo create-profile -y ' + origin + ' ' + name, { encoding: 'utf8', timeout: 120000 }, function(err, stdout, stderr) {
-                if (err) {
-                    var msg = String(stderr || stdout || 'reset failed').trim().split('\n').pop();
-                    res.writeHead(200, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ ok: false, error: msg }));
-                    return;
-                }
+            // Was this profile the auto-boot target? Capture the marker and the
+            // profile's current subvol id before the reset. create-profile moves
+            // the old copy aside (keeping its id) and gives the fresh profile a
+            // new id, so afterwards we must re-point the marker or autoboot would
+            // land on the stale _old copy.
+            exec('sudo flipmeta get boot', { encoding: 'utf8', timeout: 10000 }, function(be, bootOut) {
+                var bootId = String(bootOut || '').trim();
+                if (!/^\d+$/.test(bootId)) bootId = '';
+                profileSubvolId(name, function(ie, oldId) {
+                    var wasAuto = (bootId !== '' && bootId === oldId);
+                    exec('sudo create-profile -y ' + origin + ' ' + name, { encoding: 'utf8', timeout: 120000 }, function(err, stdout, stderr) {
+                        if (err) {
+                            var msg = String(stderr || stdout || 'reset failed').trim().split('\n').pop();
+                            res.writeHead(200, { 'Content-Type': 'application/json' });
+                            res.end(JSON.stringify({ ok: false, error: msg }));
+                            return;
+                        }
+                        if (!wasAuto) { finish(); return; }
+                        // move the auto-boot marker onto the fresh profile's new id
+                        profileSubvolId(name, function(e3, newId) {
+                            if (newId && newId !== bootId) {
+                                exec('sudo flipmeta set boot ' + newId, { timeout: 20000 }, function() { finish(); });
+                            } else { finish(); }
+                        });
+                    });
+                });
+            });
+            function finish() {
                 exec('findmnt -no FSROOT /', { encoding: 'utf8' }, function(e2, fsroot) {
                     var bootedSubvol = String(fsroot || '').trim().replace(/^\//, '');
                     var rebooting = (bootedSubvol === name);
