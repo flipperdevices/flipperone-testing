@@ -3296,6 +3296,32 @@ function profileSubvolId(name, cb) {
     });
 }
 
+// Reap <booted>_old_<ts> backups left when the booted profile was factory-reset:
+// --no-keep cannot drop the live root, so create-profile keeps the moved-aside
+// copy and we soft-reboot; once we are running the fresh root (this startup) the
+// copy is dead weight. Only the booted profile's own _old_<timestamp> copies are
+// removed, so unrelated profiles and manual backups are left alone.
+function reapOldBackups() {
+    exec('findmnt -no FSROOT /', { encoding: 'utf8', timeout: 3000 }, function(e, fsroot) {
+        var booted = String(fsroot || '').trim().replace(/^\//, '');
+        if (!/^@[A-Za-z0-9_-]+$/.test(booted)) return;
+        var oldRe = new RegExp('^' + booted.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') +
+                               '_old_\\d{4}-\\d\\d-\\d\\d_\\d\\d-\\d\\d-\\d\\d(_\\d+)?$');
+        exec('sudo list-profiles', { encoding: 'utf8', timeout: 20000 }, function(err, stdout) {
+            if (err) return;
+            (stdout || '').split('\n').forEach(function(raw) {
+                var t = raw.trim();
+                if (!t || /^NAME\b/.test(t)) return;
+                var nm = t.split(/\s{2,}/)[0];
+                if (!oldRe.test(nm)) return;
+                exec('sudo delete-profile -y ' + nm, { timeout: 60000 }, function(de) {
+                    if (!de) console.log('[reap] removed leftover backup ' + nm);
+                });
+            });
+        });
+    });
+}
+
 // DTBO overlays applied to a profile, read from its BLS entry's
 // devicetree-overlay line (/boot/loader/entries is shared, so every profile's
 // entry is readable here). Split system (kernel dir) vs user (/etc/kernel/dtbo
@@ -5376,11 +5402,12 @@ var server = http.createServer(function(req, res) {
         return;
     }
     // ── /api/boot/profile/factory-reset ─────────────────────────
-    // POST { name, origin } → create-profile -y <origin> <name>: rebuild the
-    // profile from its origin stock, keeping the old copy as <name>_old_<ts>.
-    // Fails (surfaced) if the exact origin stock is not on disk. When <name>
-    // is the profile we are booted from, the running system stays on the _old
-    // copy, so we soft-reboot into the fresh one right after.
+    // POST { name, origin } → create-profile -y --no-keep <origin> <name>:
+    // rebuild the profile from its origin stock. --no-keep drops the replaced
+    // copy so no <name>_old_<ts> lingers; when <name> is the booted profile it
+    // cannot be dropped live, so create-profile keeps it and we soft-reboot into
+    // the fresh one (the leftover _old is reaped on next startup, see
+    // reapOldBackups). Fails (surfaced) if the exact origin stock is not on disk.
     if (req.url === '/api/boot/profile/factory-reset' && req.method === 'POST') {
         readJsonBody(req, function(e, data) {
             var name   = (data && data.name) || '';
@@ -5401,7 +5428,7 @@ var server = http.createServer(function(req, res) {
                 if (!/^\d+$/.test(bootId)) bootId = '';
                 profileSubvolId(name, function(ie, oldId) {
                     var wasAuto = (bootId !== '' && bootId === oldId);
-                    exec('sudo create-profile -y ' + origin + ' ' + name, { encoding: 'utf8', timeout: 120000 }, function(err, stdout, stderr) {
+                    exec('sudo create-profile -y --no-keep ' + origin + ' ' + name, { encoding: 'utf8', timeout: 120000 }, function(err, stdout, stderr) {
                         if (err) {
                             var msg = String(stderr || stdout || 'reset failed').trim().split('\n').pop();
                             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -5685,6 +5712,10 @@ server.listen(PORT, BIND, function() {
         // so it runs for the whole server lifetime.
         try { ensureHapticDaemon(); }
         catch (e) { console.warn('[haptic] startup failed: ' + e.message); }
+
+        // Reap any _old_ backup left by a factory reset of the (now booted) profile.
+        try { reapOldBackups(); }
+        catch (e) { console.warn('[reap] startup failed: ' + e.message); }
 
         // Background refreshers keep per-endpoint snapshots fresh without
         // ever blocking the main loop. Periods match the previous client
