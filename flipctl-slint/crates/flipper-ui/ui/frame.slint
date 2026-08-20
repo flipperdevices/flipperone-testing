@@ -7,9 +7,10 @@
 //     outside the element's own bounds
 //   * two hand-placed pixels weighting the bottom-right cut
 //
-// Geometry transcribed from MenuSelectorFrame.js. The radius is fixed at 3,
-// which is the only value the selector uses; the stair rows are therefore
-// written out rather than generated.
+// Geometry transcribed from MenuSelectorFrame.js, generalised over the radius:
+// the selector uses 3 and popups use 4, which are two of the three values
+// drawRoundRect accepts (the third is 0, a square rect). The stair is generated
+// rather than written out so both come from one description.
 import { FlipperTheme } from "@theme";
 
 export component SelectorFrame {
@@ -24,34 +25,50 @@ export component SelectorFrame {
     // instance drawn after the row buries the row's own label and icon under the
     // black fill.
     in property <bool> stroke: true;
+    // The drop shadow and the two bottom-right weight pixels belong to the menu
+    // selector, not to the shape. A dialog frame is the same chamfered rectangle
+    // without them, so it reuses this component with shadow off.
+    in property <bool> shadow: true;
+    // Black on white for the selector; a dialog inverts the fill.
+    in property <color> fill_color: FlipperTheme.black;
+    in property <color> stroke_color: FlipperTheme.black;
+    // Corner radius in pixels. The selector's 3 is the default; a popup passes
+    // FlipperTheme.box. Only 0, 3 and 4 are design values.
+    in property <length> radius: FlipperTheme.menu;
 
     width: frame_w + 1px;
     height: frame_h + 1px;
 
-    // Body: a chamfered rectangle. The top and bottom three rows step in by
-    // 2, 1 and 0 pixels, so the fill follows the same diagonal as the stroke and
+    // Body: a chamfered rectangle. The first and last `radius` rows step in by
+    // radius-1..0 pixels, so the fill follows the same diagonal as the stroke and
     // the cut corners stay transparent.
     if filled: Rectangle {
-        x: 0; y: 3px;
+        x: 0;
+        y: root.radius;
         width: root.frame_w;
-        height: root.frame_h - 6px;
-        background: FlipperTheme.black;
+        height: root.frame_h - 2 * root.radius;
+        background: root.fill_color;
     }
     if filled: Rectangle {
         background: transparent;
-        for row[i] in [2, 1, 0]: Rectangle {
-            x: row * 1px;
+        // `i` counts rows in from the edge; the inset is radius-1-i, so the top
+        // row is the narrowest. Slint has no numeric range loop, so the array is
+        // the largest radius any design uses and the rest are switched off.
+        for i in [0, 1, 2, 3]: Rectangle {
+            visible: i < root.radius / 1px;
+            x: (root.radius / 1px - 1 - i) * 1px;
             y: i * 1px;
-            width: root.frame_w - row * 2px;
+            width: root.frame_w - 2 * (root.radius / 1px - 1 - i) * 1px;
             height: 1px;
-            background: FlipperTheme.black;
+            background: root.fill_color;
         }
-        for row[i] in [0, 1, 2]: Rectangle {
-            x: row * 1px;
-            y: root.frame_h - 3px + i * 1px;
-            width: root.frame_w - row * 2px;
+        for i in [0, 1, 2, 3]: Rectangle {
+            visible: i < root.radius / 1px;
+            x: (root.radius / 1px - 1 - i) * 1px;
+            y: root.frame_h - 1px - i * 1px;
+            width: root.frame_w - 2 * (root.radius / 1px - 1 - i) * 1px;
             height: 1px;
-            background: FlipperTheme.black;
+            background: root.fill_color;
         }
     }
 
@@ -60,71 +77,78 @@ export component SelectorFrame {
 
         // Straight edges, each held back by the radius at both ends.
         Rectangle {
-            x: 3px; y: 0;
-            width: root.frame_w - 6px; height: 1px;
-            background: FlipperTheme.black;
+            x: root.radius; y: 0;
+            width: root.frame_w - 2 * root.radius; height: 1px;
+            background: root.stroke_color;
         }
         Rectangle {
-            x: 3px; y: root.frame_h - 1px;
-            width: root.frame_w - 6px; height: 1px;
-            background: FlipperTheme.black;
+            x: root.radius; y: root.frame_h - 1px;
+            width: root.frame_w - 2 * root.radius; height: 1px;
+            background: root.stroke_color;
         }
         Rectangle {
-            x: 0; y: 3px;
-            width: 1px; height: root.frame_h - 6px;
-            background: FlipperTheme.black;
+            x: 0; y: root.radius;
+            width: 1px; height: root.frame_h - 2 * root.radius;
+            background: root.stroke_color;
         }
         Rectangle {
-            x: root.frame_w - 1px; y: 3px;
-            width: 1px; height: root.frame_h - 6px;
-            background: FlipperTheme.black;
+            x: root.frame_w - 1px; y: root.radius;
+            width: 1px; height: root.frame_h - 2 * root.radius;
+            background: root.stroke_color;
         }
 
-        // Corner stairs: pixel i of each corner, i in 0..3.
-        for i in [0, 1, 2]: Rectangle {
-            x: i * 1px; y: (2 - i) * 1px;
+        // Corner stairs: pixel i of each corner, i in 0..radius.
+        for i in [0, 1, 2, 3]: Rectangle {
+            visible: i < root.radius / 1px;
+            x: i * 1px; y: (root.radius / 1px - 1 - i) * 1px;
             width: 1px; height: 1px;
-            background: FlipperTheme.black;
+            background: root.stroke_color;
         }
-        for i in [0, 1, 2]: Rectangle {
-            x: root.frame_w - 3px + i * 1px; y: i * 1px;
+        for i in [0, 1, 2, 3]: Rectangle {
+            visible: i < root.radius / 1px;
+            x: root.frame_w - root.radius + i * 1px; y: i * 1px;
             width: 1px; height: 1px;
-            background: FlipperTheme.black;
+            background: root.stroke_color;
         }
-        for i in [0, 1, 2]: Rectangle {
-            x: i * 1px; y: root.frame_h - 3px + i * 1px;
+        for i in [0, 1, 2, 3]: Rectangle {
+            visible: i < root.radius / 1px;
+            x: i * 1px; y: root.frame_h - root.radius + i * 1px;
             width: 1px; height: 1px;
-            background: FlipperTheme.black;
+            background: root.stroke_color;
         }
-        for i in [0, 1, 2]: Rectangle {
-            x: root.frame_w - 3px + i * 1px; y: root.frame_h - 1px - i * 1px;
+        for i in [0, 1, 2, 3]: Rectangle {
+            visible: i < root.radius / 1px;
+            x: root.frame_w - root.radius + i * 1px; y: root.frame_h - 1px - i * 1px;
             width: 1px; height: 1px;
-            background: FlipperTheme.black;
+            background: root.stroke_color;
         }
 
         // Drop shadow. One pixel longer than the edge it shadows so the two runs
         // meet at the bottom-right stair.
-        Rectangle {
-            x: 3px; y: root.frame_h;
-            width: root.frame_w - 5px; height: 1px;
-            background: FlipperTheme.black;
-        }
-        Rectangle {
-            x: root.frame_w; y: 3px;
-            width: 1px; height: root.frame_h - 5px;
-            background: FlipperTheme.black;
-        }
+        if root.shadow: Rectangle {
+            background: transparent;
+            Rectangle {
+                x: root.radius; y: root.frame_h;
+                width: root.frame_w - root.radius - 2px; height: 1px;
+                background: root.stroke_color;
+            }
+            Rectangle {
+                x: root.frame_w; y: root.radius;
+                width: 1px; height: root.frame_h - root.radius - 2px;
+                background: root.stroke_color;
+            }
 
-        // The two pixels that give the bottom-right corner its weight.
-        Rectangle {
-            x: root.frame_w - 2px; y: root.frame_h - 1px;
-            width: 1px; height: 1px;
-            background: FlipperTheme.black;
-        }
-        Rectangle {
-            x: root.frame_w - 1px; y: root.frame_h - 2px;
-            width: 1px; height: 1px;
-            background: FlipperTheme.black;
+            // The two pixels that give the bottom-right corner its weight.
+            Rectangle {
+                x: root.frame_w - 2px; y: root.frame_h - 1px;
+                width: 1px; height: 1px;
+                background: root.stroke_color;
+            }
+            Rectangle {
+                x: root.frame_w - 1px; y: root.frame_h - 2px;
+                width: 1px; height: 1px;
+                background: root.stroke_color;
+            }
         }
     }
 }
@@ -234,5 +258,35 @@ export component SoftButton {
         text: root.label;
         font-size: 16px;
         color: root.ink;
+    }
+}
+
+// The five-slot bottom bar.
+//
+// One entry per physical soft key in silkscreen order: esc, view, power, edit,
+// run. Slot i sits over the key that triggers it, so a model of any other length
+// puts every label on the wrong key. An empty string draws no button, which is how
+// a screen uses only the outer two slots.
+export component SoftBar inherits Rectangle {
+    in property <[string]> hints;
+    in property <int> pressed_slot: -1;
+
+    width: 100%;
+    height: 100%;
+    background: transparent;
+
+    for hint[i] in root.hints: Rectangle {
+        x: i * (FlipperTheme.button_w + FlipperTheme.button_gap);
+        y: parent.height - FlipperTheme.button_h;
+        width: FlipperTheme.button_w;
+        height: FlipperTheme.button_h;
+        background: transparent;
+        if hint != "": SoftButton {
+            width: parent.width;
+            label: hint;
+            pressed: i == root.pressed_slot;
+            flush_left: i == 0;
+            flush_right: i == 4;
+        }
     }
 }

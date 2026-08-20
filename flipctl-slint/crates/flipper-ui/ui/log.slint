@@ -5,7 +5,7 @@
 // wants icons and a selector uses the form body instead.
 import { FlipperTheme } from "@theme";
 import { StatusBar } from "statusbar.slint";
-import { SoftButton } from "frame.slint";
+import { SoftBar } from "frame.slint";
 
 export component LogBody inherits Rectangle {
     in property <string> title;
@@ -109,18 +109,8 @@ export component LogBody inherits Rectangle {
         }
     }
 
-    for hint[i] in root.hints: Rectangle {
-        x: i * (FlipperTheme.button_w + FlipperTheme.button_gap);
-        y: parent.height - FlipperTheme.button_h;
-        width: FlipperTheme.button_w;
-        height: FlipperTheme.button_h;
-        background: transparent;
-        if hint != "": SoftButton {
-            width: parent.width;
-            label: hint;
-            pressed: i == root.pressed_slot;
-            flush_left: i == 0;
-            flush_right: i == 4;
-        }
+    SoftBar {
+        hints: root.hints;
+        pressed_slot: root.pressed_slot;
     }
 }
