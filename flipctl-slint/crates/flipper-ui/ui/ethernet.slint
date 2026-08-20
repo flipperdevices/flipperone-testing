@@ -1,0 +1,566 @@
+// The Ethernet page: one card per link, stacked below the breadcrumb.
+//
+// Transcribed from apps/ethernet.js and component-library/EthernetTab.js. The card
+// is the most detailed component in the prototype and several of its details are
+// easy to lose:
+//
+//   * A connected card is 34px tall rather than 22, to hold a second row. The page
+//     is sized so three connected links still fit without scrolling:
+//     26 + 3 * 34 + 2 * 3 = 134.
+//   * The top-right cluster sits on a grey pill whose left edge is measured from
+//     the cluster's own width, so it grows and shrinks with the content. Its
+//     bottom-left corner is rounded and its top-right follows either the frame's
+//     radius or the selector's chevron bar, whichever is there.
+//   * The selected card's frame carries a 7px chevron bar on its right edge, but
+//     only when the link is connected: a disconnected card is not actionable, and
+//     dropping the chevron is how it says so.
+//   * The unselected frame's stroke is a neutral grey whatever the link state.
+//     Content colour follows the state, so a disconnected card reads as grey
+//     content in a normal frame.
+import { FlipperTheme } from "@theme";
+import { SelectorFrame } from "frame.slint";
+import { StatusBar } from "statusbar.slint";
+
+// One line of the verbose interface dump.
+//
+// The kinds come straight from `buildDetailRows`. They differ in height as well as
+// in layout, which is why the modal scrolls in pixels rather than rows: a divider
+// band is 4px and a text row is 12.
+export struct EthDetailRow {
+    // 0 header, 1 divider, 2 label and value, 3 section label, 4 indented value,
+    // 5 the speed/RX/TX metrics line.
+    kind: int,
+    // This row's y within the content, the sum of the heights above it. Computed
+    // by the caller because Slint cannot accumulate across a loop, and because the
+    // caller needs the same total for the scroll limit anyway.
+    top: length,
+    label: string,
+    value: string,
+    // Metrics row only.
+    speed: string,
+    rx: string,
+    tx: string,
+}
+
+export struct EthLink {
+    // "ETH0", "ETH1", "USB ETH".
+    name: string,
+    connected: bool,
+    ipv4: string,
+    ipv6: string,
+    // Already formatted: "1Gb/s", "103 MB", "DHCP Client".
+    speed: string,
+    rx: string,
+    tx: string,
+    method: string,
+}
+
+component EthCard inherits Rectangle {
+    in property <EthLink> link;
+    in property <bool> selected;
+
+    // A connected link gets the taller card.
+    property <length> card_h: root.link.connected
+        ? FlipperTheme.eth_h_connected
+        : FlipperTheme.eth_h;
+    // Content colour follows the link, not the selection.
+    property <color> fg: root.link.connected
+        ? FlipperTheme.black
+        : FlipperTheme.disabled_fg;
+    // The chevron bar only appears on an actionable card.
+    property <bool> has_chevron: root.selected && root.link.connected;
+
+    width: FlipperTheme.eth_w;
+    height: root.card_h;
+    background: transparent;
+
+    // ── Frame ──────────────────────────────────────────────────────────────
+    // The same chamfered shape as the menu selector, so a card and a menu row
+    // read as siblings. Fill first, then the pill and the chevron, then the
+    // outline over both: the prototype draws the chevron at the fill level
+    // precisely so the stroke tucks it in rather than the bar spilling onto the
+    // outline.
+    //
+    // A selected card gets the black outline and the drop shadow. An unselected
+    // one keeps a neutral grey outline whatever the link state, and no shadow.
+    property <color> stroke: root.selected ? FlipperTheme.black : FlipperTheme.eth_stroke;
+    property <length> r: FlipperTheme.menu;
+
+    SelectorFrame {
+        x: 0; y: 0;
+        frame_w: root.width;
+        frame_h: root.card_h;
+        filled: true;
+        stroke: false;
+        fill_color: FlipperTheme.white;
+    }
+
+    // ── Grey pill behind the top-right cluster ─────────────────────────────
+    // Measured from the cluster, so it is exactly as wide as its contents plus
+    // 5px of left padding.
+    speed_ref := Text { visible: false; text: root.link.speed; font-size: 16px; font-family: "HaxrCorp 4090"; }
+    rx_ref := Text { visible: false; text: root.link.rx; font-size: 16px; font-family: "HaxrCorp 4090"; }
+    tx_ref := Text { visible: false; text: root.link.tx; font-size: 16px; font-family: "HaxrCorp 4090"; }
+    disc_ref := Text { visible: false; text: "Disconnected"; font-size: 16px; font-family: "HaxrCorp 4090"; }
+    name_ref := Text { visible: false; text: root.link.name; font-size: 16px; font-family: "Born2bSportyV2"; }
+
+    property <length> right_edge: root.width - FlipperTheme.eth_status_pad_r;
+    property <length> arrow_w: 5px;
+
+    // Laid out right to left, exactly as the prototype's measure pass runs.
+    property <length> speed_x: root.right_edge - (speed_ref.width - 1px);
+    property <length> tx_x: root.speed_x - FlipperTheme.eth_bottom_col_gap - (tx_ref.width - 1px);
+    property <length> tx_arrow_x: root.tx_x - FlipperTheme.eth_bottom_gap - root.arrow_w;
+    property <length> rx_x: root.tx_arrow_x - FlipperTheme.eth_bottom_col_gap - (rx_ref.width - 1px);
+    property <length> rx_arrow_x: root.rx_x - FlipperTheme.eth_bottom_gap - root.arrow_w;
+    property <length> cluster_left: root.link.connected
+        ? root.rx_arrow_x
+        : root.right_edge - (disc_ref.width - 1px);
+    property <length> pill_left: root.cluster_left - 5px;
+
+    // Row by row, so the bottom-left radius and the top-right cut are exact.
+    for py in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]: Rectangle {
+        property <int> bl: py >= FlipperTheme.eth_pill_h / 1px - FlipperTheme.eth_pill_r / 1px
+            ? py - (FlipperTheme.eth_pill_h / 1px - FlipperTheme.eth_pill_r / 1px)
+            : 0;
+        // The top-right either tucks behind the chevron bar or follows the frame's
+        // own corner.
+        property <int> tr: root.has_chevron
+            ? 6
+            : (py + 1 < root.r / 1px ? root.r / 1px - 1 - (py + 1) : 0);
+        x: root.pill_left + self.bl * 1px;
+        y: 1px + py * 1px;
+        width: root.width - self.tr * 1px - (root.pill_left + self.bl * 1px);
+        height: 1px;
+        background: FlipperTheme.pill;
+    }
+
+    // ── Left cluster: icon, name, IPv4 ─────────────────────────────────────
+    Image {
+        x: FlipperTheme.eth_icon_pad_l;
+        y: FlipperTheme.eth_icon_pad_t;
+        width: 14px;
+        height: 14px;
+        source: @image-url("../assets/icons/ethernet.png");
+        colorize: root.fg;
+    }
+
+    Text {
+        x: FlipperTheme.eth_icon_pad_l + 14px + FlipperTheme.eth_text_gap;
+        y: FlipperTheme.eth_name_draw_y;
+        text: root.link.name;
+        font-size: 16px;
+        font-family: "Born2bSportyV2";
+        color: root.fg;
+    }
+
+    // IPv4 sits 4px right and 2px below the name, so it does not crowd it.
+    if root.link.connected && root.link.ipv4 != "": Text {
+        x: FlipperTheme.eth_icon_pad_l + 14px + FlipperTheme.eth_text_gap
+            + (name_ref.width - 1px) + FlipperTheme.eth_text_gap + 4px;
+        y: FlipperTheme.eth_info_draw_y + 2px;
+        text: root.link.ipv4;
+        font-size: 16px;
+        font-family: "HaxrCorp 4090";
+        color: root.fg;
+    }
+
+    // ── Top-right cluster ──────────────────────────────────────────────────
+    if !root.link.connected: Text {
+        x: root.cluster_left;
+        y: FlipperTheme.eth_info_draw_y;
+        text: "Disconnected";
+        font-size: 16px;
+        font-family: "HaxrCorp 4090";
+        color: root.fg;
+    }
+
+    if root.link.connected && root.link.speed != "": Text {
+        x: root.speed_x;
+        y: FlipperTheme.eth_info_draw_y;
+        text: root.link.speed;
+        font-size: 16px;
+        font-family: "HaxrCorp 4090";
+        color: root.fg;
+    }
+
+    // The arrows are threshold-rendered rather than coverage-rendered, so they
+    // stay legible on the grey pill. Their bottom aligns with the text's.
+    if root.link.connected && root.link.tx != "": Image {
+        x: root.tx_arrow_x;
+        y: FlipperTheme.eth_info_draw_y + 2px;
+        width: 5px;
+        height: 7px;
+        source: @image-url("../assets/icons/arrow_up.png");
+        colorize: FlipperTheme.black;
+    }
+    if root.link.connected && root.link.tx != "": Text {
+        x: root.tx_x;
+        y: FlipperTheme.eth_info_draw_y;
+        text: root.link.tx;
+        font-size: 16px;
+        font-family: "HaxrCorp 4090";
+        color: root.fg;
+    }
+    if root.link.connected && root.link.rx != "": Image {
+        x: root.rx_arrow_x;
+        y: FlipperTheme.eth_info_draw_y + 2px;
+        width: 5px;
+        height: 7px;
+        source: @image-url("../assets/icons/arrow_down.png");
+        colorize: FlipperTheme.black;
+    }
+    if root.link.connected && root.link.rx != "": Text {
+        x: root.rx_x;
+        y: FlipperTheme.eth_info_draw_y;
+        text: root.link.rx;
+        font-size: 16px;
+        font-family: "HaxrCorp 4090";
+        color: root.fg;
+    }
+
+    // ── Bottom row, connected only ─────────────────────────────────────────
+    // IPv6 on the left, addressing method right-aligned.
+    property <length> bottom_y: root.card_h - 1px - FlipperTheme.eth_bottom_pad_b - 8px;
+
+    if root.link.connected && root.link.ipv6 != "": Text {
+        x: FlipperTheme.eth_bottom_pad_l + 2px;
+        y: root.bottom_y;
+        text: root.link.ipv6;
+        font-size: 16px;
+        font-family: "HaxrCorp 4090";
+        color: root.fg;
+    }
+    if root.link.connected && root.link.method != "": Text {
+        x: root.right_edge - (self.width - 1px);
+        y: root.bottom_y;
+        text: root.link.method;
+        font-size: 16px;
+        font-family: "HaxrCorp 4090";
+        color: root.fg;
+    }
+
+    // ── Chevron bar, on the selected and actionable card ───────────────────
+    // Under the outline, per the note above.
+    if root.has_chevron: Rectangle {
+        background: transparent;
+        for cy in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+                   19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33]: Rectangle {
+            property <int> ri: cy < root.r / 1px
+                ? root.r / 1px - 1 - cy
+                : (cy >= root.card_h / 1px - root.r / 1px
+                    ? cy - (root.card_h / 1px - root.r / 1px)
+                    : 0);
+            visible: cy < root.card_h / 1px;
+            x: root.width - FlipperTheme.eth_chevron_w;
+            y: cy * 1px;
+            width: FlipperTheme.eth_chevron_w - self.ri * 1px;
+            height: 1px;
+            background: FlipperTheme.chevron_bar;
+        }
+        // ">" centred in the bar. HaxrCorp's cap sits at row 2 of its frame, so
+        // the draw y is lifted 2px to put the cap on the bar's centre line.
+        Text {
+            x: root.width - FlipperTheme.eth_chevron_w
+                + Math.floor((FlipperTheme.eth_chevron_w - (self.width - 1px)) / 2 / 1px) * 1px;
+            y: Math.floor((root.card_h - 7px) / 2 / 1px) * 1px - 2px;
+            text: ">";
+            font-size: 16px;
+            font-family: "HaxrCorp 4090";
+            color: FlipperTheme.white;
+        }
+    }
+
+    // ── Outline, over the fill, the pill and the chevron ───────────────────
+    SelectorFrame {
+        x: 0; y: 0;
+        frame_w: root.width;
+        frame_h: root.card_h;
+        filled: false;
+        stroke: true;
+        // Only the selected card is lifted off the page.
+        shadow: root.selected;
+        stroke_color: root.stroke;
+    }
+}
+
+// The verbose dump for one interface, over the page.
+//
+// Scrolls in pixel space, and clips: a partial row at either end has to be cut by
+// the frame rather than spilling past its border.
+component EthDetail inherits Rectangle {
+    in property <[EthDetailRow]> rows;
+    // Pixels scrolled, snapped to row tops by the caller.
+    in property <length> offset;
+    // Total height of every row, for the scrollbar and the scroll limit.
+    in property <length> content_h;
+
+    width: 100%;
+    height: 100%;
+    background: transparent;
+
+    property <length> viewport_h: FlipperTheme.eth_modal_h - 2 * FlipperTheme.eth_modal_pad_y;
+    // Content bounds, relative to the clipping rectangle rather than the screen:
+    // the rows are its children, and it starts one pixel inside the frame.
+    property <length> row_x: FlipperTheme.eth_modal_pad_x - 1px;
+    property <length> row_right: FlipperTheme.eth_modal_w - 1px - FlipperTheme.eth_modal_pad_x;
+
+    SelectorFrame {
+        x: FlipperTheme.eth_modal_x;
+        y: FlipperTheme.eth_modal_y;
+        frame_w: FlipperTheme.eth_modal_w;
+        frame_h: FlipperTheme.eth_modal_h;
+        filled: true;
+        stroke: true;
+        shadow: false;
+        radius: FlipperTheme.box;
+        fill_color: FlipperTheme.white;
+        stroke_color: FlipperTheme.black;
+    }
+
+    // Clip inside the border, so a row scrolled half out of view is cut rather
+    // than drawn over the frame.
+    Rectangle {
+        x: FlipperTheme.eth_modal_x + 1px;
+        y: FlipperTheme.eth_modal_y + 1px;
+        width: FlipperTheme.eth_modal_w - 2px;
+        height: FlipperTheme.eth_modal_h - 2px;
+        background: transparent;
+        clip: true;
+
+        for row in root.rows: Rectangle {
+            x: 0;
+            y: FlipperTheme.eth_modal_pad_y - 1px + row.top - root.offset;
+            width: parent.width;
+            height: row.kind == 1
+                ? FlipperTheme.eth_modal_divider_h
+                : FlipperTheme.eth_modal_line_h;
+            background: transparent;
+
+            // Section rule, centred in its band.
+            if row.kind == 1: Rectangle {
+                x: root.row_x;
+                y: Math.floor(FlipperTheme.eth_modal_divider_h / 2 / 1px) * 1px;
+                width: root.row_right - root.row_x;
+                height: 1px;
+                background: FlipperTheme.rule_light;
+            }
+
+            // Header: the name and state, in the chunky face the OS chrome uses so
+            // it reads as a card title. Lifted 2px because Born2bSporty's cap sits
+            // that much lower in its frame than HaxrCorp's.
+            if row.kind == 0: Text {
+                x: root.row_x;
+                y: -2px;
+                text: row.label;
+                font-size: 16px;
+                font-family: "Born2bSportyV2";
+                color: FlipperTheme.black;
+            }
+
+            // Label and value: a grey label, then the value one gap further right.
+            if row.kind == 2: Text {
+                x: root.row_x;
+                y: 0;
+                text: row.label;
+                font-size: 16px;
+                font-family: "HaxrCorp 4090";
+                color: FlipperTheme.field_label;
+            }
+            if row.kind == 2: Text {
+                x: root.row_x + (label_ref.width - 1px) + FlipperTheme.eth_modal_label_gap;
+                y: 0;
+                text: row.value;
+                font-size: 16px;
+                font-family: "HaxrCorp 4090";
+                color: FlipperTheme.black;
+            }
+            label_ref := Text {
+                visible: false;
+                text: row.label;
+                font-size: 16px;
+                font-family: "HaxrCorp 4090";
+            }
+
+            // Section label for a list with more than one entry.
+            if row.kind == 3: Text {
+                x: root.row_x;
+                y: 0;
+                text: row.label;
+                font-size: 16px;
+                font-family: "HaxrCorp 4090";
+                color: FlipperTheme.field_label;
+            }
+
+            // An entry under that label.
+            if row.kind == 4: Text {
+                x: root.row_x + FlipperTheme.eth_modal_indent;
+                y: 0;
+                text: row.value;
+                font-size: 16px;
+                font-family: "HaxrCorp 4090";
+                color: FlipperTheme.black;
+            }
+
+            // Speed, then RX and TX each behind their arrow. Laid out left to
+            // right by a running cursor, so a missing segment closes up.
+            if row.kind == 5: Rectangle {
+                background: transparent;
+                x: root.row_x;
+                y: 0;
+                width: root.row_right - root.row_x;
+                height: parent.height;
+
+                m_speed := Text { visible: false; text: row.speed; font-size: 16px; font-family: "HaxrCorp 4090"; }
+                m_rx := Text { visible: false; text: row.rx; font-size: 16px; font-family: "HaxrCorp 4090"; }
+
+                property <length> after_speed: row.speed == ""
+                    ? 0px
+                    : (m_speed.width - 1px) + FlipperTheme.eth_modal_metric_gap;
+                property <length> rx_text_x: self.after_speed + 5px + FlipperTheme.eth_modal_icon_gap;
+                property <length> after_rx: row.rx == ""
+                    ? self.after_speed
+                    : self.rx_text_x + (m_rx.width - 1px) + FlipperTheme.eth_modal_metric_gap;
+                property <length> tx_text_x: self.after_rx + 5px + FlipperTheme.eth_modal_icon_gap;
+
+                if row.speed != "": Text {
+                    x: 0; y: 0;
+                    text: row.speed;
+                    font-size: 16px;
+                    font-family: "HaxrCorp 4090";
+                    color: FlipperTheme.black;
+                }
+                if row.rx != "": Image {
+                    x: parent.after_speed;
+                    y: FlipperTheme.eth_modal_arrow_dy;
+                    width: 5px; height: 7px;
+                    source: @image-url("../assets/icons/arrow_down.png");
+                    colorize: FlipperTheme.black;
+                }
+                if row.rx != "": Text {
+                    x: parent.rx_text_x; y: 0;
+                    text: row.rx;
+                    font-size: 16px;
+                    font-family: "HaxrCorp 4090";
+                    color: FlipperTheme.black;
+                }
+                if row.tx != "": Image {
+                    x: parent.after_rx;
+                    y: FlipperTheme.eth_modal_arrow_dy;
+                    width: 5px; height: 7px;
+                    source: @image-url("../assets/icons/arrow_up.png");
+                    colorize: FlipperTheme.black;
+                }
+                if row.tx != "": Text {
+                    x: parent.tx_text_x; y: 0;
+                    text: row.tx;
+                    font-size: 16px;
+                    font-family: "HaxrCorp 4090";
+                    color: FlipperTheme.black;
+                }
+            }
+        }
+    }
+
+    // Scrollbar, only when the dump overflows. In pixels rather than rows, which
+    // is what makes a mixed list of 4px and 12px rows scroll evenly.
+    if root.content_h > root.viewport_h: Rectangle {
+        x: FlipperTheme.eth_modal_x + FlipperTheme.eth_modal_w - 4px;
+        y: FlipperTheme.eth_modal_y + 4px;
+        width: FlipperTheme.scrollbar_w;
+        height: FlipperTheme.eth_modal_h - 8px;
+        background: transparent;
+
+        property <length> range: self.height - 2px;
+        property <length> thumb_h: Math.max(
+            FlipperTheme.scrollbar_thumb_min / 1px,
+            Math.round((self.range / 1px) * (root.viewport_h / root.content_h))
+        ) * 1px;
+
+        Rectangle {
+            x: 0;
+            y: 1px + Math.round(((parent.range - parent.thumb_h) / 1px)
+                * (root.offset / (root.content_h - root.viewport_h))) * 1px;
+            width: FlipperTheme.scrollbar_w;
+            height: parent.thumb_h;
+            background: FlipperTheme.black;
+        }
+    }
+
+}
+
+export component EthernetBody inherits Rectangle {
+    in property <[EthLink]> links;
+    in property <int> selected;
+    in property <string> breadcrumb;
+
+    in property <int> battery: -1;
+    in property <bool> charging;
+    in property <bool> wifi_connected;
+    in property <int> wifi_quality;
+    in property <int> ethernet;
+    in property <bool> recording;
+    in property <bool> modem_available;
+    in property <string> access_tech: "--";
+    in property <int> modem_quality;
+
+    width: 100%;
+    height: 100%;
+    background: FlipperTheme.white;
+
+    StatusBar {
+        x: 0;
+        y: 0;
+        battery: root.battery;
+        charging: root.charging;
+        wifi_connected: root.wifi_connected;
+        wifi_quality: root.wifi_quality;
+        ethernet: root.ethernet;
+        recording: root.recording;
+        modem_available: root.modem_available;
+        access_tech: root.access_tech;
+        modem_quality: root.modem_quality;
+    }
+
+    if root.breadcrumb != "": Text {
+        x: FlipperTheme.breadcrumb_x;
+        y: FlipperTheme.breadcrumb_y;
+        text: root.breadcrumb;
+        font-size: 16px;
+        font-family: "HaxrCorp 4090";
+        color: FlipperTheme.divider;
+    }
+
+    // Cards stack, each starting below the one before, so a connected card pushes
+    // the rest down by its extra 12px. Slint has no running total, so the offset is
+    // written out for the three the page can hold.
+    for link[i] in root.links: EthCard {
+        x: FlipperTheme.eth_x;
+        y: FlipperTheme.eth_y + (
+            i == 0 ? 0px
+            : i == 1 ? root.height_of(0) + FlipperTheme.eth_gap
+            : root.height_of(0) + root.height_of(1) + 2 * FlipperTheme.eth_gap
+        );
+        link: link;
+        selected: i == root.selected;
+    }
+
+    // The dump, over the cards. The page underneath keeps polling, so its data
+    // stays live while it is open.
+    in property <[EthDetailRow]> detail_rows;
+    in property <length> detail_offset;
+    in property <length> detail_content_h;
+
+    if root.detail_rows.length > 0: EthDetail {
+        rows: root.detail_rows;
+        offset: root.detail_offset;
+        content_h: root.detail_content_h;
+    }
+
+    // Height of card `i`, for stacking the ones below it.
+    function height_of(i: int) -> length {
+        return root.links[i].connected
+            ? FlipperTheme.eth_h_connected
+            : FlipperTheme.eth_h;
+    }
+}

@@ -16,7 +16,8 @@ way to desync: if the app restarts, its first scene puts the screen right.
 
 Two scene types are used here:
 
-    {"type": "form", "title", "rows": [{"label", "value"}], "selected", "hints"}
+    {"type": "form", "title", "rows": [{"label", "value", "at_start", "at_end"}],
+     "selected", "hints"}
     {"type": "log",  "title", "lines": [...], "total", "offset", "hints"}
 
 A log sends a window rather than its whole history: `total` and `offset` tell
@@ -34,7 +35,7 @@ import threading
 # Editable parameters. `values` makes a field a cycle; `step` makes it numeric.
 FIELDS = [
     {"label": "Host", "value": "1.1.1.1",
-     "values": ["1.1.1.1", "8.8.8.8", "192.168.1.1", "flipperdevices.com"]},
+     "values": ["1.1.1.1", "8.8.8.8", "127.0.0.1", "flipperdevices.com", "google.com"]},
     {"label": "Count", "value": 5, "step": 1, "min": 1, "max": 99},
     {"label": "Interval", "value": 1.0, "step": 0.2, "min": 0.2, "max": 5.0},
     {"label": "Size", "value": 56, "step": 8, "min": 8, "max": 1024},
@@ -57,10 +58,30 @@ def emit(scene):
 
 
 def shown(field):
+    """The field's value, wrapped in chevrons to ask for the adjust control.
+
+    A value the renderer sees as "< ... >" is drawn with chevrons either side while
+    its row is selected, and collapses to the bare value when it is not. That is
+    how the row says "left and right change me" without the protocol needing a
+    field for it.
+    """
     v = field["value"]
     if isinstance(v, float):
-        return f"{v:.1f}s"
-    return str(v)
+        return f"< {v:.1f}s >"
+    return f"< {v} >"
+
+
+def at_ends(field):
+    """Whether the value sits at the low or high end of its range.
+
+    The chevron at an exhausted end is suppressed, so the control shows which
+    directions are still available. A cycling field (the host list) wraps, so it
+    never runs out in either direction.
+    """
+    if "values" in field:
+        return False, False
+    v = field["value"]
+    return v <= field["min"], v >= field["max"]
 
 
 class App:
@@ -82,7 +103,15 @@ class App:
         emit({
             "type": "form",
             "title": "Ping",
-            "rows": [{"label": f["label"], "value": shown(f)} for f in FIELDS],
+            "rows": [
+                {
+                    "label": f["label"],
+                    "value": shown(f),
+                    "at_start": at_ends(f)[0],
+                    "at_end": at_ends(f)[1],
+                }
+                for f in FIELDS
+            ],
             "selected": self.selected,
             # One entry per physical soft key: esc, view, power, edit, run.
             "hints": ["Back", "", "", "", "Start"],
@@ -235,7 +264,7 @@ def rtt_summary(line):
     if len(names) != len(numbers):
         return values.strip()
 
-    pretty = {"mdev": "jit", "stddev": "jit"}
+    pretty = {"mdev": "jitter", "stddev": "jitter"}
     # Average first: it is the number anyone reads, and min and max frame it.
     order = ["avg", "min", "max", "mdev", "stddev"]
     pairs = sorted(

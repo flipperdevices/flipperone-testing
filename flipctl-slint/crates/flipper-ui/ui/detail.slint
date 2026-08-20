@@ -1,0 +1,209 @@
+// A detail screen: breadcrumb, a scrolling list of label/value rows, soft bar.
+//
+// The five screens behind Settings and Network (Routing info, Battery info, Disk
+// info, Update, 5G Modem) are one shape with different content, so they share one
+// body and differ only in the row list their scene builds.
+//
+// These are restyled, not transcribed. In the prototype they predate its own
+// design system: no `canvas.clear`, so they inherit the black ground the render
+// loop leaves; a fourth bitmap font (`font.js`, 5x7 in a 6x8 cell) that nothing
+// else uses; "[Back]" drawn as literal text instead of a soft button; and a title
+// drawn at x4 underneath the status bar's own badge cluster, which starts at x2
+// and overlaps it. This keeps their data and row order and draws them like
+// Network and Settings.
+import { FlipperTheme } from "@theme";
+import { SoftBar } from "frame.slint";
+import { StatusBar } from "statusbar.slint";
+
+// One row. `kind` picks the shape; the unused fields are ignored.
+export struct DetailRow {
+    // 0 label and value, 1 divider, 2 gauge, 3 full-width text.
+    kind: int,
+    label: string,
+    value: string,
+    // Gauge fill, 0..=100.
+    percent: int,
+    // Secondary rows draw in the dim tone rather than ink.
+    dim: bool,
+}
+
+export component DetailBody inherits Rectangle {
+    in property <[DetailRow]> rows;
+    in property <string> breadcrumb;
+    // First visible row, for lists longer than the viewport.
+    in property <int> offset;
+    in property <[string]> hints;
+    in property <int> pressed_slot: -1;
+
+    in property <int> battery: -1;
+    in property <bool> charging;
+    in property <bool> wifi_connected;
+    in property <int> wifi_quality;
+    in property <int> ethernet;
+    in property <bool> recording;
+    in property <bool> modem_available;
+    in property <string> access_tech: "--";
+    in property <int> modem_quality;
+
+    width: 100%;
+    height: 100%;
+    background: FlipperTheme.white;
+
+    property <length> left: FlipperTheme.margin_h;
+    property <length> right: root.width - FlipperTheme.margin_h;
+
+    StatusBar {
+        x: 0;
+        y: 0;
+        battery: root.battery;
+        charging: root.charging;
+        wifi_connected: root.wifi_connected;
+        wifi_quality: root.wifi_quality;
+        ethernet: root.ethernet;
+        recording: root.recording;
+        modem_available: root.modem_available;
+        access_tech: root.access_tech;
+        modem_quality: root.modem_quality;
+    }
+
+    if root.breadcrumb != "": Text {
+        x: FlipperTheme.breadcrumb_x;
+        y: FlipperTheme.breadcrumb_y;
+        text: root.breadcrumb;
+        font-size: 16px;
+        font-family: "HaxrCorp 4090";
+        color: FlipperTheme.divider;
+    }
+
+    for row[i] in root.rows: Rectangle {
+        x: 0;
+        y: FlipperTheme.submenu_container_y
+            + (i - root.offset) * FlipperTheme.item_h;
+        width: 100%;
+        height: FlipperTheme.item_h;
+        background: transparent;
+        visible: i >= root.offset && i < root.offset + FlipperTheme.detail_visible_rows;
+
+        property <color> ink: row.dim ? FlipperTheme.status_dim : FlipperTheme.black;
+
+        // Label. Kind 3 is a full-width line with no value; a gauge keeps its
+        // label in the same column as every other row so the left edge is one
+        // straight line down the screen.
+        if row.kind == 0 || row.kind == 2 || row.kind == 3: Text {
+            x: root.left;
+            y: 0;
+            text: row.label;
+            font-size: 16px;
+            font-family: "Busy9px";
+            color: parent.ink;
+        }
+
+        // Value, right-aligned. Same one-pixel correction as everywhere else:
+        // the prototype's textWidth is one less than Slint's measured width.
+        if row.kind == 0: Text {
+            x: root.right - (self.width - 1px);
+            y: 0;
+            text: row.value;
+            font-size: 16px;
+            font-family: "Busy9px";
+            color: parent.ink;
+        }
+
+        // A group separator, drawn on the row's centre line so the rows above and
+        // below keep their pitch.
+        if row.kind == 1: Rectangle {
+            x: root.left;
+            y: (FlipperTheme.item_h - 1px) / 2;
+            width: root.right - root.left;
+            height: 1px;
+            background: FlipperTheme.divider;
+        }
+
+        // A gauge: label on the left, then a 1px frame with a solid fill. The
+        // prototype draws the frame one pixel larger than the fill on every side,
+        // so the fill never touches the border.
+        if row.kind == 2: Rectangle {
+            x: root.left + 30px;
+            // Centred on the text's ink band, not on the row box: the row is 12px
+            // and the ink occupies 9 of them starting 3 down, so centring on the
+            // box puts the bar a pixel above the label it belongs to.
+            y: FlipperTheme.text_ink_top
+                + (FlipperTheme.text_ink_h - FlipperTheme.gauge_h - 2px) / 2;
+            width: root.right - root.left - 30px;
+            height: FlipperTheme.gauge_h + 2px;
+            background: transparent;
+
+            Rectangle {
+                x: 0; y: 0;
+                width: parent.width; height: 1px;
+                background: FlipperTheme.black;
+            }
+            Rectangle {
+                x: 0; y: parent.height - 1px;
+                width: parent.width; height: 1px;
+                background: FlipperTheme.black;
+            }
+            Rectangle {
+                x: 0; y: 0;
+                width: 1px; height: parent.height;
+                background: FlipperTheme.black;
+            }
+            Rectangle {
+                x: parent.width - 1px; y: 0;
+                width: 1px; height: parent.height;
+                background: FlipperTheme.black;
+            }
+            Rectangle {
+                x: 1px;
+                y: 1px;
+                width: Math.round((parent.width - 2px) / 1px * row.percent / 100) * 1px;
+                height: FlipperTheme.gauge_h;
+                background: FlipperTheme.black;
+            }
+        }
+    }
+
+    // Scrollbar, on the same geometry as every other list.
+    if root.rows.length > FlipperTheme.detail_visible_rows: Rectangle {
+        x: FlipperTheme.scrollbar_x - 1px;
+        y: FlipperTheme.scrollbar_y;
+        width: FlipperTheme.scrollbar_w;
+        height: FlipperTheme.scrollbar_h;
+        background: transparent;
+
+        property <length> range: FlipperTheme.scrollbar_h - 2 * FlipperTheme.scrollbar_thumb_pad;
+        property <length> thumb_h: Math.max(
+            FlipperTheme.scrollbar_thumb_min / 1px,
+            Math.round((self.range / 1px) * FlipperTheme.detail_visible_rows / root.rows.length)
+        ) * 1px;
+        property <int> max_offset: root.rows.length - FlipperTheme.detail_visible_rows;
+
+        for dot[i] in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+                       19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
+                       35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
+                       51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63]: Rectangle {
+            x: 1px;
+            y: dot * 2px;
+            width: 1px;
+            height: 1px;
+            background: dot * 2 < FlipperTheme.scrollbar_h / 1px
+                ? FlipperTheme.black : FlipperTheme.white;
+        }
+
+        Rectangle {
+            x: 0;
+            y: FlipperTheme.scrollbar_thumb_pad + Math.round(
+                (parent.max_offset > 0
+                    ? ((parent.range - parent.thumb_h) / 1px) * root.offset / parent.max_offset
+                    : 0)) * 1px;
+            width: FlipperTheme.scrollbar_w;
+            height: parent.thumb_h;
+            background: FlipperTheme.black;
+        }
+    }
+
+    SoftBar {
+        hints: root.hints;
+        pressed_slot: root.pressed_slot;
+    }
+}

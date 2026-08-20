@@ -1,0 +1,60 @@
+// A blocking dialog: 75% white over the screen, a chamfered frame, centred text
+// and two soft buttons.
+//
+// Transcribed from menu.js makeAirplaneBlockModal. The overlay is drawn over the
+// scene rather than replacing it, so the list stays faintly visible underneath,
+// which is what tells the user the dialog sits on top of something.
+//
+// The two buttons are the ordinary bottom-bar soft buttons in the outer slots, so
+// esc and run keep the meaning they have everywhere else. Only those two slots are
+// drawn; the middle three stay empty.
+import { FlipperTheme } from "@theme";
+import { SelectorFrame, SoftBar } from "frame.slint";
+
+export component Modal inherits Rectangle {
+    in property <[string]> lines;
+    in property <string> left_label;
+    in property <string> right_label;
+    // 0 none, 1 left, 4 right: the soft slot flashing after a key press.
+    in property <int> pressed_slot: -1;
+
+    width: 100%;
+    height: 100%;
+    background: FlipperTheme.white.with-alpha(FlipperTheme.overlay_alpha);
+
+    SelectorFrame {
+        x: FlipperTheme.modal_x;
+        y: FlipperTheme.modal_y;
+        frame_w: FlipperTheme.modal_w;
+        frame_h: FlipperTheme.modal_h;
+        filled: true;
+        stroke: true;
+        shadow: false;
+        fill_color: FlipperTheme.white;
+        stroke_color: FlipperTheme.black;
+        // Popups take the larger of the two design radii; the 3px stair belongs to
+        // the menu selector.
+        radius: FlipperTheme.box;
+    }
+
+    // Text block centred in the frame, top edge at
+    // modal_y + floor((modal_h - lines * line_h) / 2).
+    for line[i] in root.lines: Text {
+        x: FlipperTheme.modal_x
+            + Math.floor((FlipperTheme.modal_w - (self.width - 1px)) / 2 / 1px) * 1px;
+        y: FlipperTheme.modal_y
+            + Math.floor((FlipperTheme.modal_h
+                - root.lines.length * FlipperTheme.modal_line_h) / 2 / 1px) * 1px
+            + i * FlipperTheme.modal_line_h;
+        text: line;
+        font-size: 16px;
+        font-family: "HaxrCorp 4090";
+        color: FlipperTheme.black;
+    }
+
+    // Only the outer slots carry a label, so the middle three draw nothing.
+    SoftBar {
+        hints: [root.left_label, "", "", "", root.right_label];
+        pressed_slot: root.pressed_slot;
+    }
+}

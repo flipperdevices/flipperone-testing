@@ -109,31 +109,37 @@ fn read_status() -> Status {
     }
 }
 
-/// First `/sys/class/power_supply/*` whose type is `Battery`.
+/// The pack, as opposed to the charger or the USB-C source.
+///
+/// `type` is the discriminator: this board exposes three supplies
+/// (`bq257xx-charger`, `bq28z610-0`, `tcpm-source-psy-2-0022`) and only the fuel
+/// gauge calls itself a Battery. One rule, used by everything that needs the pack.
+pub fn battery_dir() -> Option<std::path::PathBuf> {
+    std::fs::read_dir("/sys/class/power_supply")
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .find(|dir| read(dir.join("type")).as_deref() == Some("Battery"))
+}
+
+/// Charge level and whether it is charging.
 ///
 /// `status` is the authority on charging: this device reports `Not charging` when
 /// a charger is attached but the pack is full enough to stop, which is not the
 /// same as `Charging`.
 fn read_battery() -> (i32, bool) {
-    let Ok(entries) = std::fs::read_dir("/sys/class/power_supply") else {
+    let Some(dir) = battery_dir() else {
         return (-1, false);
     };
-    for entry in entries.flatten() {
-        let dir = entry.path();
-        if read(dir.join("type")).as_deref() != Some("Battery") {
-            continue;
-        }
-        let level = read(dir.join("capacity"))
-            .and_then(|s| s.parse::<i32>().ok())
-            .map(|v| v.clamp(0, 100))
-            .unwrap_or(-1);
-        let charging = matches!(
-            read(dir.join("status")).as_deref(),
-            Some("Charging") | Some("Full")
-        );
-        return (level, charging);
-    }
-    (-1, false)
+    let level = read(dir.join("capacity"))
+        .and_then(|s| s.parse::<i32>().ok())
+        .map(|v| v.clamp(0, 100))
+        .unwrap_or(-1);
+    let charging = matches!(
+        read(dir.join("status")).as_deref(),
+        Some("Charging") | Some("Full")
+    );
+    (level, charging)
 }
 
 /// A wireless interface counts as connected only with a carrier, not merely up:
@@ -325,20 +331,13 @@ fn zone_temp(name: &str) -> Option<i32> {
 /// it. `power_supply/*/temp` reports the same sensor but already quantised to
 /// tenths, so going through the zone keeps the rounding identical to the CPU's.
 fn battery_temp() -> Option<i32> {
-    let entries = std::fs::read_dir("/sys/class/power_supply").ok()?;
-    for entry in entries.flatten() {
-        let dir = entry.path();
-        if read(dir.join("type")).as_deref() != Some("Battery") {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().to_string();
-        if let Some(t) = zone_temp(&name) {
-            return Some(t);
-        }
-        // No matching zone: fall back to the gauge's own tenths.
-        return read(dir.join("temp"))?.parse().ok();
+    let dir = battery_dir()?;
+    let name = dir.file_name()?.to_string_lossy().to_string();
+    if let Some(t) = zone_temp(&name) {
+        return Some(t);
     }
-    None
+    // No matching zone: fall back to the gauge's own tenths.
+    read(dir.join("temp"))?.parse().ok()
 }
 
 /// SoC package temperature, in tenths of a degree.
@@ -453,8 +452,20 @@ fn links() -> Vec<Link> {
 /// 32 hex digits with no separators.
 fn ipv6_by_interface() -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
+    for (iface, addr) in ipv6_list() {
+        map.entry(iface).or_insert(addr);
+    }
+    map
+}
+
+/// Every global IPv6 address, as (interface, address).
+///
+/// Written out in shortest form by `sysinfo::format_ipv6`, which is the same
+/// RFC 5952 collapse this used to carry its own copy of.
+fn ipv6_list() -> Vec<(String, String)> {
+    let mut out = Vec::new();
     let Some(text) = read("/proc/net/if_inet6") else {
-        return map;
+        return out;
     };
     for line in text.lines() {
         let mut fields = line.split_whitespace();
@@ -463,53 +474,39 @@ fn ipv6_by_interface() -> std::collections::HashMap<String, String> {
         if iface == "lo" || hex.len() != 32 {
             continue;
         }
-        let groups: Vec<String> = (0..8)
-            .map(|i| {
-                let g = &hex[i * 4..i * 4 + 4];
-                format!("{:x}", u16::from_str_radix(g, 16).unwrap_or(0))
-            })
-            .collect();
-        // Collapse the longest run of zero groups, as an address is normally
-        // written. One run only, per RFC 5952.
-        let mut best = (0usize, 0usize);
-        let mut run = (0usize, 0usize);
-        for (i, g) in groups.iter().enumerate() {
-            if g == "0" {
-                if run.1 == 0 {
-                    run.0 = i;
-                }
-                run.1 += 1;
-                if run.1 > best.1 {
-                    best = run;
-                }
-            } else {
-                run = (0, 0);
-            }
+        let mut groups = [0u16; 8];
+        for (i, g) in groups.iter_mut().enumerate() {
+            *g = u16::from_str_radix(&hex[i * 4..i * 4 + 4], 16).unwrap_or(0);
         }
-        let text = if best.1 > 1 {
-            format!(
-                "{}::{}",
-                groups[..best.0].join(":"),
-                groups[best.0 + best.1..].join(":")
-            )
-        } else {
-            groups.join(":")
-        };
-        map.entry(iface.to_string()).or_insert(text);
+        out.push((iface.to_string(), crate::sysinfo::format_ipv6(&groups)));
     }
-    map
+    out
 }
 
-/// IPv4 for one interface, via `getifaddrs`.
+/// Every IPv6 address on one interface.
+pub fn ipv6_all(want: &str) -> Vec<String> {
+    ipv6_list()
+        .into_iter()
+        .filter(|(iface, _)| iface == want)
+        .map(|(_, addr)| addr)
+        .collect()
+}
+
+/// IPv4 for one interface, via `getifaddrs`. The first, for callers that show one.
 fn ipv4(want: &str) -> Option<String> {
+    ipv4_all(want).into_iter().next()
+}
+
+/// Every IPv4 address on one interface, via `getifaddrs`.
+pub fn ipv4_all(want: &str) -> Vec<String> {
     use std::ffi::CStr;
 
     let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
     // SAFETY: getifaddrs allocates the list and we free it below on every path.
     if unsafe { libc::getifaddrs(&mut head) } != 0 {
-        return None;
+        return Vec::new();
     }
-    let mut found = None;
+    let mut found = Vec::new();
     let mut cur = head;
     while !cur.is_null() {
         // SAFETY: cur is non-null and getifaddrs guarantees the field layout.
@@ -526,11 +523,10 @@ fn ipv4(want: &str) -> Option<String> {
                 // bytes as they sit in memory. to_be_bytes() would reverse them on
                 // a little-endian host and turn 192.168.1.241 into 241.1.168.192.
                 let octets = sin.sin_addr.s_addr.to_ne_bytes();
-                found = Some(format!(
+                found.push(format!(
                     "{}.{}.{}.{}",
                     octets[0], octets[1], octets[2], octets[3]
                 ));
-                break;
             }
         }
         cur = entry.ifa_next;

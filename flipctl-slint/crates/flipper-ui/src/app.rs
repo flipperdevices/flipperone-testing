@@ -51,6 +51,10 @@ pub struct Scene {
     pub offset: i32,
     /// One per physical soft key, in silkscreen order.
     pub hints: Vec<String>,
+    /// Per row, whether its value sits at the low or high end of its range. A row
+    /// at an end has that chevron suppressed, so the control shows which
+    /// directions are still available.
+    pub ends: Vec<(bool, bool)>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
@@ -208,14 +212,22 @@ pub fn parse_line(line: &str) -> Option<Scene> {
         offset: int_field(body, "offset").unwrap_or(0),
         hints: string_array(body, "hints"),
         rows: Vec::new(),
+        ends: Vec::new(),
     };
-    scene.rows = match kind {
-        SceneKind::Log => string_array(body, "lines")
-            .into_iter()
-            .map(|l| (l, String::new()))
-            .collect(),
-        SceneKind::Form => object_array(body, "rows"),
-    };
+    match kind {
+        SceneKind::Log => {
+            scene.rows = string_array(body, "lines")
+                .into_iter()
+                .map(|l| (l, String::new()))
+                .collect();
+        }
+        SceneKind::Form => {
+            for (label, value, at_start, at_end) in object_array(body, "rows") {
+                scene.rows.push((label, value));
+                scene.ends.push((at_start, at_end));
+            }
+        }
+    }
     Some(scene)
 }
 
@@ -287,8 +299,11 @@ fn string_array(body: &str, key: &str) -> Vec<String> {
     out
 }
 
-/// `{"label": ..., "value": ...}` pairs inside `"rows": [ ... ]`.
-fn object_array(body: &str, key: &str) -> Vec<(String, String)> {
+/// The row objects inside `"rows": [ ... ]`, as (label, value, at_start, at_end).
+///
+/// `at_start` and `at_end` are optional and default to false, so a row that has no
+/// range says nothing and gets both chevrons.
+fn object_array(body: &str, key: &str) -> Vec<(String, String, bool, bool)> {
     let Some(at) = body.find(&format!("\"{key}\"")) else {
         return Vec::new();
     };
@@ -305,7 +320,19 @@ fn object_array(body: &str, key: &str) -> Vec<(String, String)> {
             Some((
                 string_field(obj, "label")?,
                 string_field(obj, "value").unwrap_or_default(),
+                bool_field(obj, "at_start"),
+                bool_field(obj, "at_end"),
             ))
         })
         .collect()
+}
+
+/// A `"key": true` flag. Absent or anything else reads as false.
+fn bool_field(body: &str, key: &str) -> bool {
+    let Some(at) = body.find(&format!("\"{key}\"")) else {
+        return false;
+    };
+    body[at + key.len() + 2..]
+        .trim_start_matches([':', ' '])
+        .starts_with("true")
 }

@@ -9,13 +9,16 @@ import { FlipperTheme } from "@theme";
 import { MenuBody, ListItem } from "list.slint";
 import { IdleBody, IdleLink } from "idle.slint";
 import { LogBody } from "log.slint";
+import { Modal } from "modal.slint";
+import { DetailBody, DetailRow } from "detail.slint";
+import { EthernetBody, EthLink, EthDetailRow } from "ethernet.slint";
 
-export { ListItem, IdleLink }
+export { ListItem, IdleLink, DetailRow, EthLink, EthDetailRow }
 
 // Idle is the root. The menu opens over it, the app list over that, and an app's
 // own screens over that. `app_form` and `app_log` are the two scene types the app
 // protocol admits so far.
-export enum Screen { idle, menu, apps, app_form, app_log }
+export enum Screen { idle, menu, detail, ethernet, apps, app_form, app_log }
 
 export component Root inherits Window {
     width: 256px;
@@ -51,6 +54,9 @@ export component Root inherits Window {
     in property <[ListItem]> app_items;
     in property <int> app_selected;
     in property <int> app_total;
+    in property <int> app_bar_total;
+    in property <int> app_bar_offset;
+    in property <int> app_scroll;
     in property <string> app_title;
     in property <[string]> app_lines;
     in property <int> app_log_total;
@@ -67,6 +73,31 @@ export component Root inherits Window {
     in property <bool> pressed;
     in property <bool> real_frame: true;
     in property <[string]> menu_hints;
+    // Set to open the menu as a submenu, e.g. "> Network". Empty for the main
+    // menu, which anchors 3px higher and draws no trail.
+    in property <string> breadcrumb;
+    // Which chevron on the selected toggle row is flashing: 0 none, 1 left, 2 right.
+    in property <int> arrow_pressed;
+
+    // Detail screens behind Settings and Network.
+    in property <[DetailRow]> detail_rows;
+    in property <int> detail_offset;
+    in property <[string]> detail_hints;
+    in property <int> detail_pressed_slot: -1;
+
+    // The Ethernet page.
+    in property <[EthLink]> eth_links;
+    in property <int> eth_selected;
+    // The verbose dump, when it is open. Empty closes it.
+    in property <[EthDetailRow]> eth_detail_rows;
+    in property <length> eth_detail_offset;
+    in property <length> eth_detail_content_h;
+
+    // Blocking dialog over whatever screen is showing. Non-empty lines open it.
+    in property <[string]> modal_lines;
+    in property <string> modal_left;
+    in property <string> modal_right;
+    in property <int> modal_pressed_slot: -1;
 
     if root.screen == Screen.idle: IdleBody {
         battery: root.battery;
@@ -100,8 +131,12 @@ export component Root inherits Window {
         modem_quality: root.modem_quality;
         items: root.app_items;
         selected: root.app_selected;
-        scroll: 0;
+        // The app list sends every row and scrolls here; an app's own form windows
+        // its rows itself and sends scroll 0 with the real extent on the bar.
+        scroll: root.app_scroll;
         total: root.app_total;
+        bar_total: root.app_bar_total;
+        bar_offset: root.app_bar_offset;
         tick: root.tick;
         pressed: root.pressed;
         real_frame: true;
@@ -125,6 +160,41 @@ export component Root inherits Window {
         pressed_slot: root.app_pressed_slot;
     }
 
+    if root.screen == Screen.detail: DetailBody {
+        battery: root.battery;
+        charging: root.charging;
+        wifi_connected: root.wifi_connected;
+        wifi_quality: root.wifi_quality;
+        ethernet: root.ethernet;
+        recording: root.recording;
+        modem_available: root.modem_available;
+        access_tech: root.access_tech;
+        modem_quality: root.modem_quality;
+        rows: root.detail_rows;
+        breadcrumb: root.breadcrumb;
+        offset: root.detail_offset;
+        hints: root.detail_hints;
+        pressed_slot: root.detail_pressed_slot;
+    }
+
+    if root.screen == Screen.ethernet: EthernetBody {
+        battery: root.battery;
+        charging: root.charging;
+        wifi_connected: root.wifi_connected;
+        wifi_quality: root.wifi_quality;
+        ethernet: root.ethernet;
+        recording: root.recording;
+        modem_available: root.modem_available;
+        access_tech: root.access_tech;
+        modem_quality: root.modem_quality;
+        links: root.eth_links;
+        selected: root.eth_selected;
+        breadcrumb: root.breadcrumb;
+        detail_rows: root.eth_detail_rows;
+        detail_offset: root.eth_detail_offset;
+        detail_content_h: root.eth_detail_content_h;
+    }
+
     if root.screen == Screen.menu: MenuBody {
         battery: root.battery;
         charging: root.charging;
@@ -143,5 +213,15 @@ export component Root inherits Window {
         pressed: root.pressed;
         real_frame: root.real_frame;
         hints: root.menu_hints;
+        breadcrumb: root.breadcrumb;
+        arrow_pressed: root.arrow_pressed;
+    }
+
+    // Over everything, including the soft bar: the dialog owns both keys it shows.
+    if root.modal_lines.length > 0: Modal {
+        lines: root.modal_lines;
+        left_label: root.modal_left;
+        right_label: root.modal_right;
+        pressed_slot: root.modal_pressed_slot;
     }
 }

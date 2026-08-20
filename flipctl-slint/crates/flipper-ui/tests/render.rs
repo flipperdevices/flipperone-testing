@@ -13,6 +13,28 @@ use flipper_ui::Surface;
 use flipper_ui::ui::{ListItem, Root, Screen};
 use slint::ComponentHandle;
 
+/// A row, with the chevron affordance parsed out of the status the way the demo
+/// binary does it. Keeps the tests declaring rows the way a caller does.
+fn item(label: &str, status: &str, icon: i32, frames: i32) -> ListItem {
+    let (chevrons, value) = match status {
+        "< ON >" | "< OFF >" => (1, status.trim_matches(['<', '>', ' ']).to_string()),
+        s if s.starts_with('<') && s.ends_with('>') && s.len() > 2 => {
+            (2, s[1..s.len() - 1].trim().to_string())
+        }
+        s => (0, s.to_string()),
+    };
+    ListItem {
+        label: label.into(),
+        status: status.into(),
+        icon,
+        frames,
+        chevrons,
+        value: value.as_str().into(),
+        at_start: false,
+        at_end: false,
+    }
+}
+
 fn list_screen(screen: &Root, pressed: bool) {
     let items: Vec<ListItem> = [
         ("Desktop Computer", "", 1, 1),
@@ -24,12 +46,7 @@ fn list_screen(screen: &Root, pressed: bool) {
         ("Settings", "", 7, 10),
     ]
     .iter()
-    .map(|(label, status, icon, frames)| ListItem {
-        label: (*label).into(),
-        status: (*status).into(),
-        icon: *icon,
-        frames: *frames,
-    })
+    .map(|(label, status, icon, frames)| item(label, status, *icon, *frames))
     .collect();
 
     screen.set_total(items.len() as i32);
@@ -588,5 +605,246 @@ fn an_app_log_scrolls_when_it_overflows() {
                 && *rows.last().unwrap() < strip_top,
             "the thumb must stay between the status bar and the strip: {rows:?}"
         );
+    }
+}
+
+/// A submenu on screen: five rows, a breadcrumb, and a toggle in the first row.
+fn submenu_screen(screen: &Root, selected: i32) {
+    let items: Vec<ListItem> = [
+        ("Airplane mode", "< OFF >", 9, 10),
+        ("Routing info", "", 10, 1),
+        ("5G Modem", "", 11, 1),
+        ("Wi-Fi", "not connected", 12, 1),
+        ("Ethernet", "", 13, 1),
+    ]
+    .iter()
+    .map(|(label, status, icon, frames)| item(label, status, *icon, *frames))
+    .collect();
+    screen.set_total(items.len() as i32);
+    screen.set_items(slint::ModelRc::new(slint::VecModel::from(items)));
+    screen.set_selected(selected);
+    screen.set_real_frame(true);
+    screen.set_battery(87);
+    screen.set_breadcrumb("> Network".into());
+    screen.set_screen(Screen::Menu);
+}
+
+const BAR_H: usize = theme::metric::STATUS_BAR_H as usize;
+const SUB_TOP: usize = theme::metric::SUBMENU_CONTAINER_Y as usize;
+const ROW_H: usize = theme::metric::MENU_LINE_H as usize;
+
+/// The breadcrumb occupies the band between the status bar and the list, in the
+/// divider tone, starting at x4.
+///
+/// submenu.js puts it at (breadcrumbX 4, breadcrumbY STATUS_BAR_H + 2) in
+/// #CCCCCC. A breadcrumb in black, or one overlapping either neighbour, means the
+/// submenu anchor and the main menu's have been confused.
+#[test]
+fn breadcrumb_sits_between_bar_and_list() {
+    let window = FlipperSlintPlatform::install();
+    let screen = Root::new().unwrap();
+    screen.show().unwrap();
+    submenu_screen(&screen, 0);
+    let frame = render_frame(&window).unwrap();
+    let stride = usize::from(theme::PANEL_W);
+
+    // The selector is drawn one pixel above the container (selector_y_offset), so
+    // its top edge lands on the band's last row and is not breadcrumb ink.
+    let band_end = (SUB_TOP as i32 + theme::metric::SELECTOR_Y_OFFSET) as usize;
+    let mut inked = Vec::new();
+    for y in BAR_H..band_end {
+        for x in 0..stride {
+            let v = frame[y * stride + x].0;
+            if v != 255 {
+                inked.push((x, y, v));
+            }
+        }
+    }
+    assert!(!inked.is_empty(), "the breadcrumb drew nothing");
+    // Every pixel of it is the divider tone: the trail is dim, not ink.
+    let dim = theme::color::DIVIDER.0;
+    for (x, y, v) in &inked {
+        assert_eq!(*v, dim, "breadcrumb pixel at ({x},{y}) is {v}, not {dim}");
+    }
+    assert_eq!(
+        inked.iter().map(|(x, _, _)| *x).min().unwrap(),
+        theme::metric::BREADCRUMB_X as usize,
+        "the trail must start at breadcrumb_x"
+    );
+}
+
+/// A submenu's rows sit 3px below a main menu's.
+///
+/// The main menu anchors at 25 and a submenu at 28, because the breadcrumb needs
+/// the band in between. Reusing the main menu's constant shifts every row.
+#[test]
+fn submenu_rows_sit_below_the_main_menu() {
+    let window = FlipperSlintPlatform::install();
+    let screen = Root::new().unwrap();
+    screen.show().unwrap();
+    submenu_screen(&screen, 0);
+    let frame = render_frame(&window).unwrap();
+    let stride = usize::from(theme::PANEL_W);
+
+    // Dividers fall one pixel above each row after the first. The one above row 1
+    // is covered by the selector while row 0 is selected, as it is in the
+    // prototype, so the first visible divider belongs to row 2.
+    let dim = theme::color::DIVIDER.0;
+    let found: Vec<usize> = (SUB_TOP..usize::from(theme::PANEL_H))
+        .filter(|y| (0..stride).filter(|x| frame[y * stride + x].0 == dim).count() > 100)
+        .collect();
+    let expected: Vec<usize> = (2..5).map(|i| SUB_TOP + i * (ROW_H + 1) - 1).collect();
+    assert_eq!(found, expected, "divider rows moved");
+}
+
+/// Columns holding ink in the selected row, right of the label.
+fn status_columns(frame: &[flipper_ui::Gray8], row: usize, threshold: u8) -> Vec<usize> {
+    let stride = usize::from(theme::PANEL_W);
+    let top = SUB_TOP + row * (ROW_H + 1);
+    // Stop short of the selector's right edge and corner stairs, which are ink but
+    // not status: with no scrollbar the frame runs to x250.
+    (140..246)
+        .filter(|x| (top..top + ROW_H).any(|y| frame[y * stride + x].0 < threshold))
+        .collect()
+}
+
+/// The chevrons of a `< ON >` status hold still when the value changes width.
+///
+/// MenuLine.js measures the middle slot from "OFF" whichever value is showing and
+/// centres the value inside it, so ON (15px) and OFF (21px) leave both chevrons
+/// where they are. Measuring the value itself is the bug this pins: it would move
+/// both chevrons by 3px every time the toggle flipped.
+#[test]
+fn toggle_chevrons_do_not_move_with_the_value() {
+    let window = FlipperSlintPlatform::install();
+    let screen = Root::new().unwrap();
+    screen.show().unwrap();
+
+    let mut ends = |status: &str| -> (usize, usize) {
+        submenu_screen(&screen, 0);
+        screen.set_items(slint::ModelRc::new(slint::VecModel::from(vec![item(
+            "Airplane mode",
+            status,
+            9,
+            10,
+        )])));
+        screen.set_total(1);
+        let frame = render_frame(&window).unwrap();
+        let cols = status_columns(&frame, 0, 64);
+        (*cols.first().unwrap(), *cols.last().unwrap())
+    };
+
+    let off = ends("< OFF >");
+    let on = ends("< ON >");
+    assert_eq!(off, on, "the chevrons moved when the value changed width");
+    // And they land where MenuLine.js's arithmetic puts them: the row is 224 wide
+    // at x5, '>' sits against x224 - status_pad_r, and '<' is
+    // spacing + textWidth("OFF") + spacing further left.
+    assert_eq!(off.0, 165, "left chevron starts");
+    assert_eq!(off.1, 223, "right chevron ends");
+}
+
+/// An unfocused toggle shows the bare value, right-aligned, with no chevrons.
+///
+/// The arrows are an affordance for left and right, which act on the focused row
+/// only, so drawing them on every row would promise input that does nothing.
+#[test]
+fn unfocused_toggle_drops_its_chevrons() {
+    let window = FlipperSlintPlatform::install();
+    let screen = Root::new().unwrap();
+    screen.show().unwrap();
+    // Row 0 is the toggle; select row 1 so it is not focused.
+    submenu_screen(&screen, 1);
+    let frame = render_frame(&window).unwrap();
+
+    // Unfocused status is the dim tone, so anything not white counts.
+    let cols = status_columns(&frame, 0, 255);
+    let (first, last) = (*cols.first().unwrap(), *cols.last().unwrap());
+    assert_eq!(last, 223, "the value must be flush with status_pad_r");
+    assert_eq!(last - first + 1, 21, "only \"OFF\" should be drawn, 21px wide");
+}
+
+/// An adjustable value's chevrons hug it, unlike a toggle's.
+///
+/// MenuLine.js has two layouts and they differ in more than spacing: the ON/OFF
+/// toggle gets a fixed slot measured from "OFF" with 15px gaps, while any other
+/// bracketed value is measured directly with 6px gaps. Using the toggle's geometry
+/// for a value leaves a visible hole either side of short values like "5".
+#[test]
+fn an_adjustable_value_uses_the_tighter_spacing() {
+    let window = FlipperSlintPlatform::install();
+    let screen = Root::new().unwrap();
+    screen.show().unwrap();
+
+    let ends = |status: &str| -> (usize, usize) {
+        submenu_screen(&screen, 0);
+        screen.set_items(slint::ModelRc::new(slint::VecModel::from(vec![item(
+            "Count", status, 0, 1,
+        )])));
+        screen.set_total(1);
+        let frame = render_frame(&window).unwrap();
+        let cols = status_columns(&frame, 0, 64);
+        (*cols.first().unwrap(), *cols.last().unwrap())
+    };
+
+    // Both end flush against status_pad_r, so only the left edge moves.
+    let (toggle_left, toggle_right) = ends("< OFF >");
+    let (value_left, value_right) = ends("< 5 >");
+    assert_eq!(toggle_right, value_right, "both are right-aligned");
+    assert!(
+        value_left > toggle_left,
+        "a measured value should start further right than the toggle's fixed slot: \
+         value at {value_left}, toggle at {toggle_left}"
+    );
+
+    // "5" is 6px wide and each chevron 4px, with 6px gaps:
+    // 4 + 6 + 6 + 6 + 4 = 26px from the left chevron to the right one.
+    assert_eq!(value_right - value_left + 1, 26, "value layout width");
+}
+
+/// A value at the end of its range loses that chevron, and only that chevron.
+///
+/// The value must not move when an arrow is suppressed: the prototype hides the
+/// glyph and leaves the layout alone, so the number stays put as you hold a key
+/// into the stop.
+#[test]
+fn a_value_at_its_limit_drops_one_chevron() {
+    let window = FlipperSlintPlatform::install();
+    let screen = Root::new().unwrap();
+    screen.show().unwrap();
+
+    let value_cols = |at_start: bool, at_end: bool| -> Vec<usize> {
+        submenu_screen(&screen, 0);
+        let mut row = item("Count", "< 5 >", 0, 1);
+        row.at_start = at_start;
+        row.at_end = at_end;
+        screen.set_items(slint::ModelRc::new(slint::VecModel::from(vec![row])));
+        screen.set_total(1);
+        let frame = render_frame(&window).unwrap();
+        status_columns(&frame, 0, 64)
+    };
+
+    let both = value_cols(false, false);
+    let no_left = value_cols(true, false);
+    let no_right = value_cols(false, true);
+
+    // Suppressing the left chevron removes ink from the left end only.
+    assert!(
+        no_left.first() > both.first(),
+        "the left chevron should be gone"
+    );
+    assert_eq!(no_left.last(), both.last(), "the right chevron stays");
+    assert_eq!(no_right.first(), both.first(), "the left chevron stays");
+    assert!(
+        no_right.last() < both.last(),
+        "the right chevron should be gone"
+    );
+
+    // And the value itself has not moved: its columns are a subset of the
+    // both-chevrons render in every case.
+    for cols in [&no_left, &no_right] {
+        for c in cols.iter() {
+            assert!(both.contains(c), "column {c} appeared when a chevron was hidden");
+        }
     }
 }

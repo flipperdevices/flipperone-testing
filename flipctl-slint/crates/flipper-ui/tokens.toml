@@ -25,6 +25,16 @@ divider       = "#cccccc"   # menu.js DIVIDER_COLOR, between adjacent MenuLines
 disabled_bg   = "#cccccc"   # canvas.js disabled button ground
 disabled_fg   = "#999999"   # canvas.js disabled button text
 status_dim    = "#999999"   # MenuLine right-aligned status text, DEFAULT state
+# The unselected interface card's outline: a neutral grey whatever the link state,
+# so a disconnected card reads as grey content in a normal frame rather than as a
+# disabled control.
+eth_stroke   = "#999999"   # EthernetTab unselected ResponsiveFrame stroke
+# Backdrop behind a card's top-right cluster, and the selector's drill-in bar.
+pill         = "#cccccc"   # EthernetTab pill
+chevron_bar  = "#666666"   # ComponentSelectorFrame chevronColor
+# Rule between sections of the interface dump. Lighter than the menu divider
+# because it separates groups inside one card rather than sibling rows.
+rule_light   = "#e5e5e5"   # ethernet.js MODAL_DIVIDER_COLOR
 chevron_flash = "#222222"   # MenuLine < > arrow tap flash
 popup_edge    = "#d0d0d0"   # drawPopupLeft shadow edge
 keycap_dim    = "#888888"   # keyboard language-switcher label
@@ -63,6 +73,55 @@ icon_text_gap       = 4     # MenuLine.js TEXT_GAP
 text_draw_y         = 3     # MenuLine.js TEXT_DRAW_Y, puts cap top at line y+6
 status_pad_r        = 5     # MenuLine.js STATUS_PAD_R
 
+# Gap between each chevron and the value in a "< ON >" status. MenuLine.js pins
+# it at 15 and measures the middle slot from "OFF" whichever value is showing, so
+# the chevrons hold still when the value changes width.
+toggle_spacing      = 15    # MenuLine.js spacing
+# Gap for the generic "< value >" adjust affordance, e.g. "< 10 sec >". Unlike the
+# ON/OFF toggle above, the value is measured directly rather than given a fixed
+# slot, so the chevrons sit closer and move with it.
+value_spacing       = 6     # MenuLine.js gSpacing
+
+# Ethernet interface cards. One per link, stacked below the breadcrumb. The page
+# is sized so the worst case (three connected links) fits without scrolling:
+# eth_y + 3 * eth_h_connected + 2 * eth_gap = 26 + 102 + 6 = 134 <= 144.
+eth_x               = 4     # ethernet.js TAB_X
+eth_y               = 26    # ethernet.js TAB_Y
+eth_w               = 248   # ethernet.js TAB_W
+eth_h               = 22    # ethernet.js TAB_H, a disconnected link
+eth_h_connected     = 34    # EthernetTab.CONNECTED_H, room for the RX/TX row
+eth_gap             = 3     # ethernet.js TAB_GAP
+eth_icon_pad_l      = 6     # EthernetTab ICON_PAD_L
+eth_icon_pad_t      = 4     # EthernetTab ICON_PAD_T
+eth_text_gap        = 4     # EthernetTab TEXT_GAP
+eth_status_pad_r    = 10    # EthernetTab STATUS_PAD_R
+eth_name_draw_y     = 3     # EthernetTab NAME_DRAW_Y, Born2bSporty sits higher
+eth_info_draw_y     = 4     # EthernetTab INFO_DRAW_Y
+eth_pill_h          = 17    # grey backdrop behind the top-right cluster
+eth_pill_r          = 4     # its bottom-left radius
+eth_chevron_w       = 7     # ComponentSelectorFrame chevronWidth
+eth_bottom_pad_b    = 5     # EthernetTab BOTTOM_INFO_PAD_B
+eth_bottom_pad_l    = 5     # EthernetTab BOTTOM_INFO_PAD_L
+eth_bottom_gap      = 2     # EthernetTab BOTTOM_INFO_GAP, arrow to its value
+eth_bottom_col_gap  = 5     # EthernetTab BOTTOM_INFO_COL_GAP, between columns
+
+# The verbose interface dump, opened with OK on a connected card. A full-width
+# frame over the page with its own scroll, in pixel space rather than rows because
+# a divider band is 4px while a text row is 12.
+eth_modal_x           = 4     # ethernet.js MODAL_X
+eth_modal_y           = 18    # ethernet.js MODAL_Y
+eth_modal_w           = 248   # ethernet.js MODAL_W
+eth_modal_h           = 122   # ethernet.js MODAL_H
+eth_modal_pad_x       = 6     # ethernet.js MODAL_PAD_X
+eth_modal_pad_y       = 6     # ethernet.js MODAL_PAD_Y
+eth_modal_line_h      = 12    # ethernet.js MODAL_LINE_H
+eth_modal_divider_h   = 4     # ethernet.js MODAL_DIVIDER_H, the band; the rule is 1px
+eth_modal_label_gap   = 4     # ethernet.js MODAL_LABEL_GAP
+eth_modal_indent      = 8     # ethernet.js MODAL_INDENT, list values under a header
+eth_modal_metric_gap  = 12    # ethernet.js MODAL_METRIC_GAP
+eth_modal_icon_gap    = 2     # ethernet.js MODAL_ICON_GAP, arrow to its value
+eth_modal_arrow_dy    = 2     # ethernet.js ARROW_DY, the 7px sprite against the cap row
+
 list_container_x    = 5     # menu.js CONTAINER_X
 # menu.js's value, and the shipping device's. Five 20px rows plus four dividers is
 # 104px, so the list occupies y25..y128 and leaves y129 blank: a one-pixel gap
@@ -71,6 +130,15 @@ list_container_x    = 5     # menu.js CONTAINER_X
 list_container_y    = 25
 list_container_w    = 224   # menu.js CONTAINER_W
 list_viewport_h     = 104   # menu.js, = 5 * 20 + 4 dividers
+
+# Submenus (Network, Settings, ...) sit 3px lower than the main menu: the
+# breadcrumb row occupies the band between the status bar and the container, so
+# submenu.js anchors at STATUS_BAR_H + 15 where the main menu anchors at 25. The
+# comment there records the history - 16, then 14 to fit an extra row above a
+# bottom app button, then back down to 15.
+submenu_container_y = 28    # submenu.js containerY, = status_bar_h + 15
+breadcrumb_x        = 4     # submenu.js breadcrumbX
+breadcrumb_y        = 15    # submenu.js breadcrumbY, = status_bar_h + 2
 
 selector_x          = 4     # menu.js SELECTOR_X
 selector_w_scroll   = 244   # menu.js SELECTOR_W_WITH_SCROLL
@@ -83,6 +151,27 @@ scrollbar_y         = 15    # menu.js SCROLLBAR_Y
 scrollbar_h         = 127   # menu.js SCROLLBAR_H
 scrollbar_thumb_pad = 1     # menu.js SCROLLBAR_THUMB_PAD
 scrollbar_thumb_min = 5     # ui.js Scrollbar, floor on computed thumb height
+
+# Blocking dialog, e.g. "turn off Airplane mode to use 5G Modem". A 75% white
+# overlay (see [alpha].overlay) under a rounded frame with centred text and two
+# soft buttons. Geometry from menu.js makeAirplaneBlockModal.
+modal_x             = 16
+modal_y             = 40
+modal_w             = 224
+modal_h             = 60
+modal_line_h        = 11
+
+# Detail screens (Routing info, Battery info, Disk info, 5G Modem, Update). These
+# are restyled rather than transcribed: the prototype draws them white-on-black in
+# a fourth bitmap font with "[Back]" as literal text, predating its own design
+# system. Same data and row order, drawn like every other screen.
+# A row's text ink, measured rather than assumed: a 16px Busy9px line drawn at
+# the row's top has its first inked row 3 down and spans 9 rows (cap height plus
+# descender). The gauge centres on that band rather than on the row box, so the bar
+# and the label read as one line.
+text_ink_top        = 3
+text_ink_h          = 9
+gauge_h             = 7     # diskspace.js / power.js bar height, fill only
 
 # Horizontal geometry from the Figma export `soft_button_bar`: 5 * 48 + 4 * 4 =
 # 256 exactly, so the slots tile evenly and both outer edges land flush. canvas.js
@@ -143,6 +232,9 @@ list_visible_rows = 5    # menu.js VISIBLE_COUNT
 # strip starts at 130, so 8 lines of item_h fit with the last one clear of the
 # buttons: 31 + 7 * 12 + 11 = 126.
 log_visible_lines = 8
+# Rows a detail screen shows. Body starts at submenu_container_y (28) on an item_h
+# pitch, and the last row has to clear the soft strip at 130: 28 + 8 * 12 = 124.
+detail_visible_rows = 8
 msgbox_max_chars  = 25   # MessageBox.js maxLineLength
 
 # drawRoundRect / drawRoundFrame accept these three only; anything else falls
@@ -154,6 +246,7 @@ box   = 4   # MessageBox, bottom-bar button top corners, keyboard container
 
 [timing]
 press_flash_ms   = 30    # bottom-bar button, next scene usually replaces the view
+chevron_flash_ms = 120   # toggle chevron tap, must outlast the 200ms icon tick
 press_commit_ms  = 150   # popup item and keyboard key, the flash must be seen
 icon_frame_ms    = 200   # animated icon strip, 5 fps
 cursor_blink_ms  = 500   # BlinkingKeyboardCursor default

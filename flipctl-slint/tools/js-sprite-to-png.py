@@ -14,6 +14,13 @@ transparent, so it becomes a real greyscale RGBA image and is not colorized.
 
 Usage: js-sprite-to-png.py <icons.js|sprites.js> <outdir> <name> [name...]
        js-sprite-to-png.py --literal <file> <outdir> <name>
+       js-sprite-to-png.py --solid <file> <outdir> <name>
+
+`--solid` is the threshold render `drawSolidSprite` does: every pixel that is not
+the transparent sentinel becomes fully opaque, with no partial coverage. The
+Ethernet card's RX/TX arrows need it, because the default coverage render turns
+their antialiased edges into near-transparent pixels that vanish against the grey
+pill behind them.
 """
 import re
 import sys
@@ -84,8 +91,10 @@ def write_png(path, w, h, rgba):
 
 
 def main():
-    literal = sys.argv[1] == "--literal"
-    args = sys.argv[2:] if literal else sys.argv[1:]
+    mode = sys.argv[1] if sys.argv[1].startswith("--") else None
+    literal = mode == "--literal"
+    solid = mode == "--solid"
+    args = sys.argv[2:] if mode else sys.argv[1:]
     src_path, outdir, names = args[0], args[1], args[2:]
     src = open(src_path, encoding="utf-8").read()
 
@@ -96,7 +105,10 @@ def main():
         rgba = []
         for row in grey:
             for g in row:
-                if literal:
+                if solid:
+                    # Threshold: opaque wherever the sprite has any ink at all.
+                    rgba += [0, 0, 0, 0 if g >= 63 else 255]
+                elif literal:
                     # Keep the pixel's own value; 63 is the transparent sentinel.
                     if g >= 63:
                         rgba += [0, 0, 0, 0]
