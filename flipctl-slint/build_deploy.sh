@@ -43,10 +43,17 @@ done
 
 # Password auth only if sshpass is present and FLIPPER_PASS is set; otherwise
 # plain ssh, which picks up keys.
+# One connection, reused. A deploy makes a dozen ssh calls and each was paying a
+# full TCP and auth handshake; multiplexing them onto a single master cuts that to
+# one. The socket lives in a temp dir and is closed on exit.
+MUX_DIR=$(mktemp -d)
+trap 'ssh -O exit -o ControlPath="$MUX_DIR/s" "$USER_@$HOST" 2>/dev/null; rm -rf "$MUX_DIR"' EXIT
+MUX=(-o ControlMaster=auto -o ControlPath="$MUX_DIR/s" -o ControlPersist=60)
+
 if [ -n "${PASS:-}" ] && command -v sshpass >/dev/null; then
-    SSH=(sshpass -p "$PASS" ssh -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+    SSH=(sshpass -p "$PASS" ssh -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR "${MUX[@]}")
 else
-    SSH=(ssh -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+    SSH=(ssh -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR "${MUX[@]}")
 fi
 run() { "${SSH[@]}" "$USER_@$HOST" "$@"; }
 
@@ -124,5 +131,5 @@ fi
 echo "== running =="
 run "sudo journalctl -u $UNIT -n 6 --no-pager -o cat"
 echo
-echo "  http://$HOST:$PORT/          comparison and controls"
-echo "  http://$HOST:$PORT/device    the panel in a device photo"
+echo "  http://$HOST:$PORT/          the panel in a device photo"
+echo "  http://$HOST:$PORT/diff      side-by-side comparison and controls"

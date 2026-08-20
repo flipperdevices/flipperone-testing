@@ -14,12 +14,36 @@ fn main() {
     let doc: toml::Value = src.parse().expect("tokens.toml is not valid TOML");
 
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
-    fs::write(out.join("theme.rs"), rust_theme(&doc)).expect("write theme.rs");
+    write_if_changed(&out.join("theme.rs"), &rust_theme(&doc));
     let theme_slint = out.join("theme.slint");
-    fs::write(&theme_slint, slint_theme(&doc)).expect("write theme.slint");
+    write_if_changed(&theme_slint, &slint_theme(&doc));
 
     #[cfg(feature = "slint")]
     compile_slint(&theme_slint);
+}
+
+/// Write `contents` to `path` only if they differ from what is already there.
+///
+/// This is not an optimisation, it is what makes incremental builds work at all.
+/// `theme.slint` is generated here and then read by the Slint compiler, which
+/// declares it as a build input, so its mtime is part of this script's
+/// fingerprint. Rewriting it unconditionally stamps it after the timestamp cargo
+/// records for the script's own completion, which cargo reads as "an input
+/// changed" and reruns the script on the next build, forever. On the Flipper that
+/// cost a full 83-second recompile of both crates on every single build, even with
+/// nothing touched:
+///
+///     stale: out/theme.slint (vs) out/output
+///     FileTime { seconds: .., nanos: 377030560 } < FileTime { .., nanos: 397030653 }
+///
+/// Leaving an unchanged file alone keeps its mtime older than that marker and the
+/// loop cannot start. The host happened not to trip it, which is why this survived
+/// as long as it did.
+fn write_if_changed(path: &std::path::Path, contents: &str) {
+    if fs::read_to_string(path).is_ok_and(|old| old == contents) {
+        return;
+    }
+    fs::write(path, contents).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
 }
 
 /// Compile the .slint components against the generated theme.
