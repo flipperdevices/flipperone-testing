@@ -1,0 +1,560 @@
+// The boot menu: a header with an auto-start countdown, then one row per
+// bootable profile.
+//
+// Transcribed from apps/boot_menu.js, which has its own geometry rather than the
+// menu's: a header where the status bar would be, 16px rows instead of 20, and six
+// of them instead of five. Two details there are load-bearing:
+//
+//   * The header is a progress bar. A black fill sweeps left to right over the
+//     countdown, and the text inverts to white where the fill has reached it, so
+//     one line of text is drawn twice and clipped rather than being moved.
+//   * Rows are one font in every state. A boot menu row does not swap to
+//     Born2bSportyV2 when selected, because the shift in baseline reads as the row
+//     jumping, and here the rows are close enough together to notice.
+import { FlipperTheme } from "@theme";
+import { SelectorFrame, SoftBar } from "frame.slint";
+
+export struct BootRow {
+    label: string,
+    // The icon's own size. Every one of these sprites is a different shape
+    // (router_small is 9x7, the fallback is 14x14), so a single size stretches
+    // some and squashes others. Carried per row because the caller knows which
+    // sprite it picked.
+    icon_w: length,
+    icon_h: length,
+    // "Running", "Used 3 hours ago", or empty for one never booted.
+    status: string,
+    // 0 none, else 1-based into the icon table below.
+    icon: int,
+    // Marked to boot next, which draws a heart after the label.
+    auto: bool,
+}
+
+component BootLine inherits Rectangle {
+    in property <BootRow> entry;
+    in property <bool> pressed;
+
+    height: FlipperTheme.boot_row_h;
+    background: transparent;
+
+    property <color> ink: root.pressed ? FlipperTheme.white : FlipperTheme.black;
+
+    // A fixed icon column, so labels line up whatever the icon's width.
+    if root.entry.icon > 0: Image {
+        // MenuLine's own placement, which these sprites depend on: floored
+        // horizontal centring in the 12px column, and vertical centring in the row
+        // but never above icon_pad, so a 14px icon in a 16px row stays put instead
+        // of riding out of the top. Rounding the x instead puts the 9px-wide router
+        // a pixel right of where the prototype has it.
+        x: FlipperTheme.icon_pad
+            + Math.floor((FlipperTheme.boot_icon_box_w - root.entry.icon_w) / 2 / 1px) * 1px;
+        y: Math.max(
+            FlipperTheme.icon_pad / 1px,
+            Math.round((FlipperTheme.boot_row_h - root.entry.icon_h) / 2 / 1px)
+        ) * 1px;
+        width: root.entry.icon_w;
+        height: root.entry.icon_h;
+        source: root.entry.icon == 1 ? @image-url("../assets/icons/minimal_small.png")
+            : root.entry.icon == 2 ? @image-url("../assets/icons/small_desktop.png")
+            : root.entry.icon == 3 ? @image-url("../assets/icons/router_small.png")
+            : root.entry.icon == 4 ? @image-url("../assets/icons/media_small.png")
+            : root.entry.icon == 5 ? @image-url("../assets/icons/no_graphics_boot_menu.png")
+            : @image-url("../assets/icons/flipper_os.png");
+        colorize: root.ink;
+    }
+
+    label := Text {
+        x: FlipperTheme.icon_pad + FlipperTheme.boot_icon_box_w + FlipperTheme.boot_text_gap;
+        // A pixel higher than the prototype's row text, matching the header.
+        y: 2px;
+        text: root.entry.label;
+        font-size: 16px;
+        color: root.ink;
+    }
+
+    // The auto-start heart, right after the label rather than at the edge, so it
+    // reads as belonging to the name.
+    if root.entry.auto: Image {
+        x: label.x + (label.width - 1px) + 3px;
+        y: 5px;
+        width: 7px;
+        height: 7px;
+        source: @image-url("../assets/icons/auto_start_heart.png");
+        colorize: root.ink;
+    }
+
+    if root.entry.status != "": Text {
+        x: root.width - FlipperTheme.status_pad_r - (self.width - 1px);
+        y: 3px;
+        text: root.entry.status;
+        font-size: 16px;
+        color: root.pressed ? FlipperTheme.white : FlipperTheme.status_dim;
+    }
+}
+
+// One line of a popup.
+export struct BootPopupRow {
+    // 0 a body line, drawn whole and left-aligned; 1 a centred action.
+    kind: int,
+    text: string,
+    // An action row that is the current one.
+    selected: bool,
+    // The auto-start heart, to the left of an action. Marks the enabled state, so
+    // it shows only when this profile is already the marked one.
+    heart: bool,
+}
+
+// The Info and Edit popups, which share their chrome.
+//
+// From boot_menu.js: a radius-5 frame centred on the screen, a 38px grey header
+// band carrying the profile's icon and name with a centred "Size: n unit" line
+// under it, then the body. Two things are transcribed rather than invented:
+//
+//   * Body lines are whole strings ("Cloned from: Desktop"), left-aligned at 8px.
+//     Not a label column and a right-aligned value: these are sentences, and the
+//     values are long enough that splitting them wastes the width.
+//   * A value still being read shows one of "-\|/", not a word. The frame is sized
+//     to the widest it will ever be, so the line cannot make the popup resize as
+//     it loads.
+component BootPopup inherits Rectangle {
+    in property <string> title;
+    in property <int> icon;
+    in property <length> icon_w;
+    in property <length> icon_h;
+    // Already formatted as the number and its unit, or the spinner frame.
+    in property <string> size_number;
+    in property <string> size_unit;
+    in property <[BootPopupRow]> rows;
+    // Shown instead of the rows: a confirmation, progress, or what happened.
+    in property <[string]> message;
+    in property <string> hint;
+    // Measured by the caller: Slint cannot take a maximum across a model, and the
+    // font tables that decide it live on that side anyway.
+    in property <length> frame_w_in;
+
+    width: 100%;
+    height: 100%;
+    background: FlipperTheme.white.with-alpha(FlipperTheme.overlay_alpha);
+
+    property <bool> has_message: root.message.length > 0;
+    property <length> line_h: root.has_message
+        ? FlipperTheme.popup_line_h
+        : (root.rows.length > 0 && root.rows[0].kind == 1
+            ? FlipperTheme.popup_row_h
+            : FlipperTheme.popup_line_h);
+    property <int> body_lines: root.has_message
+        ? root.message.length + (root.hint == "" ? 0 : 1)
+        : root.rows.length;
+    property <length> body_h: root.body_lines * root.line_h;
+    property <length> frame_h: FlipperTheme.popup_hdr_h + root.body_h + 8px;
+    property <length> frame_w: Math.min(
+        FlipperTheme.popup_max_w / 1px,
+        Math.max(root.frame_w_in / 1px, 80)
+    ) * 1px;
+    // Rounded, as boot_menu.js centres it.
+    property <length> frame_x: Math.round((root.width - root.frame_w) / 2 / 1px) * 1px;
+    property <length> frame_y: Math.round((root.height - root.frame_h) / 2 / 1px) * 1px;
+
+    // Fill, then the grey band, then the outline over both.
+    //
+    // The band has to go under the stroke or it spills past the rounded corners: a
+    // band drawn afterwards paints over the corner stairs and the top edge, which
+    // loses the diagonal the shape is made of.
+    SelectorFrame {
+        x: root.frame_x;
+        y: root.frame_y;
+        frame_w: root.frame_w;
+        frame_h: root.frame_h;
+        filled: true;
+        stroke: false;
+        radius: FlipperTheme.popup;
+        fill_color: FlipperTheme.white;
+    }
+
+    // Row by row, inset by what the corner needs, exactly as boot_menu.js fills it.
+    Rectangle {
+        x: root.frame_x;
+        y: root.frame_y;
+        width: root.frame_w;
+        height: FlipperTheme.popup_hdr_h;
+        background: transparent;
+
+        for by in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+                   20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36,
+                   37]: Rectangle {
+            property <int> off: by < FlipperTheme.popup / 1px
+                ? FlipperTheme.popup / 1px - by
+                : 1;
+            x: self.off * 1px;
+            y: by * 1px;
+            width: root.frame_w - 2 * self.off * 1px;
+            height: 1px;
+            background: FlipperTheme.header_bg;
+        }
+    }
+
+    SelectorFrame {
+        x: root.frame_x;
+        y: root.frame_y;
+        frame_w: root.frame_w;
+        frame_h: root.frame_h;
+        filled: false;
+        stroke: true;
+        shadow: false;
+        radius: FlipperTheme.popup;
+        stroke_color: FlipperTheme.black;
+    }
+
+    if root.icon > 0: Image {
+        x: root.frame_x + FlipperTheme.popup_pad_h;
+        y: root.frame_y + FlipperTheme.popup_icon_y;
+        width: root.icon_w;
+        height: root.icon_h;
+        // The 14px set, which is what headerIcon uses. The row's 10x8 sprites
+        // would be lost against a 38px header band.
+        source: root.icon == 1 ? @image-url("../assets/icons/minimal.png")
+            : root.icon == 2 ? @image-url("../assets/icons/desktop.png")
+            : root.icon == 3 ? @image-url("../assets/icons/router.png")
+            : root.icon == 4 ? @image-url("../assets/icons/media.png")
+            : root.icon == 5 ? @image-url("../assets/icons/no_graphics_14px.png")
+            : @image-url("../assets/icons/flipper_os.png");
+        colorize: FlipperTheme.black;
+    }
+    Text {
+        x: root.frame_x + FlipperTheme.popup_pad_h + root.icon_w + 4px;
+        y: root.frame_y + FlipperTheme.popup_icon_y;
+        text: root.title;
+        font-size: 16px;
+        font-family: "Born2bSportyV2";
+        color: FlipperTheme.black;
+    }
+
+    // "Size: <number> <unit>", centred as one group.
+    size_label := Text {
+        visible: false;
+        text: "Size:";
+        font-size: 16px;
+    }
+    size_num := Text { visible: false; text: root.size_number; font-size: 16px; }
+    size_u := Text { visible: false; text: root.size_unit; font-size: 16px; }
+
+    // The number sits in a fixed-width slot, right-aligned inside it.
+    //
+    // While the value is still being read the slot is as wide as the widest
+    // spinner frame, so the group's total width does not change as the frame
+    // cycles. Centring the group on its actual width instead makes "Size:" step
+    // left and right in time with the spinner, which is exactly what the
+    // prototype's slot exists to prevent.
+    in property <length> size_slot_w;
+    property <length> slot: Math.max(root.size_slot_w / 1px, (size_num.width - 1px) / 1px) * 1px;
+    property <length> size_w: (size_label.width - 1px) + FlipperTheme.size_gap + root.slot
+        + (root.size_unit == "" ? 0px : FlipperTheme.size_gap + (size_u.width - 1px));
+    property <length> size_x: root.frame_x
+        + Math.floor((root.frame_w - root.size_w) / 2 / 1px) * 1px;
+
+    Text {
+        x: root.size_x;
+        y: root.frame_y + FlipperTheme.popup_size_y;
+        text: "Size:";
+        font-size: 16px;
+        color: FlipperTheme.keycap_dim;
+    }
+    Text {
+        // Right-aligned in the slot, so a narrower frame does not drag the label.
+        x: root.size_x + (size_label.width - 1px) + FlipperTheme.size_gap
+            + root.slot - (self.width - 1px);
+        y: root.frame_y + FlipperTheme.popup_size_y;
+        text: root.size_number;
+        font-size: 16px;
+        color: FlipperTheme.keycap_dim;
+    }
+    if root.size_unit != "": Text {
+        x: root.size_x + (size_label.width - 1px) + FlipperTheme.size_gap
+            + root.slot + FlipperTheme.size_gap;
+        y: root.frame_y + FlipperTheme.popup_size_y;
+        text: root.size_unit;
+        font-size: 16px;
+        color: FlipperTheme.keycap_dim;
+    }
+
+    // A message takes the body: its lines centred, then the hint under them.
+    for line[i] in root.message: Text {
+        x: root.frame_x + Math.floor((root.frame_w - (self.width - 1px)) / 2 / 1px) * 1px;
+        y: root.frame_y + FlipperTheme.popup_hdr_h + 4px + i * FlipperTheme.popup_line_h;
+        text: line;
+        font-size: 16px;
+        color: FlipperTheme.black;
+    }
+    if root.hint != "": Text {
+        x: root.frame_x + Math.floor((root.frame_w - (self.width - 1px)) / 2 / 1px) * 1px;
+        y: root.frame_y + FlipperTheme.popup_hdr_h + 4px
+            + root.message.length * FlipperTheme.popup_line_h;
+        text: root.hint;
+        font-size: 16px;
+        color: FlipperTheme.status_dim;
+    }
+
+    for row[i] in root.rows: Rectangle {
+        x: root.frame_x;
+        y: root.frame_y + FlipperTheme.popup_hdr_h + 4px + i * root.line_h;
+        width: root.frame_w;
+        height: root.line_h;
+        background: transparent;
+        visible: !root.has_message;
+
+        if row.kind == 1 && row.selected: SelectorFrame {
+            x: 10px;
+            y: 0;
+            frame_w: parent.width - 20px;
+            frame_h: FlipperTheme.popup_row_h;
+            filled: false;
+            stroke: true;
+            shadow: false;
+        }
+        // An action is centred, with the heart to its left when it is set.
+        if row.kind == 1 && row.heart: Image {
+            x: Math.floor((parent.width - (action.width - 1px) - 11px) / 2 / 1px) * 1px;
+            y: 5px;
+            width: 7px;
+            height: 7px;
+            source: @image-url("../assets/icons/auto_start_heart.png");
+            colorize: FlipperTheme.black;
+        }
+        action := Text {
+            visible: row.kind == 1;
+            x: row.heart
+                ? Math.floor((parent.width - (self.width - 1px) - 11px) / 2 / 1px) * 1px + 11px
+                : Math.floor((parent.width - (self.width - 1px)) / 2 / 1px) * 1px;
+            y: 3px;
+            text: row.text;
+            font-size: 16px;
+            color: FlipperTheme.black;
+        }
+        // A body line is one string, left-aligned.
+        if row.kind == 0: Text {
+            x: FlipperTheme.popup_pad_h;
+            y: 0;
+            text: row.text;
+            font-size: 16px;
+            color: FlipperTheme.black;
+        }
+    }
+}
+
+export component BootBody inherits Rectangle {
+    in property <[BootRow]> rows;
+    in property <int> selected;
+    in property <int> scroll;
+    in property <bool> pressed;
+    // 0..=100 of the auto-start countdown, or -1 once it is cancelled.
+    in property <int> countdown;
+    // Seconds left, shown next to the bar.
+    in property <int> remaining;
+    in property <[string]> hints;
+    in property <int> pressed_slot: -1;
+    // The list read is still running. An empty list means two different things,
+    // and only one of them is "there are none".
+    in property <bool> loading;
+    // Which frame of the load spinner strip to show.
+    in property <int> spin_frame;
+
+    width: 100%;
+    height: 100%;
+    background: FlipperTheme.white;
+
+    property <bool> counting: root.countdown >= 0;
+    property <length> fill_w: root.counting
+        ? Math.round(root.width / 1px * root.countdown / 100) * 1px
+        : 0;
+    property <length> selector_w: root.rows.length > FlipperTheme.boot_visible_rows
+        ? FlipperTheme.selector_w_scroll
+        : FlipperTheme.selector_w_full;
+
+    // ── Header ─────────────────────────────────────────────────────────────
+    Rectangle {
+        x: 0; y: 0;
+        width: 100%;
+        height: FlipperTheme.boot_header_h;
+        background: FlipperTheme.header_bg;
+    }
+
+    title := Text {
+        // Floor, as boot_menu.js does. Rounding puts it a pixel right of the
+        // prototype whenever the remaining width is odd.
+        x: Math.floor((root.width - (self.width - 1px)) / 2 / 1px) * 1px;
+        y: FlipperTheme.boot_title_y;
+        text: "Boot Menu";
+        font-size: 16px;
+        font-family: "Born2bSportyV2";
+        color: FlipperTheme.black;
+    }
+    auto := Text {
+        x: root.width - FlipperTheme.pad_left - (self.width - 1px);
+        y: FlipperTheme.boot_auto_y;
+        text: root.counting ? "Auto start in " + root.remaining + "s..." : "";
+        font-size: 16px;
+        color: FlipperTheme.disabled_fg;
+    }
+
+    // The fill, and the same two strings again in white, clipped to it.
+    if root.fill_w > 0: Rectangle {
+        x: 0; y: 0;
+        width: root.fill_w;
+        height: FlipperTheme.boot_header_h;
+        background: FlipperTheme.black;
+        clip: true;
+
+        Text {
+            x: title.x;
+            y: FlipperTheme.boot_title_y;
+            text: title.text;
+            font-size: 16px;
+            font-family: "Born2bSportyV2";
+            color: FlipperTheme.white;
+        }
+        Text {
+            x: auto.x;
+            y: FlipperTheme.boot_auto_y;
+            text: auto.text;
+            font-size: 16px;
+            color: FlipperTheme.white;
+        }
+    }
+
+    // ── Rows ───────────────────────────────────────────────────────────────
+    // Stacked with a small gap and no divider line, which is what keeps six rows
+    // legible in the space five menu rows would take.
+    for row[i] in root.rows: Rectangle {
+        x: FlipperTheme.list_container_x;
+        y: FlipperTheme.boot_container_y
+            + (i - root.scroll) * (FlipperTheme.boot_row_h + FlipperTheme.boot_row_gap);
+        width: root.selector_w + FlipperTheme.selector_x - FlipperTheme.list_container_x;
+        height: FlipperTheme.boot_row_h;
+        background: transparent;
+        visible: i >= root.scroll && i < root.scroll + FlipperTheme.boot_visible_rows;
+
+        BootLine {
+            width: parent.width;
+            entry: row;
+            pressed: i == root.selected && root.pressed;
+        }
+    }
+
+    property <length> selector_y: FlipperTheme.boot_container_y
+        + (root.selected - root.scroll) * (FlipperTheme.boot_row_h + FlipperTheme.boot_row_gap);
+
+    // Fill behind the row, outline over it, as everywhere else.
+    if root.pressed: SelectorFrame {
+        x: FlipperTheme.selector_x;
+        y: root.selector_y;
+        frame_w: root.selector_w;
+        frame_h: FlipperTheme.boot_selector_h;
+        filled: true;
+        stroke: false;
+    }
+    if root.rows.length > 0: SelectorFrame {
+        x: FlipperTheme.selector_x;
+        y: root.selector_y;
+        frame_w: root.selector_w;
+        frame_h: FlipperTheme.boot_selector_h;
+        filled: false;
+        stroke: true;
+    }
+
+    // Nothing to show yet: the spinner while the read runs, and only once it has
+    // come back empty does the list say so.
+    if root.rows.length == 0 && root.loading: Image {
+        x: Math.floor((root.width - FlipperTheme.boot_spin_w) / 2 / 1px) * 1px;
+        y: FlipperTheme.boot_container_y
+            + Math.floor(
+                (root.height - FlipperTheme.boot_container_y - FlipperTheme.boot_spin_h) / 2 / 1px
+              ) * 1px
+            - FlipperTheme.boot_spin_lift;
+        width: FlipperTheme.boot_spin_w;
+        height: FlipperTheme.boot_spin_h;
+        // One frame out of the vertical strip, so the 8 frames need no 8 files.
+        source: @image-url("../assets/icons/spinner_22x20px.png");
+        source-clip-x: 0;
+        source-clip-y: root.spin_frame * (FlipperTheme.boot_spin_h / 1px);
+        source-clip-width: FlipperTheme.boot_spin_w / 1px;
+        source-clip-height: FlipperTheme.boot_spin_h / 1px;
+    }
+    if root.rows.length == 0 && !root.loading: Text {
+        x: FlipperTheme.margin_h;
+        y: FlipperTheme.boot_container_y + 5px;
+        text: "(no profiles)";
+        font-size: 16px;
+        color: FlipperTheme.keycap_dim;
+    }
+
+    // Scrollbar, from the first row down to the soft strip.
+    if root.rows.length > FlipperTheme.boot_visible_rows: Rectangle {
+        x: FlipperTheme.scrollbar_x - 1px;
+        y: FlipperTheme.boot_container_y;
+        width: FlipperTheme.scrollbar_w;
+        height: root.height - FlipperTheme.boot_container_y - FlipperTheme.button_h - 2px;
+        background: transparent;
+
+        property <length> range: self.height - 2 * FlipperTheme.scrollbar_thumb_pad;
+        property <length> thumb_h: Math.max(
+            FlipperTheme.scrollbar_thumb_min / 1px,
+            Math.round((self.range / 1px) * FlipperTheme.boot_visible_rows / root.rows.length)
+        ) * 1px;
+        property <int> max_scroll: root.rows.length - FlipperTheme.boot_visible_rows;
+
+        for dot[i] in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+                       19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
+                       35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
+                       51, 52, 53, 54]: Rectangle {
+            x: 1px;
+            y: dot * 2px;
+            width: 1px;
+            height: 1px;
+            background: dot * 2px < parent.height ? FlipperTheme.black : FlipperTheme.white;
+        }
+
+        Rectangle {
+            x: 0;
+            y: FlipperTheme.scrollbar_thumb_pad + Math.round(
+                (parent.max_scroll > 0
+                    ? ((parent.range - parent.thumb_h) / 1px) * root.scroll / parent.max_scroll
+                    : 0)) * 1px;
+            width: FlipperTheme.scrollbar_w;
+            height: parent.thumb_h;
+            background: FlipperTheme.black;
+        }
+    }
+
+    SoftBar {
+        hints: root.hints;
+        pressed_slot: root.pressed_slot;
+    }
+
+    // A popup over everything, including the soft bar, which it disables.
+    in property <string> popup_title;
+    in property <int> popup_icon;
+    in property <length> popup_icon_w;
+    in property <length> popup_icon_h;
+    in property <string> popup_size_number;
+    in property <string> popup_size_unit;
+    in property <length> popup_size_slot_w;
+    in property <[BootPopupRow]> popup_rows;
+    in property <[string]> popup_message;
+    in property <string> popup_hint;
+    in property <length> popup_w;
+    in property <bool> popup_open;
+
+    if root.popup_open: BootPopup {
+        title: root.popup_title;
+        icon: root.popup_icon;
+        icon_w: root.popup_icon_w;
+        icon_h: root.popup_icon_h;
+        size_number: root.popup_size_number;
+        size_unit: root.popup_size_unit;
+        size_slot_w: root.popup_size_slot_w;
+        rows: root.popup_rows;
+        message: root.popup_message;
+        hint: root.popup_hint;
+        frame_w_in: root.popup_w;
+    }
+}

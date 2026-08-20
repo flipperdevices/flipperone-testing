@@ -6,8 +6,10 @@
 //! flipper-proto.
 
 pub mod app;
+pub mod boot;
 pub mod font;
 pub mod key;
+pub mod keyboard;
 pub mod layout;
 pub mod net;
 pub mod sysinfo;

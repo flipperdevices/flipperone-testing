@@ -12,13 +12,15 @@ import { LogBody } from "log.slint";
 import { Modal } from "modal.slint";
 import { DetailBody, DetailRow } from "detail.slint";
 import { EthernetBody, EthLink, EthDetailRow } from "ethernet.slint";
+import { BootBody, BootRow, BootPopupRow } from "boot.slint";
+import { TextInputBody, KbCell } from "keyboard.slint";
 
-export { ListItem, IdleLink, DetailRow, EthLink, EthDetailRow }
+export { ListItem, IdleLink, DetailRow, EthLink, EthDetailRow, BootRow, BootPopupRow, KbCell }
 
 // Idle is the root. The menu opens over it, the app list over that, and an app's
 // own screens over that. `app_form` and `app_log` are the two scene types the app
 // protocol admits so far.
-export enum Screen { idle, menu, detail, ethernet, apps, app_form, app_log }
+export enum Screen { idle, menu, detail, ethernet, boot, apps, app_form, app_log, text_input }
 
 export component Root inherits Window {
     width: 256px;
@@ -73,6 +75,7 @@ export component Root inherits Window {
     in property <bool> pressed;
     in property <bool> real_frame: true;
     in property <[string]> menu_hints;
+    in property <int> menu_pressed_slot: -1;
     // Set to open the menu as a submenu, e.g. "> Network". Empty for the main
     // menu, which anchors 3px higher and draws no trail.
     in property <string> breadcrumb;
@@ -92,6 +95,51 @@ export component Root inherits Window {
     in property <[EthDetailRow]> eth_detail_rows;
     in property <length> eth_detail_offset;
     in property <length> eth_detail_content_h;
+
+    // The boot menu, which draws a header instead of the status bar.
+    in property <[BootRow]> boot_rows;
+    in property <int> boot_selected;
+    in property <int> boot_scroll;
+    in property <int> boot_countdown: -1;
+    in property <int> boot_remaining;
+    in property <[string]> boot_hints;
+    in property <int> boot_pressed_slot: -1;
+    in property <bool> boot_loading;
+    in property <int> boot_spin_frame;
+    // The Info or Edit popup over the boot menu.
+    in property <bool> boot_popup_open;
+    in property <string> boot_popup_title;
+    in property <int> boot_popup_icon;
+    in property <length> boot_popup_icon_w;
+    in property <length> boot_popup_icon_h;
+    in property <string> boot_popup_size_number;
+    in property <string> boot_popup_size_unit;
+    in property <length> boot_popup_size_slot_w;
+    in property <[BootPopupRow]> boot_popup_rows;
+    in property <[string]> boot_popup_message;
+    in property <string> boot_popup_hint;
+    in property <length> boot_popup_w;
+
+    // The text-input screen: a field and the on-screen keyboard.
+    in property <string> kb_title;
+    in property <string> kb_text;
+    in property <length> kb_field_w;
+    in property <length> kb_cursor_dx;
+    in property <bool> kb_cursor_on;
+    in property <bool> kb_field_focused;
+    in property <string> kb_warning;
+    in property <[KbCell]> kb_cells;
+    in property <length> kb_chrome_x;
+    in property <length> kb_chrome_y;
+    in property <length> kb_chrome_w;
+    in property <length> kb_chrome_h;
+    in property <string> kb_lang_label;
+    in property <string> kb_tab_label;
+    in property <int> kb_tab_focus;
+    in property <int> kb_tab_pressed;
+    in property <[string]> kb_hints;
+    in property <int> kb_pressed_slot: -1;
+    in property <int> kb_discard: -1;
 
     // Blocking dialog over whatever screen is showing. Non-empty lines open it.
     in property <[string]> modal_lines;
@@ -141,6 +189,7 @@ export component Root inherits Window {
         pressed: root.pressed;
         real_frame: true;
         hints: root.app_hints;
+        pressed_slot: root.app_pressed_slot;
     }
 
     if root.screen == Screen.app_log: LogBody {
@@ -195,6 +244,62 @@ export component Root inherits Window {
         detail_content_h: root.eth_detail_content_h;
     }
 
+    if root.screen == Screen.text_input: TextInputBody {
+        battery: root.battery;
+        charging: root.charging;
+        wifi_connected: root.wifi_connected;
+        wifi_quality: root.wifi_quality;
+        ethernet: root.ethernet;
+        recording: root.recording;
+        modem_available: root.modem_available;
+        access_tech: root.access_tech;
+        modem_quality: root.modem_quality;
+        title: root.kb_title;
+        visible_text: root.kb_text;
+        field_w: root.kb_field_w;
+        cursor_dx: root.kb_cursor_dx;
+        cursor_on: root.kb_cursor_on;
+        field_focused: root.kb_field_focused;
+        warning: root.kb_warning;
+        cells: root.kb_cells;
+        chrome_x: root.kb_chrome_x;
+        chrome_y: root.kb_chrome_y;
+        chrome_w: root.kb_chrome_w;
+        chrome_h: root.kb_chrome_h;
+        lang_label: root.kb_lang_label;
+        tab_label: root.kb_tab_label;
+        tab_focus: root.kb_tab_focus;
+        tab_pressed: root.kb_tab_pressed;
+        hints: root.kb_hints;
+        pressed_slot: root.kb_pressed_slot;
+        discard: root.kb_discard;
+    }
+
+    if root.screen == Screen.boot: BootBody {
+        rows: root.boot_rows;
+        selected: root.boot_selected;
+        scroll: root.boot_scroll;
+        pressed: root.pressed;
+        countdown: root.boot_countdown;
+        remaining: root.boot_remaining;
+        hints: root.boot_hints;
+        pressed_slot: root.boot_pressed_slot;
+        loading: root.boot_loading;
+        spin_frame: root.boot_spin_frame;
+        popup_open: root.boot_popup_open;
+        popup_title: root.boot_popup_title;
+        popup_icon: root.boot_popup_icon;
+        popup_icon_w: root.boot_popup_icon_w;
+        popup_icon_h: root.boot_popup_icon_h;
+        popup_size_number: root.boot_popup_size_number;
+        popup_size_unit: root.boot_popup_size_unit;
+        popup_size_slot_w: root.boot_popup_size_slot_w;
+        popup_rows: root.boot_popup_rows;
+        popup_message: root.boot_popup_message;
+        popup_hint: root.boot_popup_hint;
+        popup_w: root.boot_popup_w;
+    }
+
     if root.screen == Screen.menu: MenuBody {
         battery: root.battery;
         charging: root.charging;
@@ -213,6 +318,7 @@ export component Root inherits Window {
         pressed: root.pressed;
         real_frame: root.real_frame;
         hints: root.menu_hints;
+        pressed_slot: root.menu_pressed_slot;
         breadcrumb: root.breadcrumb;
         arrow_pressed: root.arrow_pressed;
     }

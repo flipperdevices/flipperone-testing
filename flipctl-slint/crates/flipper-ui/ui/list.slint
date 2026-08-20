@@ -256,6 +256,8 @@ export component MenuBody inherits Rectangle {
     // edit, run. Slot i labels the key beneath it, so a model of any other length
     // shifts every label onto the wrong key. An empty string draws no button.
     in property <[string]> hints;
+    // Which soft slot is showing its pressed state, or -1.
+    in property <int> pressed_slot: -1;
     // false: Slint border-radius. true: the transcribed MenuSelectorFrame.
     in property <bool> real_frame;
     // Breadcrumb trail above the list, e.g. "> Network". Submenus draw it; the
@@ -445,7 +447,7 @@ export component MenuBody inherits Rectangle {
         }
     }
 
-    // A menu's press feedback is the filled selector, not a soft button, so no
-    // slot is ever flashed here.
-    SoftBar { hints: root.hints; }
+    // A row press inverts the selector; a soft key inverts its own button, which
+    // is the only feedback there is before the screen changes.
+    SoftBar { hints: root.hints; pressed_slot: root.pressed_slot; }
 }

@@ -51,9 +51,13 @@ fn metrics_are_sane_pixel_counts() {
         );
     }
     for (name, value) in theme::ALL_RADIUS {
+        // drawRoundRect implements 2, 3 and 4 only, and every shape it draws is
+        // limited to those. ResponsiveFrame generates its corners for any radius,
+        // and the boot menu's popup is the one shape that uses it, at 5.
+        let allowed: &[i32] = if name == "popup" { &[5] } else { &[0, 2, 3, 4] };
         assert!(
-            (0..=4).contains(&value),
-            "radius `{name}` = {value}; drawRoundRect only implements 2, 3 and 4"
+            allowed.contains(&value),
+            "radius `{name}` = {value}, expected one of {allowed:?}"
         );
     }
     for (name, value) in theme::ALL_TIMING {

@@ -38,6 +38,7 @@ rule_light   = "#e5e5e5"   # ethernet.js MODAL_DIVIDER_COLOR
 chevron_flash = "#222222"   # MenuLine < > arrow tap flash
 popup_edge    = "#d0d0d0"   # drawPopupLeft shadow edge
 keycap_dim    = "#888888"   # keyboard language-switcher label
+dialog_body   = "#666666"   # keyboard_test.js discard-modal body line
 field_label   = "#6d6d6d"   # desktop.js field labels: Temperature, Hostname:, IPv4:
 
 # Status bar defaults. Callers may override the triple; Desktop passes
@@ -45,6 +46,8 @@ field_label   = "#6d6d6d"   # desktop.js field labels: Temperature, Hostname:, I
 bar_bg        = "#000000"
 bar_fg        = "#ffffff"
 bar_dim       = "#cccccc"   # empty 5G signal bars
+# The boot menu's header, which the auto-start progress bar sweeps black over.
+header_bg     = "#d9d9d9"   # boot_menu.js header fill
 bar_bg_light  = "#eeeeee"   # Desktop override
 bar_fg_light  = "#000000"
 
@@ -161,6 +164,75 @@ modal_w             = 224
 modal_h             = 60
 modal_line_h        = 11
 
+# The boot menu, which has its own denser geometry: a header instead of a status
+# bar, 16px rows instead of 20, and six of them instead of five.
+boot_header_h       = 18    # boot_menu.js HEADER_H
+boot_container_y    = 20    # boot_menu.js CONTAINER_Y, the first row's top
+boot_row_h          = 16    # boot_menu.js ROW_H
+# Gap between rows. boot_menu.js leaves 1px and draws no divider; 2px reads better
+# at this row height. Six rows still clear the soft strip: 20 + 6 * 18 = 128.
+boot_row_gap        = 2
+# The loading spinner shown while list-profiles runs, from the 22x20 8-frame strip
+# spinner_22x20px. boot_menu.js centres it horizontally and in what is left of the
+# body below the header, then lifts it 8px.
+boot_spin_w         = 22
+boot_spin_h         = 20
+boot_spin_frames    = 8
+boot_spin_lift      = 8
+# The on-screen keyboard and the text-input screen around it, from ui.js
+# (UI.Keyboard), canvas.js (drawKeyboard) and keyboard_test.js (TextInputScreen).
+# The container is centred horizontally; its y is a hand-tuned 75.
+kb_container_w      = 250   # drawKeyboard CONTAINER_W
+kb_container_h      = 77    # drawKeyboard CONTAINER_H
+kb_container_y      = 75    # UI.Keyboard this.y
+kb_inner_y          = 5     # keyboardY = container y + 5
+kb_btn_w            = 15    # drawKeyboard BTN_W
+kb_btn_h            = 16    # drawKeyboard BTN_H
+kb_wide_w           = 35    # SHIFT_W / SPACE_W / LANG_W, all the same
+# The number row above the QWERTY row. At rest only its top 2px show; the wave
+# lifts the cells near the selection up to POPPED, one BTN_H above the chrome.
+kb_peek_visible     = 2     # PEEK_VISIBLE_H
+kb_peek_fold_lift   = 1     # PEEK_LIFT_FOLDED
+kb_peek_falloff     = 2     # PEEK_FALLOFF_PX, lift lost per column of distance
+kb_glyph_y          = 2     # glyph baseline inside a cell: btnY + 2
+# The title, the auto-sizing input field and the warning under it.
+kb_title_y          = 24
+kb_input_pad        = 6     # INPUT_PAD
+kb_input_min_w      = 150   # INPUT_MIN_W
+kb_input_max_w      = 238   # INPUT_MAX_W
+kb_input_h          = 14
+kb_input_gap        = 14    # inputY = titleY + 14
+kb_warning_gap      = 3     # warning sits 3px under the field
+kb_text_ink_h       = 11    # font cap height, for centring text in the field
+# The two tabs under the keyboard: 123 on the left, backspace on the right.
+kb_tab_w            = 48
+kb_tab_h            = 14
+kb_tab_inset        = 52    # 52px in from each screen edge
+kb_tab_gap_b        = 2     # 2px above the screen bottom
+# The rotated ] the space bar carries: a 9px rule with a 2px stub at each end.
+kb_space_rule_w     = 9
+kb_space_stub_h     = 2
+
+# The Info and Edit popups, from boot_menu.js. The header band carries the icon,
+# the name and a centred size line; the body starts below it.
+popup_hdr_h         = 38    # boot_menu.js HDR
+popup_line_h        = 11    # its Info line pitch
+popup_row_h         = 16    # its Edit action pitch
+popup_pad_h         = 8     # boot_menu.js padH
+popup_size_y        = 24    # the size line, relative to the frame top
+popup_icon_y        = 6     # icon and name, relative to the frame top
+popup_max_w         = 252   # the frame never grows past this
+size_gap            = 4     # boot_menu.js SIZE_GAP, between the size line's parts
+boot_selector_h     = 16    # boot_menu.js SELECTOR_H, the frame fits the row
+boot_icon_box_w     = 12    # boot_menu.js ICON_BOX_W, a fixed column so labels align
+# Gap between the icon column and the profile name. 2 rather than the menu's 4,
+# which sits the name closer to its icon at this row height.
+boot_text_gap       = 2
+# The title sits 2px higher than the prototype draws it, which is a deliberate
+# edit rather than a transcription: boot_menu.js passes y=3.
+boot_title_y        = 1
+boot_auto_y         = 4     # the countdown text keeps its own baseline
+
 # Detail screens (Routing info, Battery info, Disk info, 5G Modem, Update). These
 # are restyled rather than transcribed: the prototype draws them white-on-black in
 # a fourth bitmap font with "[Back]" as literal text, predating its own design
@@ -236,6 +308,9 @@ list_visible_rows = 5    # menu.js VISIBLE_COUNT
 # strip starts at 130, so 8 lines of item_h fit with the last one clear of the
 # buttons: 31 + 7 * 12 + 11 = 126.
 log_visible_lines = 8
+# Rows the boot menu shows. Six 16px rows from y20 leaves the bottom 16px for the
+# soft strip: 20 + 6 * 16 = 116, and the buttons start at 130.
+boot_visible_rows = 6
 # Rows a detail screen shows. Body starts at submenu_container_y (28) on an item_h
 # pitch, and the last row has to clear the soft strip at 130: 28 + 8 * 12 = 124.
 detail_visible_rows = 8
@@ -245,6 +320,7 @@ msgbox_max_chars  = 25   # MessageBox.js maxLineLength
 # back to a square rect.
 [radius]
 small = 2   # popup item selection
+popup = 5   # boot_menu.js popup frame, the only radius-5 shape
 menu  = 3   # MenuSelectorFrame, dialog body
 box   = 4   # MessageBox, bottom-bar button top corners, keyboard container
 
@@ -253,8 +329,13 @@ press_flash_ms   = 30    # bottom-bar button, next scene usually replaces the vi
 chevron_flash_ms = 120   # toggle chevron tap, must outlast the 200ms icon tick
 press_commit_ms  = 150   # popup item and keyboard key, the flash must be seen
 icon_frame_ms    = 200   # animated icon strip, 5 fps
+spin_frame_ms    = 100   # boot_menu.js load spinner, 10 fps
 cursor_blink_ms  = 500   # BlinkingKeyboardCursor default
 kb_peek_wave_ms  = 160   # ui.js KB_PEEK_WAVE_MS
+# Caps lock, which the keyboard latches two ways: OK held on the shift key, or
+# two presses of it inside the double window.
+kb_caps_hold_ms  = 1000
+kb_double_ms     = 300
 
 # System-wide rules, decided once and applied everywhere.
 [rule]

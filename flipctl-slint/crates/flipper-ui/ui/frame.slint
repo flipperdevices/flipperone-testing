@@ -54,7 +54,7 @@ export component SelectorFrame {
         // `i` counts rows in from the edge; the inset is radius-1-i, so the top
         // row is the narrowest. Slint has no numeric range loop, so the array is
         // the largest radius any design uses and the rest are switched off.
-        for i in [0, 1, 2, 3]: Rectangle {
+        for i in [0, 1, 2, 3, 4]: Rectangle {
             visible: i < root.radius / 1px;
             x: (root.radius / 1px - 1 - i) * 1px;
             y: i * 1px;
@@ -62,7 +62,7 @@ export component SelectorFrame {
             height: 1px;
             background: root.fill_color;
         }
-        for i in [0, 1, 2, 3]: Rectangle {
+        for i in [0, 1, 2, 3, 4]: Rectangle {
             visible: i < root.radius / 1px;
             x: (root.radius / 1px - 1 - i) * 1px;
             y: root.frame_h - 1px - i * 1px;
@@ -98,25 +98,25 @@ export component SelectorFrame {
         }
 
         // Corner stairs: pixel i of each corner, i in 0..radius.
-        for i in [0, 1, 2, 3]: Rectangle {
+        for i in [0, 1, 2, 3, 4]: Rectangle {
             visible: i < root.radius / 1px;
             x: i * 1px; y: (root.radius / 1px - 1 - i) * 1px;
             width: 1px; height: 1px;
             background: root.stroke_color;
         }
-        for i in [0, 1, 2, 3]: Rectangle {
+        for i in [0, 1, 2, 3, 4]: Rectangle {
             visible: i < root.radius / 1px;
             x: root.frame_w - root.radius + i * 1px; y: i * 1px;
             width: 1px; height: 1px;
             background: root.stroke_color;
         }
-        for i in [0, 1, 2, 3]: Rectangle {
+        for i in [0, 1, 2, 3, 4]: Rectangle {
             visible: i < root.radius / 1px;
             x: i * 1px; y: root.frame_h - root.radius + i * 1px;
             width: 1px; height: 1px;
             background: root.stroke_color;
         }
-        for i in [0, 1, 2, 3]: Rectangle {
+        for i in [0, 1, 2, 3, 4]: Rectangle {
             visible: i < root.radius / 1px;
             x: root.frame_w - root.radius + i * 1px; y: root.frame_h - 1px - i * 1px;
             width: 1px; height: 1px;
@@ -270,6 +270,9 @@ export component SoftButton {
 export component SoftBar inherits Rectangle {
     in property <[string]> hints;
     in property <int> pressed_slot: -1;
+    // A slot whose action is refused, drawn with the disabled chrome so it is
+    // visible that pressing it will do nothing.
+    in property <int> disabled_slot: -1;
 
     width: 100%;
     height: 100%;
@@ -285,6 +288,7 @@ export component SoftBar inherits Rectangle {
             width: parent.width;
             label: hint;
             pressed: i == root.pressed_slot;
+            disabled: i == root.disabled_slot;
             flush_left: i == 0;
             flush_right: i == 4;
         }

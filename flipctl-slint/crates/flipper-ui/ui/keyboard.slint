@@ -1,0 +1,602 @@
+// The on-screen keyboard and the text-input screen around it.
+//
+// From keyboard_test.js (TextInputScreen), ui.js (UI.Keyboard) and canvas.js
+// (drawKeyboard). The cell grid is ragged: wide keys are 35px, the rest 15px, and
+// rows are padded left so `q` sits over `a` sits over `z`. Every cell therefore
+// arrives already placed, from keyboard.rs, which also owns the number row's wave
+// and the navigation that snaps columns by pixel centre.
+import { FlipperTheme } from "@theme";
+import { SelectorFrame, SoftBar } from "frame.slint";
+import { StatusBar } from "statusbar.slint";
+
+// One placed key.
+export struct KbCell {
+    x: length,
+    y: length,
+    w: length,
+    text: string,
+    // 0 none, 1 shift, 2 shift held, 3 caps lock, 4 language, 5 up, 6 down,
+    // 7 the space bar's rule, 8 backspace.
+    icon: int,
+    icon_w: length,
+    icon_h: length,
+    selected: bool,
+    pressed: bool,
+    // How much of the cell, from its top, may paint. Only a number-row cell
+    // clips: the rest of it is behind the QWERTY row above which it rises.
+    clip_h: length,
+}
+
+// What a key shows: a glyph, an icon, or the space bar's rule.
+component KeyGlyph inherits Rectangle {
+    in property <KbCell> cell;
+    in property <color> ink;
+
+    background: transparent;
+
+    if root.cell.icon == 0 && root.cell.text != "": Text {
+        x: Math.floor((root.cell.w - (self.width - 1px)) / 2 / 1px) * 1px;
+        y: FlipperTheme.kb_glyph_y;
+        text: root.cell.text;
+        font-size: 16px;
+        color: root.ink;
+    }
+
+    if (root.cell.icon >= 1 && root.cell.icon <= 6) || root.cell.icon == 8: Image {
+        x: Math.floor((root.cell.w - root.cell.icon_w) / 2 / 1px) * 1px;
+        y: Math.floor((FlipperTheme.kb_btn_h - root.cell.icon_h) / 2 / 1px) * 1px;
+        width: root.cell.icon_w;
+        height: root.cell.icon_h;
+        colorize: root.ink;
+        source: root.cell.icon == 1 ? @image-url("../assets/icons/keyboard_shift_unpressed.png")
+            : root.cell.icon == 2 ? @image-url("../assets/icons/keyboard_shift_pressed.png")
+            : root.cell.icon == 3 ? @image-url("../assets/icons/keyboard_caps_lock_pressed.png")
+            : root.cell.icon == 4 ? @image-url("../assets/icons/keyboard_lang.png")
+            : root.cell.icon == 5 ? @image-url("../assets/icons/keyboard_up.png")
+            : root.cell.icon == 6 ? @image-url("../assets/icons/keyboard_down.png")
+            : @image-url("../assets/icons/backspace.png");
+    }
+
+    // The space bar carries a ']' turned 90 degrees clockwise, which is a rule
+    // with a stub at each end. Rotating a glyph is what canvas.js does; the three
+    // rectangles are that rotation worked out, and stay on whole pixels.
+    if root.cell.icon == 7: Rectangle {
+        background: transparent;
+        property <length> cx: Math.floor(root.cell.w / 2 / 1px) * 1px;
+        property <length> cy: Math.floor(FlipperTheme.kb_btn_h / 2 / 1px) * 1px;
+        property <length> left: self.cx - Math.floor(FlipperTheme.kb_space_rule_w / 2 / 1px) * 1px;
+
+        Rectangle {
+            x: parent.left;
+            y: parent.cy + 1px;
+            width: FlipperTheme.kb_space_rule_w;
+            height: 1px;
+            background: root.ink;
+        }
+        Rectangle {
+            x: parent.left;
+            y: parent.cy - 1px;
+            width: 1px;
+            height: FlipperTheme.kb_space_stub_h;
+            background: root.ink;
+        }
+        Rectangle {
+            x: parent.left + FlipperTheme.kb_space_rule_w - 1px;
+            y: parent.cy - 1px;
+            width: 1px;
+            height: FlipperTheme.kb_space_stub_h;
+            background: root.ink;
+        }
+    }
+}
+
+// A key at rest or pressed. The selected key's black frame is a second pass, so
+// that a neighbour drawn later cannot overdraw the ring's outer pixels.
+component KeyCap inherits Rectangle {
+    in property <KbCell> cell;
+
+    x: root.cell.x;
+    y: root.cell.y;
+    width: root.cell.w;
+    height: FlipperTheme.kb_btn_h;
+    background: transparent;
+
+    SelectorFrame {
+        x: 0;
+        y: 0;
+        frame_w: root.cell.w;
+        frame_h: FlipperTheme.kb_btn_h;
+        radius: FlipperTheme.small;
+        shadow: false;
+        filled: true;
+        fill_color: root.cell.pressed ? FlipperTheme.black : FlipperTheme.white;
+        stroke: !root.cell.pressed;
+        stroke_color: FlipperTheme.divider;
+    }
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: root.cell.w;
+        height: root.cell.clip_h;
+        clip: true;
+        background: transparent;
+
+        KeyGlyph {
+            width: root.cell.w;
+            height: FlipperTheme.kb_btn_h;
+            cell: root.cell;
+            ink: root.cell.pressed ? FlipperTheme.white : FlipperTheme.black;
+        }
+    }
+}
+
+// The 123 / backspace tab: square on top, rounded below, so it reads as hanging
+// off the keyboard rather than as a button of its own.
+component TabButton inherits Rectangle {
+    in property <string> label;
+    in property <int> icon;
+    in property <bool> pressed;
+
+    width: FlipperTheme.kb_tab_w;
+    height: FlipperTheme.kb_tab_h;
+    background: transparent;
+
+    property <color> ground: root.pressed ? FlipperTheme.black : FlipperTheme.white;
+    property <color> ink: root.pressed ? FlipperTheme.white : FlipperTheme.black;
+
+    Rectangle {
+        x: 0; y: 0;
+        width: root.width; height: root.height - 3px;
+        background: root.ground;
+    }
+    Rectangle {
+        x: 1px; y: root.height - 3px;
+        width: root.width - 2px; height: 1px;
+        background: root.ground;
+    }
+    Rectangle {
+        x: 2px; y: root.height - 2px;
+        width: root.width - 4px; height: 1px;
+        background: root.ground;
+    }
+    Rectangle {
+        x: 3px; y: root.height - 1px;
+        width: root.width - 6px; height: 1px;
+        background: root.ground;
+    }
+
+    // Sides and the bottom curve, in the keys' own grey. There is no top edge:
+    // the tab hangs from the chrome above it.
+    Rectangle {
+        x: 0; y: 0; width: 1px; height: root.height - 3px;
+        background: FlipperTheme.divider;
+    }
+    Rectangle {
+        x: root.width - 1px; y: 0; width: 1px; height: root.height - 3px;
+        background: FlipperTheme.divider;
+    }
+    Rectangle {
+        x: 1px; y: root.height - 3px; width: 1px; height: 1px;
+        background: FlipperTheme.divider;
+    }
+    Rectangle {
+        x: 2px; y: root.height - 2px; width: 1px; height: 1px;
+        background: FlipperTheme.divider;
+    }
+    Rectangle {
+        x: root.width - 2px; y: root.height - 3px; width: 1px; height: 1px;
+        background: FlipperTheme.divider;
+    }
+    Rectangle {
+        x: root.width - 3px; y: root.height - 2px; width: 1px; height: 1px;
+        background: FlipperTheme.divider;
+    }
+    Rectangle {
+        x: 3px; y: root.height - 1px; width: root.width - 6px; height: 1px;
+        background: FlipperTheme.divider;
+    }
+
+    // A pixel higher than a bottom-bar button's label: with no top edge the text
+    // has a row to breathe upward into.
+    if root.label != "": Text {
+        x: Math.floor((root.width - (self.width - 1px)) / 2 / 1px) * 1px;
+        y: 1px;
+        text: root.label;
+        font-size: 16px;
+        color: root.ink;
+    }
+    if root.icon == 8: Image {
+        x: Math.floor((root.width - self.width) / 2 / 1px) * 1px;
+        y: Math.floor((root.height - self.height) / 2 / 1px) * 1px;
+        width: 15px;
+        height: 7px;
+        colorize: root.ink;
+        source: @image-url("../assets/icons/backspace.png");
+    }
+}
+
+// The focus ring of a tab: the same sides and curve in black, plus a flank
+// outside each side and an underline below, so the tab reads as attached.
+component TabSelector inherits Rectangle {
+    width: FlipperTheme.kb_tab_w;
+    height: FlipperTheme.kb_tab_h;
+    background: transparent;
+
+    property <length> underline_w: 42px;
+    property <length> flank_h: 11px;
+
+    Rectangle { x: 0; y: 0; width: 1px; height: root.height - 3px; background: FlipperTheme.black; }
+    Rectangle {
+        x: root.width - 1px; y: 0; width: 1px; height: root.height - 3px;
+        background: FlipperTheme.black;
+    }
+    Rectangle { x: 0; y: root.height - 3px; width: 1px; height: 1px; background: FlipperTheme.black; }
+    Rectangle {
+        x: root.width - 1px; y: root.height - 3px; width: 1px; height: 1px;
+        background: FlipperTheme.black;
+    }
+    Rectangle { x: 1px; y: root.height - 3px; width: 1px; height: 1px; background: FlipperTheme.black; }
+    Rectangle { x: 2px; y: root.height - 2px; width: 1px; height: 1px; background: FlipperTheme.black; }
+    Rectangle {
+        x: root.width - 2px; y: root.height - 3px; width: 1px; height: 1px;
+        background: FlipperTheme.black;
+    }
+    Rectangle {
+        x: root.width - 3px; y: root.height - 2px; width: 1px; height: 1px;
+        background: FlipperTheme.black;
+    }
+    Rectangle { x: 1px; y: root.height - 2px; width: 1px; height: 1px; background: FlipperTheme.black; }
+    Rectangle {
+        x: root.width - 2px; y: root.height - 2px; width: 1px; height: 1px;
+        background: FlipperTheme.black;
+    }
+    Rectangle { x: 2px; y: root.height - 1px; width: 1px; height: 1px; background: FlipperTheme.black; }
+    Rectangle {
+        x: root.width - 3px; y: root.height - 1px; width: 1px; height: 1px;
+        background: FlipperTheme.black;
+    }
+    Rectangle {
+        x: 3px; y: root.height - 1px; width: root.width - 6px; height: 1px;
+        background: FlipperTheme.black;
+    }
+    Rectangle { x: -1px; y: 0; width: 1px; height: root.flank_h; background: FlipperTheme.black; }
+    Rectangle {
+        x: root.width; y: 0; width: 1px; height: root.flank_h;
+        background: FlipperTheme.black;
+    }
+    Rectangle {
+        x: Math.floor((root.width - root.underline_w) / 2 / 1px) * 1px;
+        y: root.height;
+        width: root.underline_w;
+        height: 1px;
+        background: FlipperTheme.black;
+    }
+}
+
+export component TextInputBody inherits Rectangle {
+    in property <int> battery: -1;
+    in property <bool> charging;
+    in property <bool> wifi_connected;
+    in property <int> wifi_quality;
+    in property <int> ethernet;
+    in property <bool> recording;
+    in property <bool> modem_available;
+    in property <string> access_tech: "--";
+    in property <int> modem_quality;
+
+    in property <string> title;
+    // Already windowed and marked by keyboard.rs, so what arrives here is what
+    // fits.
+    in property <string> visible_text;
+    in property <length> field_w;
+    in property <length> cursor_dx;
+    in property <bool> cursor_on;
+    in property <bool> field_focused;
+    // Non-empty refuses the commit and shows why.
+    in property <string> warning;
+
+    in property <[KbCell]> cells;
+    in property <length> chrome_x;
+    in property <length> chrome_y;
+    in property <length> chrome_w;
+    in property <length> chrome_h;
+    in property <string> lang_label;
+    in property <string> tab_label;
+    // 0 none, 1 the 123 tab, 2 the backspace tab.
+    in property <int> tab_focus;
+    in property <int> tab_pressed;
+    in property <[string]> hints;
+    in property <int> pressed_slot: -1;
+    // Open with its highlighted row: 0 keeps the text, 1 throws it away.
+    in property <int> discard: -1;
+
+    width: 100%;
+    height: 100%;
+    background: FlipperTheme.white;
+
+    property <length> field_x: Math.round((root.width - root.field_w) / 2 / 1px) * 1px;
+    property <length> field_y: FlipperTheme.kb_title_y + FlipperTheme.kb_input_gap;
+    property <length> container_x:
+        Math.floor((root.width - FlipperTheme.kb_container_w) / 2 / 1px) * 1px;
+    property <length> tab_y:
+        root.height - FlipperTheme.kb_tab_gap_b - FlipperTheme.kb_tab_h;
+    property <length> tab2_x:
+        root.width - FlipperTheme.kb_tab_inset - FlipperTheme.kb_tab_w;
+
+    StatusBar {
+        x: 0;
+        y: 0;
+        battery: root.battery;
+        charging: root.charging;
+        wifi_connected: root.wifi_connected;
+        wifi_quality: root.wifi_quality;
+        ethernet: root.ethernet;
+        recording: root.recording;
+        modem_available: root.modem_available;
+        access_tech: root.access_tech;
+        modem_quality: root.modem_quality;
+    }
+
+    if root.title != "": Text {
+        x: Math.round((root.width - (self.width - 1px)) / 2 / 1px) * 1px;
+        y: FlipperTheme.kb_title_y;
+        text: root.title;
+        font-size: 16px;
+        color: FlipperTheme.black;
+    }
+
+    // The field, sized to its text by the caller and centred here.
+    SelectorFrame {
+        x: root.field_x;
+        y: root.field_y;
+        frame_w: root.field_w;
+        frame_h: FlipperTheme.kb_input_h;
+        radius: FlipperTheme.menu;
+        shadow: false;
+        filled: true;
+        fill_color: FlipperTheme.disabled_bg;
+        stroke: false;
+    }
+    if root.field_focused: SelectorFrame {
+        x: root.field_x - 1px;
+        y: root.field_y - 1px;
+        frame_w: root.field_w + 2px;
+        frame_h: FlipperTheme.kb_input_h + 2px;
+        radius: FlipperTheme.box;
+        shadow: false;
+        filled: false;
+        stroke: true;
+    }
+    if root.field_focused: SelectorFrame {
+        x: root.field_x;
+        y: root.field_y;
+        frame_w: root.field_w;
+        frame_h: FlipperTheme.kb_input_h;
+        radius: FlipperTheme.menu;
+        shadow: false;
+        filled: false;
+        stroke: true;
+    }
+
+    Text {
+        x: root.field_x + FlipperTheme.kb_input_pad;
+        y: root.field_y
+            + Math.floor((FlipperTheme.kb_input_h - FlipperTheme.kb_text_ink_h) / 2 / 1px) * 1px;
+        text: root.visible_text;
+        font-size: 16px;
+        color: FlipperTheme.black;
+    }
+    if root.cursor_on: Rectangle {
+        x: root.field_x + FlipperTheme.kb_input_pad + root.cursor_dx;
+        y: root.field_y
+            + Math.floor((FlipperTheme.kb_input_h - FlipperTheme.kb_text_ink_h) / 2 / 1px) * 1px;
+        width: 1px;
+        height: FlipperTheme.kb_text_ink_h;
+        background: FlipperTheme.black;
+    }
+
+    if root.warning != "": Text {
+        x: Math.round((root.width - (self.width - 1px)) / 2 / 1px) * 1px;
+        y: root.field_y + FlipperTheme.kb_input_h + FlipperTheme.kb_warning_gap;
+        text: root.warning;
+        font-size: 16px;
+        color: FlipperTheme.black;
+    }
+
+    // The container: a white ground with an edge on three sides. No bottom edge,
+    // because the two tabs hang through it.
+    Rectangle {
+        x: root.container_x;
+        y: FlipperTheme.kb_container_y;
+        width: FlipperTheme.kb_container_w;
+        height: FlipperTheme.kb_container_h;
+        background: FlipperTheme.white;
+    }
+    Rectangle {
+        background: transparent;
+        property <length> cx: root.container_x;
+        property <length> cy: FlipperTheme.kb_container_y;
+        property <length> cw: FlipperTheme.kb_container_w;
+
+        Rectangle {
+            x: parent.cx + 4px; y: parent.cy;
+            width: parent.cw - 8px; height: 1px;
+            background: FlipperTheme.black;
+        }
+        Rectangle {
+            x: parent.cx; y: parent.cy + 4px;
+            width: 1px; height: FlipperTheme.kb_container_h - 4px;
+            background: FlipperTheme.black;
+        }
+        Rectangle {
+            x: parent.cx + parent.cw - 1px; y: parent.cy + 4px;
+            width: 1px; height: FlipperTheme.kb_container_h - 4px;
+            background: FlipperTheme.black;
+        }
+        // The two top corners, a pixel per step.
+        for i in [0, 1, 2, 3]: Rectangle {
+            x: parent.cx + (3 - i) * 1px;
+            y: parent.cy + i * 1px;
+            width: 1px; height: 1px;
+            background: FlipperTheme.black;
+        }
+        for i in [0, 1, 2, 3]: Rectangle {
+            x: parent.cx + parent.cw - 4px + i * 1px;
+            y: parent.cy + i * 1px;
+            width: 1px; height: 1px;
+            background: FlipperTheme.black;
+        }
+    }
+
+    // The chrome the keys sit on, which is also what hides a sunken number card.
+    Rectangle {
+        x: root.chrome_x;
+        y: root.chrome_y;
+        width: root.chrome_w;
+        height: root.chrome_h;
+        background: FlipperTheme.white;
+    }
+
+    // The language label, in the space left of the top row by the wide cell below.
+    if root.lang_label != "": Text {
+        x: root.chrome_x + Math.floor((FlipperTheme.kb_wide_w - (self.width - 1px)) / 2 / 1px) * 1px;
+        y: root.chrome_y + FlipperTheme.kb_glyph_y;
+        text: root.lang_label;
+        font-size: 16px;
+        color: FlipperTheme.keycap_dim;
+    }
+
+    // The keys, in row order: a number card sinks behind the QWERTY row because
+    // that row is painted after it.
+    for cell in root.cells: KeyCap {
+        cell: cell;
+    }
+
+    // The tabs, over the keys and under the selection rings.
+    TabButton {
+        x: FlipperTheme.kb_tab_inset;
+        y: root.tab_y;
+        label: root.tab_label;
+        pressed: root.tab_pressed == 1;
+    }
+    TabButton {
+        x: root.tab2_x;
+        y: root.tab_y;
+        icon: 8;
+        pressed: root.tab_pressed == 2;
+    }
+
+    // The selected key's ring, after every other key: the outer ring is a pixel
+    // outside the key, where a neighbour painted later would overdraw it.
+    for cell in root.cells: Rectangle {
+        background: transparent;
+        if cell.selected: Rectangle {
+            background: transparent;
+            SelectorFrame {
+                x: cell.x - 1px;
+                y: cell.y - 1px;
+                frame_w: cell.w + 2px;
+                frame_h: FlipperTheme.kb_btn_h + 2px;
+                radius: FlipperTheme.menu;
+                shadow: false;
+                filled: false;
+                stroke: true;
+            }
+            SelectorFrame {
+                x: cell.x;
+                y: cell.y;
+                frame_w: cell.w;
+                frame_h: FlipperTheme.kb_btn_h;
+                radius: FlipperTheme.small;
+                shadow: false;
+                filled: false;
+                stroke: true;
+            }
+            KeyGlyph {
+                x: cell.x;
+                y: cell.y;
+                width: cell.w;
+                height: FlipperTheme.kb_btn_h;
+                cell: cell;
+                ink: cell.pressed ? FlipperTheme.white : FlipperTheme.black;
+            }
+        }
+    }
+
+    if root.tab_focus == 1: TabSelector {
+        x: FlipperTheme.kb_tab_inset;
+        y: root.tab_y;
+    }
+    if root.tab_focus == 2: TabSelector {
+        x: root.tab2_x;
+        y: root.tab_y;
+    }
+
+    SoftBar {
+        hints: root.hints;
+        pressed_slot: root.pressed_slot;
+        disabled_slot: root.warning != "" ? 4 : -1;
+    }
+
+    // Leaving with unsaved text asks first, over a wash of everything else.
+    if root.discard >= 0: Rectangle {
+        width: 100%;
+        height: 100%;
+        background: FlipperTheme.white.with-alpha(FlipperTheme.overlay_alpha);
+
+        property <length> mw: 150px;
+        property <length> mh: 70px;
+        property <length> mx: Math.floor((root.width - self.mw) / 2 / 1px) * 1px;
+        property <length> my: Math.floor((root.height - self.mh) / 2 / 1px) * 1px;
+
+        SelectorFrame {
+            x: parent.mx;
+            y: parent.my;
+            frame_w: parent.mw;
+            frame_h: parent.mh;
+            radius: FlipperTheme.box;
+            shadow: false;
+            filled: true;
+            fill_color: FlipperTheme.white;
+            stroke: true;
+        }
+        Text {
+            x: parent.mx + Math.floor((parent.mw - (self.width - 1px)) / 2 / 1px) * 1px;
+            y: parent.my + 6px;
+            text: "Discard changes?";
+            font-size: 16px;
+            font-family: "Born2bSportyV2";
+            color: FlipperTheme.black;
+        }
+        Text {
+            x: parent.mx + Math.floor((parent.mw - (self.width - 1px)) / 2 / 1px) * 1px;
+            y: parent.my + 23px;
+            text: "Your text won't be saved.";
+            font-size: 16px;
+            color: FlipperTheme.dialog_body;
+        }
+        for row[i] in ["Keep", "Discard"]: Rectangle {
+            background: transparent;
+            property <length> bw: parent.mw - 16px;
+            property <length> bx: parent.mx + Math.floor((parent.mw - self.bw) / 2 / 1px) * 1px;
+            property <length> by: parent.my + (i == 0 ? 36px : 52px);
+
+            Text {
+                x: parent.bx + Math.floor((parent.bw - (self.width - 1px)) / 2 / 1px) * 1px;
+                y: parent.by
+                    + Math.floor((FlipperTheme.button_h - FlipperTheme.kb_text_ink_h) / 2 / 1px) * 1px;
+                text: row;
+                font-size: 16px;
+                color: FlipperTheme.black;
+            }
+            if i == root.discard: SelectorFrame {
+                x: parent.bx;
+                y: parent.by;
+                frame_w: parent.bw;
+                frame_h: FlipperTheme.button_h;
+                filled: false;
+                stroke: true;
+            }
+        }
+    }
+}
