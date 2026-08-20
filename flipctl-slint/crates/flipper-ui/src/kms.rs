@@ -113,32 +113,45 @@ impl KmsSink {
 
         let (w, h) = mode.size();
 
-        // R8 when the driver takes it, XRGB8888 otherwise.
+        // XRGB8888 by default, R8 on request.
         //
         // The panel is 8-bit greyscale and so is everything this crate renders, so
         // an XRGB8888 buffer means expanding every pixel to 32bpp (147KB of writes
-        // per frame) for the driver to reduce it again with a per-pixel
-        // conversion. R8 makes the commit a row copy. Kernels without R8 in the
-        // plane's format list reject the framebuffer, and the fallback keeps this
-        // working on them.
+        // per frame) for the driver to reduce it again with a per-pixel conversion,
+        // while R8 makes the commit a row copy.
         //
-        // The framebuffer has to go through ADDFB2 with an explicit fourcc.
-        // Legacy ADDFB carries only depth and bpp, and the kernel maps 8/8 to C8,
-        // a palette format this driver does not advertise, so the R8 attempt would
-        // fail for the wrong reason and silently never be used.
-        // An override, so the two formats can be measured against each other on one
-        // binary. Without it the comparison needs two builds, and then the numbers
-        // differ for reasons other than the format.
-        let force_xrgb = std::env::var("FLIPPER_FB_FORMAT")
-            .is_ok_and(|v| v.eq_ignore_ascii_case("xrgb8888"));
+        // The kernel does support R8 now (drm: flipper-one-display: add
+        // DRM_FORMAT_R8 support) and it measurably helps. On this device, one
+        // binary with the format switched by the variable below, 41 samples per
+        // format and two rounds each, commit time was:
+        //
+        //     XRGB8888   mean 18.85ms  median 18.90  p90 19.4  max 22.5
+        //     R8         mean 16.20ms  median 16.20  p90 16.3  max 18.5
+        //
+        // 2.6ms of that is the format conversion. The remaining 14.86ms is the SPI
+        // transfer itself, 37152 bytes at 20MHz, which no format can shorten. Worth
+        // knowing that a 60fps frame allows 16.67ms, which XRGB8888 does not fit
+        // and R8 does.
+        //
+        // XRGB8888 is nonetheless what ships: it is the format every other client
+        // on the device uses and it works on any kernel, R8 or not.
+        // `FLIPPER_FB_FORMAT=r8` opts in, which is how the numbers above were taken
+        // and how they can be taken again after a driver change.
+        //
+        // R8 has to go through ADDFB2 with an explicit fourcc. Legacy ADDFB carries
+        // only depth and bpp, and the kernel maps 8/8 to C8, a palette format the
+        // driver does not advertise, so the attempt would fail for the wrong reason
+        // and silently never be used.
+        let want_r8 = std::env::var("FLIPPER_FB_FORMAT")
+            .is_ok_and(|v| v.eq_ignore_ascii_case("r8"));
 
         let (mut buffer, fb, greyscale) = match card
             .create_dumb_buffer((u32::from(w), u32::from(h)), DrmFourcc::R8, 8)
             .and_then(|b| {
-                if force_xrgb {
-                    Err(std::io::Error::other("FLIPPER_FB_FORMAT=xrgb8888"))
-                } else {
+                if want_r8 {
                     Ok(b)
+                } else {
+                    Err(std::io::Error::other("XRGB8888 by default"))
                 }
             })
             .and_then(|b| {
