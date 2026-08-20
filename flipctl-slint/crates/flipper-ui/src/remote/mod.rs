@@ -43,8 +43,21 @@ const HEADER: usize = 8;
 /// megabytes.
 const QUEUE_DEPTH: usize = 3;
 
+/// One viewer's pending frames, oldest first.
+///
+/// Per viewer, not shared. A single queue read with `pop_front` hands each frame
+/// to whichever pump wakes first, so two viewers each see about half the frames
+/// and a reconnecting one steals from the other. That is exactly the hazard the
+/// note below describes for a damage accumulator, and a shared queue has it too:
+/// a browser tab that reloads leaves its old connection alive until it errors, so
+/// in normal use there are often two.
+struct ViewerQueue {
+    frames: Mutex<std::collections::VecDeque<StoredFrame>>,
+    ready: Condvar,
+}
+
 struct Shared {
-    /// The last few frames, oldest first.
+    /// The registered viewers, each with its own queue.
     ///
     /// Deliberately not a damage accumulator. Per-frame damage sounds like the
     /// thrifty choice, but a single shared accumulator is consumed by whichever
@@ -53,20 +66,20 @@ struct Shared {
     /// 36864 bytes, and at the 10fps cap that is 368 KB/s, which is free on any
     /// link this device has. Correctness is worth more than the bandwidth.
     ///
-    /// A short queue rather than a single slot, because the UI has states that
-    /// live for less than one send interval: a soft button's press flash is 30ms
-    /// against a 100ms cadence, so storing only the newest frame overwrites the
-    /// pressed frame before any viewer sees it. That looked like the press state
-    /// failing intermittently, and looked different per row because animated
-    /// icons commit every 200ms and shift the sender's phase. Keeping a couple of
-    /// frames means a state that appeared and vanished is still transmitted, in
-    /// order.
-    frames: Mutex<std::collections::VecDeque<StoredFrame>>,
-    ready: Condvar,
+    /// A short queue per viewer rather than a single slot, because the UI has
+    /// states that live for less than one send interval: a soft button's press
+    /// flash is 30ms against a 100ms cadence, so storing only the newest frame
+    /// overwrites the pressed frame before any viewer sees it. That looked like the
+    /// press state failing intermittently, and looked different per row because
+    /// animated icons commit every 200ms and shift the sender's phase. Keeping a
+    /// couple of frames means a state that appeared and vanished is still
+    /// transmitted, in order.
+    viewer_queues: Mutex<Vec<Arc<ViewerQueue>>>,
     generation: AtomicU64,
     viewers: AtomicUsize,
 }
 
+#[derive(Clone)]
 struct StoredFrame {
     pixels: Vec<Gray8>,
     w: u16,
@@ -102,10 +115,9 @@ impl RemoteView {
         let local = listener.local_addr()?;
 
         let shared = Arc::new(Shared {
-            frames: Mutex::new(std::collections::VecDeque::new()),
-            ready: Condvar::new(),
             generation: AtomicU64::new(0),
             viewers: AtomicUsize::new(0),
+            viewer_queues: Mutex::new(Vec::new()),
         });
         let (tx, events) = mpsc::channel();
 
@@ -153,24 +165,32 @@ impl FrameSink for RemoteView {
             return Ok(());
         }
 
+        let stored = StoredFrame {
+            pixels: frame.pixels.to_vec(),
+            w: frame.w,
+            h: frame.h,
+            queued: std::time::Instant::now(),
+        };
         {
-            let mut queue = self.shared.frames.lock().unwrap_or_else(|e| e.into_inner());
-            // Bounded: a viewer that stalls must not grow this without limit. When
-            // it is full the oldest goes, because the newest screen matters more
-            // than a complete history.
-            if queue.len() >= QUEUE_DEPTH {
-                queue.pop_front();
+            let viewers = self
+                .shared
+                .viewer_queues
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            for viewer in viewers.iter() {
+                let mut queue = viewer.frames.lock().unwrap_or_else(|e| e.into_inner());
+                // Bounded: a viewer that stalls must not grow this without limit.
+                // When it is full the oldest goes, because the newest screen
+                // matters more than a complete history.
+                if queue.len() >= QUEUE_DEPTH {
+                    queue.pop_front();
+                }
+                queue.push_back(stored.clone());
+                viewer.ready.notify_all();
             }
-            queue.push_back(StoredFrame {
-                pixels: frame.pixels.to_vec(),
-                w: frame.w,
-                h: frame.h,
-                queued: std::time::Instant::now(),
-            });
         }
 
         self.shared.generation.fetch_add(1, Ordering::Release);
-        self.shared.ready.notify_all();
         Ok(())
     }
 }
@@ -258,6 +278,8 @@ fn serve(
             &mut stream,
             "application/javascript; charset=utf-8",
             shared_js.as_bytes(),
+            // Revalidate: this changes on every deploy.
+            0,
         ),
         ("GET", "/diff") | ("GET", "/compare") => {
             write_response(&mut stream, "200 OK", "text/html; charset=utf-8", compare_page.as_bytes())
@@ -286,7 +308,8 @@ fn serve(
             // 2 MB, and identical for the life of the build. Served from disk so
             // it never enters a binary, and cacheable so a page reload does not
             // re-fetch it.
-            Ok(bytes) => write_cached(&mut stream, "image/png", &bytes),
+            // The photo never changes; a day is fine.
+            Ok(bytes) => write_cached(&mut stream, "image/png", &bytes, 86_400),
             // A missing photo should not take the view down: the panel still
             // renders, just without its surround.
             Err(_) => write_response(
@@ -356,15 +379,27 @@ fn parse_input(body: &[u8]) -> Option<KeyEvent> {
     Some(KeyEvent { key, down })
 }
 
+/// A static body with an explicit cache lifetime.
+///
+/// The device photo never changes and is worth caching for a day. The shared
+/// script changes on every deploy, and a day-long cache meant a browser kept
+/// running the old copy long after the device had the new one, which is a
+/// confusing way to test a fix. It revalidates instead; it is 6KB.
 fn write_cached(
     stream: &mut TcpStream,
     content_type: &str,
     body: &[u8],
+    max_age: u32,
 ) -> std::io::Result<()> {
+    let cache = if max_age == 0 {
+        "no-cache".to_string()
+    } else {
+        format!("public, max-age={max_age}")
+    };
     write!(
         stream,
         "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n\
-         Content-Length: {}\r\nCache-Control: public, max-age=86400\r\n\
+         Content-Length: {}\r\nCache-Control: {cache}\r\n\
          Connection: close\r\n\r\n",
         body.len()
     )?;
@@ -401,8 +436,24 @@ fn stream_frames(mut stream: TcpStream, shared: &Arc<Shared>) -> std::io::Result
     )?;
     stream.flush()?;
 
+    let queue = Arc::new(ViewerQueue {
+        frames: Mutex::new(std::collections::VecDeque::new()),
+        ready: Condvar::new(),
+    });
+    shared
+        .viewer_queues
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(Arc::clone(&queue));
     shared.viewers.fetch_add(1, Ordering::Relaxed);
-    let result = pump(&mut stream, shared);
+
+    let result = pump(&mut stream, &queue);
+
+    shared
+        .viewer_queues
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|v| !Arc::ptr_eq(v, &queue));
     shared.viewers.fetch_sub(1, Ordering::Relaxed);
 
     // Terminating chunk, best effort: the viewer has usually gone already.
@@ -419,17 +470,21 @@ fn write_heartbeat(stream: &mut TcpStream) -> std::io::Result<()> {
     stream.flush()
 }
 
-fn pump(stream: &mut TcpStream, shared: &Arc<Shared>) -> std::io::Result<()> {
+fn pump(stream: &mut TcpStream, viewer: &Arc<ViewerQueue>) -> std::io::Result<()> {
     let frame_time = Duration::from_millis(1000 / MAX_FPS);
     let mut body = Vec::new();
+    // When the last frame went out, so the rate limit can be a minimum interval
+    // between sends rather than a sleep after each one. Started far enough back
+    // that the first frame goes immediately.
+    let mut last_sent = std::time::Instant::now() - frame_time;
 
     loop {
-        let mut queue = shared.frames.lock().unwrap_or_else(|e| e.into_inner());
+        let mut queue = viewer.frames.lock().unwrap_or_else(|e| e.into_inner());
         loop {
             if !queue.is_empty() {
                 break;
             }
-            let (guard, timed_out) = shared
+            let (guard, timed_out) = viewer
                 .ready
                 .wait_timeout(queue, Duration::from_secs(2))
                 .unwrap_or_else(|e| e.into_inner());
@@ -444,11 +499,31 @@ fn pump(stream: &mut TcpStream, shared: &Arc<Shared>) -> std::io::Result<()> {
                 // and a dead socket surfaces here as a write error.
                 drop(queue);
                 write_heartbeat(stream)?;
-                queue = shared.frames.lock().unwrap_or_else(|e| e.into_inner());
+                queue = viewer.frames.lock().unwrap_or_else(|e| e.into_inner());
             }
         }
         let stored = queue.pop_front().expect("checked above");
+        // Whether more frames are already waiting, decided before the lock goes.
+        let burst = !queue.is_empty();
         drop(queue);
+
+        // Rate-limit by when the last frame was sent, not by sleeping after
+        // sending one.
+        //
+        // Sleeping afterwards spent the cap on an idle screen and then charged a
+        // keypress for it: a press landing inside that window waited out whatever
+        // remained, up to the full frame time. Measuring from the last send means a
+        // screen that has been still for longer than the interval sends
+        // immediately, which is every interactive press.
+        //
+        // A burst is exempt, so the two frames of a 30ms press flash still arrive
+        // back to back instead of being stretched to the cap.
+        if !burst {
+            let since = last_sent.elapsed();
+            if since < frame_time {
+                std::thread::sleep(frame_time - since);
+            }
+        }
 
         body.clear();
         body.extend_from_slice(&0u16.to_le_bytes());
@@ -469,18 +544,6 @@ fn pump(stream: &mut TcpStream, shared: &Arc<Shared>) -> std::io::Result<()> {
         stream.write_all(&body)?;
         stream.write_all(b"\r\n")?;
         stream.flush()?;
-
-        // Rate-limit the sustained stream, but never delay a backlog: the cap is
-        // there to bound bandwidth on a still-ish screen, not to add latency. A
-        // 30ms press flash arrives as two frames back to back, and pausing between
-        // them is what let the pressed one age out of the queue.
-        let backlog = !shared
-            .frames
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_empty();
-        if !backlog {
-            std::thread::sleep(frame_time);
-        }
+        last_sent = std::time::Instant::now();
     }
 }

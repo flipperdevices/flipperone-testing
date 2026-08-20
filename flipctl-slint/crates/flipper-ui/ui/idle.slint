@@ -289,7 +289,11 @@ export component IdleBody inherits Rectangle {
             label: "IPv4:";
             value: link.v4;
         }
-        CentredPair {
+        // Only when there is one. A divergence from drawEthCard, which draws the
+        // label unconditionally and leaves it dangling with nothing after it. The
+        // card keeps its height either way, so nothing below shifts when an
+        // address appears or goes.
+        if link.v6 != "": CentredPair {
             x: 0; y: 12px; width: parent.width;
             label: "IPv6:";
             value: link.v6;

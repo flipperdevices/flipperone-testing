@@ -16,9 +16,29 @@ const FLIPPER_HEADER = 8;
 /// separately, which is four stores per pixel and 36864 iterations of allocation
 /// churn on every update.
 class GreyBlitter {
-  constructor(ctx, w, h) {
+  /// `tint` multiplies each channel, as [r, g, b] out of 255. The default is
+  /// white, which leaves the panel's own grey alone.
+  ///
+  /// Tinting here rather than in CSS is what keeps the amber view cheap. The panel
+  /// is greyscale, so the amber look is a per-channel multiply, and a `mix-blend-mode:
+  /// multiply` layer made the browser re-blend and recomposite the whole stack
+  /// (including the device photo above it) on every frame. Folding it into the
+  /// pixel write costs nothing: the value becomes a table lookup, which is fewer
+  /// operations than the shifts it replaces.
+  constructor(ctx, w, h, tint) {
     this.ctx = ctx;
+    this.setTint(tint || [255, 255, 255]);
     this.resize(w, h);
+  }
+  setTint(tint) {
+    // Little-endian byte order in a word is A B G R.
+    this.lut = new Uint32Array(256);
+    for (let v = 0; v < 256; v++) {
+      const r = (tint[0] * v / 255) | 0;
+      const g = (tint[1] * v / 255) | 0;
+      const b = (tint[2] * v / 255) | 0;
+      this.lut[v] = 0xff000000 | (b << 16) | (g << 8) | r;
+    }
   }
   resize(w, h) {
     this.img = this.ctx.createImageData(w, h);
@@ -31,12 +51,8 @@ class GreyBlitter {
     // full-width image at the rect's offset.
     if (this.img.width !== w || this.img.height !== h) this.resize(w, h);
     const words = this.words;
-    // Little-endian byte order in a word is A B G R, so an opaque grey is
-    // 0xff000000 with the level in all three low bytes.
-    for (let i = 0; i < grey.length; i++) {
-      const v = grey[i];
-      words[i] = 0xff000000 | (v << 16) | (v << 8) | v;
-    }
+    const lut = this.lut;
+    for (let i = 0; i < grey.length; i++) words[i] = lut[grey[i]];
     this.ctx.putImageData(this.img, x, y);
   }
 }

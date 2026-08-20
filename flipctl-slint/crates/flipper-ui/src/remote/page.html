@@ -28,12 +28,16 @@
   }
   /* Layers, low to high: amber ground, the live panel multiplied over it so
      black ink stays black and white becomes backlight, then the device photo
-     whose transparent screen cutout reveals the panel. */
+     whose transparent screen cutout reveals the panel. The multiply happens
+     inside the canvas, so the amber ground below it only shows before the first
+     frame arrives. */
   #glow { position: absolute; z-index: 0; background: #FF8200; }
+  /* No blend mode: the canvas already carries the amber, multiplied into each
+     pixel by the blitter. A mix-blend-mode layer here forced the browser to
+     re-blend and recomposite this stack, photo included, on every frame. */
   #panel {
     position: absolute; z-index: 1;
     image-rendering: pixelated;
-    mix-blend-mode: multiply;
   }
   #photo {
     position: relative; z-index: 2; display: block;
@@ -98,7 +102,10 @@ const glow = document.getElementById('glow');
 const panel = document.getElementById('panel');
 const photo = document.getElementById('photo');
 const stat = document.getElementById('stat');
-const blitter = new GreyBlitter(panel.getContext('2d'), 256, 144);
+// The backlight colour, multiplied into every pixel. Same value as the ground
+// below the canvas, so the two agree before the first frame lands.
+const AMBER = [0xFF, 0x82, 0x00];
+const blitter = new GreyBlitter(panel.getContext('2d'), 256, 144, AMBER);
 
 for (const k of ['left', 'top', 'width', 'height']) {
   const v = SCREEN[k[0]] + '%';
