@@ -10,7 +10,22 @@
     font: 12px system-ui, sans-serif; color: #fff;
     overflow: hidden;
   }
-  #wrap { position: relative; display: inline-block; isolation: isolate; line-height: 0; }
+  /* A minimum size matters: the wrap is sized by the photo, so if that fails to
+     load the wrap collapses to nothing and the absolutely-positioned panel and
+     glow, both sized in percentages, vanish with it. The page then looks empty
+     with no clue why. */
+  #wrap {
+    position: relative; display: inline-block; isolation: isolate; line-height: 0;
+    min-width: 512px; min-height: 270px;
+  }
+  /* Photo missing: drop the percentage layout and show the panel on its own at a
+     plain 2x, so the view still works. */
+  body.nophoto #photo { display: none; }
+  body.nophoto #wrap { min-width: 0; min-height: 0; }
+  body.nophoto #glow { position: static; width: 512px; height: 288px; }
+  body.nophoto #panel {
+    position: absolute; left: 0; top: 0; width: 512px; height: 288px;
+  }
   /* Layers, low to high: amber ground, the live panel multiplied over it so
      black ink stays black and white becomes backlight, then the device photo
      whose transparent screen cutout reveals the panel. */
@@ -58,42 +73,32 @@
   <img id="photo" src="device.png" alt="">
 </div>
 
+<script src="remote.js"></script>
 <script>
-// The screen cutout, as fractions of the photo. Same numbers the prototype used.
 const SCREEN = { l: 33.94, t: 28.89, w: 28.76, h: 30.65 };
 
-// Physical buttons, as fractions of the photo. `a` is the wire name of the key,
-// which must match FlipperKey::name() on the device.
 const ZONES = [
-  // Bottom soft row, left to right: esc view power edit run.
   { a: 'esc',   k: 'Z',     l: .3411, t: .6301, w: .053, h: .053 },
   { a: 'view',  k: 'X',     l: .3987, t: .6301, w: .053, h: .053 },
   { a: 'power', k: 'C',     l: .4564, t: .6301, w: .053, h: .053 },
   { a: 'edit',  k: 'V',     l: .5140, t: .6301, w: .053, h: .053 },
   { a: 'run',   k: 'B',     l: .5716, t: .6301, w: .053, h: .053 },
-  // D-pad.
-  { a: 'up',    k: '↑', l: .7106, t: .3105, w: .045, h: .085 },
-  { a: 'left',  k: '←', l: .6636, t: .3990, w: .045, h: .086 },
+  { a: 'up',    k: '\u2191', l: .7106, t: .3105, w: .045, h: .085 },
+  { a: 'left',  k: '\u2190', l: .6636, t: .3990, w: .045, h: .086 },
   { a: 'ok',    k: 'Enter', l: .7106, t: .3990, w: .045, h: .086, round: 1 },
-  { a: 'right', k: '→', l: .7576, t: .3990, w: .045, h: .086 },
-  { a: 'down',  k: '↓', l: .7106, t: .4885, w: .045, h: .085 },
-  // App switcher has a chamfered top-right corner; back is round.
+  { a: 'right', k: '\u2192', l: .7576, t: .3990, w: .045, h: .086 },
+  { a: 'down',  k: '\u2193', l: .7106, t: .4885, w: .045, h: .085 },
   { a: 'appsw', k: 'Tab',   l: .6596, t: .5535, w: .0615, h: .0811, cut: 1 },
   { a: 'back',  k: 'Bksp',  l: .7780, t: .5655, w: .0515, h: .0969, round: 1 },
   { a: 'ptt',   k: 'A',     l: .2255, t: .1536, w: .071,  h: .034 },
 ];
 
-const KEYS = {
-  ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
-  Enter: 'ok', Escape: 'back', Backspace: 'back', Tab: 'appsw',
-  z: 'esc', x: 'view', c: 'power', v: 'edit', b: 'run', a: 'ptt',
-};
-
 const wrap = document.getElementById('wrap');
 const glow = document.getElementById('glow');
 const panel = document.getElementById('panel');
+const photo = document.getElementById('photo');
 const stat = document.getElementById('stat');
-const ctx = panel.getContext('2d');
+const blitter = new GreyBlitter(panel.getContext('2d'), 256, 144);
 
 for (const k of ['left', 'top', 'width', 'height']) {
   const v = SCREEN[k[0]] + '%';
@@ -101,17 +106,18 @@ for (const k of ['left', 'top', 'width', 'height']) {
   panel.style[k] = v;
 }
 
-function send(action, down) {
-  fetch('input', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ key: action, down }),
-  }).catch(() => {});
-}
+// Say so in the HUD rather than leaving a blank page: without the photo the wrap
+// collapses and the percentage-positioned panel disappears with it.
+photo.addEventListener('error', () => {
+  document.body.classList.add('nophoto');
+  stat.textContent = 'device.png missing';
+});
 
+// Click map over the photo's physical buttons, each a fraction of the image.
 for (const z of ZONES) {
-  const el = document.createElement('div');
+  const el = document.createElement('button');
   el.className = 'zone';
+  el.dataset.k = z.a;
   el.style.left = (z.l * 100) + '%';
   el.style.top = (z.t * 100) + '%';
   el.style.width = (z.w * 100) + '%';
@@ -121,79 +127,14 @@ for (const z of ZONES) {
   const label = document.createElement('span');
   label.textContent = z.k;
   el.appendChild(label);
-  // Held while the pointer is down, like the real button.
-  el.addEventListener('pointerdown', e => { e.preventDefault(); send(z.a, true); });
-  el.addEventListener('pointerup', () => send(z.a, false));
-  el.addEventListener('pointerleave', () => send(z.a, false));
   wrap.appendChild(el);
 }
+flipperWireInput('.zone');
 
 document.getElementById('toggle').addEventListener('change', e => {
   document.body.classList.toggle('show', e.target.checked);
 });
 
-addEventListener('keydown', e => {
-  const a = KEYS[e.key];
-  if (a && !e.repeat) { e.preventDefault(); send(a, true); }
-});
-addEventListener('keyup', e => {
-  const a = KEYS[e.key];
-  if (a) { e.preventDefault(); send(a, false); }
-});
-
-// Frame stream. Each frame is an 8-byte little-endian header (x, y, w, h) then
-// w*h bytes of 8-bit greyscale: exactly the bytes the panel received, for the
-// damaged region only, so a still screen costs nothing.
-const HEADER = 8;
-
-async function stream() {
-  let frames = 0;
-  const since = performance.now();
-  for (;;) {
-    try {
-      const res = await fetch('stream');
-      if (!res.ok || !res.body) throw new Error('stream ' + res.status);
-      const reader = res.body.getReader();
-      let buf = new Uint8Array(0);
-
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const merged = new Uint8Array(buf.length + value.length);
-        merged.set(buf);
-        merged.set(value, buf.length);
-        buf = merged;
-
-        // Drain every whole frame the buffer now holds.
-        for (;;) {
-          if (buf.length < HEADER) break;
-          const head = new DataView(buf.buffer, buf.byteOffset, HEADER);
-          const x = head.getUint16(0, true), y = head.getUint16(2, true);
-          const w = head.getUint16(4, true), h = head.getUint16(6, true);
-          const need = HEADER + w * h;
-          if (buf.length < need) break;
-
-          // Zero-area region: a keepalive for a still screen, nothing to draw.
-          if (w === 0 || h === 0) { buf = buf.subarray(need); continue; }
-
-          const grey = buf.subarray(HEADER, need);
-          const img = ctx.createImageData(w, h);
-          for (let i = 0, j = 0; i < grey.length; i++, j += 4) {
-            img.data[j] = img.data[j + 1] = img.data[j + 2] = grey[i];
-            img.data[j + 3] = 255;
-          }
-          ctx.putImageData(img, x, y);
-          buf = buf.subarray(need);
-          frames++;
-          const secs = (performance.now() - since) / 1000;
-          stat.textContent = frames + ' frames, ' + (frames / secs).toFixed(1) + ' fps';
-        }
-      }
-    } catch (e) {
-      stat.textContent = 'reconnecting';
-    }
-    await new Promise(r => setTimeout(r, 500));
-  }
-}
-stream();
+flipperStream((grey, x, y, w, h) => blitter.draw(grey, x, y, w, h),
+              text => { stat.textContent = text; });
 </script>

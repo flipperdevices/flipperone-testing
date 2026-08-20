@@ -26,12 +26,15 @@ if [ -n "$hits" ]; then
 fi
 
 # Panel dimensions. Anything hardcoding 256 or 144 has bypassed theme::PANEL_W.
+# A line that genuinely means something else says so with a
+# `not-a-panel-dimension` comment, which is rare enough to be worth spelling out.
 hits=$(grep -rInE '\b(256|144)\b' \
         --include='*.rs' --include='*.slint' \
         crates bin 2>/dev/null \
     | grep -v '^crates/flipper-ui/build.rs:' \
     | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|///|//!)' \
     | grep -vE 'PANEL_[WH]' \
+    | grep -v 'not-a-panel-dimension' \
     || true)
 if [ -n "$hits" ]; then
     echo "hardcoded panel dimensions; use theme::PANEL_W / PANEL_H:"

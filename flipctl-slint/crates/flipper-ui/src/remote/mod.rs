@@ -31,6 +31,11 @@ use crate::{FlipperKey, KeyEvent};
 const MAX_FPS: u64 = 10;
 
 /// 8-byte little-endian header, then `w * h` bytes of 8-bit greyscale.
+/// Cap on a POST /input body. The only bodies are small JSON key events, so this
+/// bounds what an unauthenticated caller can make us allocate. Named because a
+/// bare 256 next to a panel-sized buffer reads like a width.
+const MAX_INPUT_BODY: usize = 256; // not-a-panel-dimension
+
 const HEADER: usize = 8;
 
 /// How many frames may wait to be sent. Three is enough to carry a 30ms flash
@@ -66,6 +71,7 @@ struct StoredFrame {
     pixels: Vec<Gray8>,
     w: u16,
     h: u16,
+    queued: std::time::Instant,
 }
 
 pub struct RemoteView {
@@ -159,6 +165,7 @@ impl FrameSink for RemoteView {
                 pixels: frame.pixels.to_vec(),
                 w: frame.w,
                 h: frame.h,
+                queued: std::time::Instant::now(),
             });
         }
 
@@ -237,18 +244,22 @@ fn serve(
     let path = target.split('?').next().unwrap_or("/");
     let device_page = include_str!("page.html");
     let compare_page = include_str!("compare.html");
+    let shared_js = include_str!("remote.js");
 
     match (method.as_str(), path) {
-        ("GET", "/") | ("GET", "/index.html") => {
-            // With a peer configured the comparison is the point of the server,
-            // so it takes the root and the photo view moves aside.
-            let page = if peer.is_some() { compare_page } else { device_page };
-            write_response(&mut stream, "200 OK", "text/html; charset=utf-8", page.as_bytes())
-        }
-        ("GET", "/device") => {
+        // The panel in its device photo is the default view; the side-by-side
+        // comparison lives at /diff. /device and /compare are kept as aliases so
+        // older links do not break.
+        ("GET", "/") | ("GET", "/index.html") | ("GET", "/device") => {
             write_response(&mut stream, "200 OK", "text/html; charset=utf-8", device_page.as_bytes())
         }
-        ("GET", "/compare") => {
+        // Shared browser code, so a fix cannot land in one page and not the other.
+        ("GET", "/remote.js") => write_cached(
+            &mut stream,
+            "application/javascript; charset=utf-8",
+            shared_js.as_bytes(),
+        ),
+        ("GET", "/diff") | ("GET", "/compare") => {
             write_response(&mut stream, "200 OK", "text/html; charset=utf-8", compare_page.as_bytes())
         }
         ("GET", "/peer.png") => match peer {
@@ -287,7 +298,7 @@ fn serve(
         },
         ("GET", "/stream") => stream_frames(stream, shared),
         ("POST", "/input") => {
-            let mut body = vec![0; content_length.min(256)];
+            let mut body = vec![0; content_length.min(MAX_INPUT_BODY)];
             reader.read_exact(&mut body)?;
             if let Some(event) = parse_input(&body) {
                 let _ = tx.send(event);
@@ -450,6 +461,10 @@ fn pump(stream: &mut TcpStream, shared: &Arc<Shared>) -> std::io::Result<()> {
             body.len(),
             HEADER + usize::from(stored.w) * usize::from(stored.h)
         );
+        let waited = stored.queued.elapsed().as_secs_f32() * 1000.0;
+        if waited > 20.0 {
+            eprintln!("remote         frame waited {waited:.0}ms in the queue");
+        }
         write!(stream, "{:x}\r\n", body.len())?;
         stream.write_all(&body)?;
         stream.write_all(b"\r\n")?;

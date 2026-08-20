@@ -159,36 +159,10 @@
   </figure>
 </main>
 
+<script src="remote.js"></script>
 <script>
-// Key presses go to the same /input endpoint the panel's own buttons feed, so
-// nothing downstream can tell a click from a finger.
-function send(action, down) {
-  fetch('input', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ key: action, down }),
-  }).catch(() => {});
-}
-
-// Pad buttons are held while the pointer is down, like the real key.
-function wirePad() {
-  for (const el of document.querySelectorAll('.face button')) {
-    const key = el.dataset.k;
-    const press = down => {
-      el.classList.toggle('down', down);
-      send(key, down);
-    };
-    el.addEventListener('pointerdown', e => { e.preventDefault(); press(true); });
-    el.addEventListener('pointerup', () => press(false));
-    el.addEventListener('pointercancel', () => press(false));
-    el.addEventListener('pointerleave', () => { if (el.classList.contains('down')) press(false); });
-    el.addEventListener('keydown', e => { if (e.key === ' ') { e.preventDefault(); press(true); } });
-    el.addEventListener('keyup', e => { if (e.key === ' ') { e.preventDefault(); press(false); } });
-  }
-}
-wirePad();
-
-const mine = document.getElementById('mine').getContext('2d');
+const W = 256, H = 144;
+const mineCtx = document.getElementById('mine').getContext('2d');
 const peerCtx = document.getElementById('peer').getContext('2d');
 const overCtx = document.getElementById('over').getContext('2d');
 const stat = document.getElementById('stat');
@@ -198,59 +172,65 @@ const mixWrap = document.getElementById('mixWrap');
 const mixInput = document.getElementById('mix');
 const legend = document.getElementById('legend');
 
-const W = 256, H = 144;
-// Latest greyscale bytes from each side, or null until one arrives.
+const mineBlit = new GreyBlitter(mineCtx, W, H);
+const overImg = overCtx.createImageData(W, H);
+const overWords = new Uint32Array(overImg.data.buffer);
+
+// Latest greyscale from each side, or null until one arrives.
 let mineGrey = null, peerGrey = null;
 let blinkPhase = 0;
 
-// Anything closer than this counts as agreement. The prototype's frame arrives
-// as a browser-rendered RGBA PNG, so its greys can land a value or two off ours
-// even when both sides drew the same thing.
+// Anything closer than this counts as agreement: the prototype's frame arrives as
+// a browser-rendered RGBA PNG, so its greys can land a value or two off ours even
+// when both sides drew the same thing.
 const TOLERANCE = 8;
+const word = v => 0xff000000 | (v << 16) | (v << 8) | v;
+const rgb = (r, g, b) => 0xff000000 | (b << 16) | (g << 8) | r;
+const ink = v => v < 128;
 
-function ink(v) { return v < 128; }
-
-function drawOverlay() {
+function computeOverlay() {
   if (!mineGrey || !peerGrey) return;
   const mode = modeSel.value;
-  const img = overCtx.createImageData(W, H);
+  const t = Number(mixInput.value) / 100;
   let differing = 0;
 
-  for (let i = 0, j = 0; i < W * H; i++, j += 4) {
+  for (let i = 0; i < W * H; i++) {
     const a = mineGrey[i], b = peerGrey[i];
     const apart = Math.abs(a - b) > TOLERANCE;
     if (apart) differing++;
-
-    let r, g, bl;
     if (mode === 'diff') {
-      if (!apart) {
-        // Agreement fades back so the disagreements are the only thing loud.
-        const v = 200 + ((a >> 3) & 31);
-        r = g = bl = v;
-      } else if (ink(a) && !ink(b)) {
-        r = 255; g = 130; bl = 0;
-      } else if (!ink(a) && ink(b)) {
-        r = 59; g = 158; bl = 255;
-      } else {
-        // Both ink or both blank but different shades: a tonal mismatch.
-        r = 190; g = 60; bl = 190;
-      }
+      if (!apart) overWords[i] = word(200 + ((a >> 3) & 31));
+      else if (ink(a) && !ink(b)) overWords[i] = rgb(255, 130, 0);
+      else if (!ink(a) && ink(b)) overWords[i] = rgb(59, 158, 255);
+      else overWords[i] = rgb(190, 60, 190);
     } else if (mode === 'onion') {
-      const t = Number(mixInput.value) / 100;
-      const v = Math.round(a * (1 - t) + b * t);
-      r = g = bl = v;
+      overWords[i] = word(Math.round(a * (1 - t) + b * t));
     } else {
-      const v = blinkPhase ? b : a;
-      r = g = bl = v;
+      overWords[i] = word(blinkPhase ? b : a);
     }
-    img.data[j] = r; img.data[j + 1] = g; img.data[j + 2] = bl; img.data[j + 3] = 255;
   }
-
-  overCtx.putImageData(img, 0, 0);
+  overCtx.putImageData(overImg, 0, 0);
   const pct = (100 * differing / (W * H)).toFixed(2);
-  diffstat.textContent = differing.toLocaleString() + ' of ' + (W * H).toLocaleString() +
-    ' pixels differ (' + pct + '%)';
+  diffstat.textContent = differing.toLocaleString() + ' of ' +
+    (W * H).toLocaleString() + ' pixels differ (' + pct + '%)';
 }
+
+// Coalesced: the overlay was recomputing on every stream frame and every peer
+// poll, up to twenty full-screen passes a second.
+const drawOverlay = flipperCoalesce(computeOverlay);
+
+function applyScale() {
+  const s = document.getElementById('scale').value;
+  for (const el of document.querySelectorAll('.screen')) {
+    el.style.width = (W * s) + 'px';
+    el.style.height = (H * s) + 'px';
+  }
+}
+document.getElementById('scale').addEventListener('change', applyScale);
+document.getElementById('stack').addEventListener('change', e => {
+  document.body.classList.toggle('stack', e.target.checked);
+});
+applyScale();
 
 modeSel.addEventListener('change', () => {
   mixWrap.hidden = modeSel.value !== 'onion';
@@ -264,85 +244,36 @@ setInterval(() => {
   drawOverlay();
 }, 600);
 
-function applyScale() {
-  const s = document.getElementById('scale').value;
-  for (const el of document.querySelectorAll('.screen')) {
-    el.style.width = (256 * s) + 'px';
-    el.style.height = (144 * s) + 'px';
-  }
-}
-document.getElementById('scale').addEventListener('change', applyScale);
-document.getElementById('stack').addEventListener('change', e => {
-  document.body.classList.toggle('stack', e.target.checked);
-});
-applyScale();
+flipperWireInput('.face button');
 
-// Left: our own frame stream. 8-byte little-endian header (x, y, w, h) then w*h
-// bytes of greyscale, exactly what the panel receives.
-const HEADER = 8;
-async function stream() {
-  let frames = 0;
-  const t0 = performance.now();
-  for (;;) {
-    try {
-      const res = await fetch('stream');
-      if (!res.ok || !res.body) throw new Error('stream ' + res.status);
-      const reader = res.body.getReader();
-      let buf = new Uint8Array(0);
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const merged = new Uint8Array(buf.length + value.length);
-        merged.set(buf); merged.set(value, buf.length);
-        buf = merged;
-        for (;;) {
-          if (buf.length < HEADER) break;
-          const dv = new DataView(buf.buffer, buf.byteOffset, HEADER);
-          const x = dv.getUint16(0, true), y = dv.getUint16(2, true);
-          const w = dv.getUint16(4, true), h = dv.getUint16(6, true);
-          const need = HEADER + w * h;
-          if (buf.length < need) break;
-          if (w === 0 || h === 0) { buf = buf.subarray(need); continue; }
-          const grey = buf.subarray(HEADER, need);
-          const img = mine.createImageData(w, h);
-          for (let i = 0, j = 0; i < grey.length; i++, j += 4) {
-            img.data[j] = img.data[j + 1] = img.data[j + 2] = grey[i];
-            img.data[j + 3] = 255;
-          }
-          mine.putImageData(img, x, y);
-          // Keep the panel's own bytes for the overlay rather than reading the
-          // canvas back, so no browser colour handling gets between us and them.
-          if (x === 0 && y === 0 && w === W && h === H) {
-            mineGrey = grey.slice();
-            drawOverlay();
-          }
-          buf = buf.subarray(need);
-          frames++;
-          const secs = (performance.now() - t0) / 1000;
-          stat.textContent = frames + ' frames, ' + (frames / secs).toFixed(1) + ' fps';
-        }
-      }
-    } catch (e) {
-      stat.textContent = 'reconnecting';
-    }
-    await new Promise(r => setTimeout(r, 500));
+flipperStream((grey, x, y, w, h) => {
+  mineBlit.draw(grey, x, y, w, h);
+  // Keep the panel's own bytes for the overlay rather than reading the canvas
+  // back, so no browser colour handling sits between us and them.
+  if (x === 0 && y === 0 && w === W && h === H) {
+    mineGrey = grey.slice();
+    drawOverlay();
   }
-}
+}, text => { stat.textContent = text; });
 
-// Right: the prototype's own screenshot, proxied by this server so the browser
-// never makes a cross-origin request. Each fetch also tells the prototype's
-// server that a viewer is present, which is what makes cog keep uploading.
-async function peer() {
+// The prototype's own screenshot, proxied by this server so the browser never
+// makes a cross-origin request. Each fetch also tells its server a viewer is
+// present, which is what keeps cog uploading.
+(async () => {
+  const scratch = document.createElement('canvas');
+  scratch.width = W; scratch.height = H;
+  const sctx = scratch.getContext('2d', { willReadFrequently: true });
   for (;;) {
     try {
       const res = await fetch('peer.png', { cache: 'no-store' });
       if (res.status === 200) {
         const bmp = await createImageBitmap(await res.blob());
         peerCtx.drawImage(bmp, 0, 0, W, H);
+        sctx.drawImage(bmp, 0, 0, W, H);
         bmp.close();
-        const rgba = peerCtx.getImageData(0, 0, W, H).data;
+        const rgba = sctx.getImageData(0, 0, W, H).data;
         const grey = new Uint8Array(W * H);
-        // The prototype only ever paints greys, so any channel is its value.
+        // The prototype only paints greys, so any channel is its value.
         for (let i = 0, j = 0; i < grey.length; i++, j += 4) grey[i] = rgba[j];
         peerGrey = grey;
         drawOverlay();
@@ -350,31 +281,5 @@ async function peer() {
     } catch (e) { /* keep the last frame */ }
     await new Promise(r => setTimeout(r, 100));
   }
-}
-
-const KEYS = {
-  ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
-  Enter: 'ok', Escape: 'back', Backspace: 'back', Tab: 'appsw',
-  z: 'esc', x: 'view', c: 'power', v: 'edit', b: 'run', a: 'ptt',
-};
-
-function reflect(action, down) {
-  const el = document.querySelector(`.face button[data-k="${action}"]`);
-  if (el) el.classList.toggle('down', down);
-}
-
-addEventListener('keydown', e => {
-  // Leave the page's own controls alone when one has focus.
-  if (e.target.tagName === 'BUTTON' || e.target.tagName === 'SELECT') return;
-  const a = KEYS[e.key];
-  if (a && !e.repeat) { e.preventDefault(); reflect(a, true); send(a, true); }
-});
-addEventListener('keyup', e => {
-  if (e.target.tagName === 'BUTTON' || e.target.tagName === 'SELECT') return;
-  const a = KEYS[e.key];
-  if (a) { e.preventDefault(); reflect(a, false); send(a, false); }
-});
-
-stream();
-peer();
+})();
 </script>
