@@ -6,6 +6,23 @@
 use crate::theme::metric;
 use crate::FlipperKey;
 
+/// The column an app-described gauge's bar starts in, given its own label.
+///
+/// Only for a scene an app sent: the label is the app's to choose, so the bar has
+/// to be placed around it. A labelled bar clears its label and never starts before
+/// the fixed column, and a gauge with no label starts at the margin and takes the
+/// whole line.
+///
+/// A first-party screen does not call this. Those screens are fixed geometry and
+/// their gauges sit at `metric::GAUGE_COL` whatever the label reads, which is what
+/// keeps the battery and disk bars still.
+pub fn gauge_col_fit(label_w: u16) -> i32 {
+    if label_w == 0 {
+        return 0;
+    }
+    metric::GAUGE_COL.max(i32::from(label_w) + metric::GAUGE_LABEL_GAP)
+}
+
 /// Left edge of bottom-bar slot `slot`, counting from 0.
 ///
 /// A uniform grid, because the approved geometry adds up: 5 * 48 + 4 * 4 = 256,

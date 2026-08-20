@@ -157,7 +157,7 @@ export component IdleBody inherits Rectangle {
     in property <string> hostname;
     in property <string> profile;
     in property <[IdleLink]> links;
-    in property <[string]> hints;
+    in property <[string]> buttons;
     in property <int> pressed_slot: -1;
 
     property <length> bar: FlipperTheme.status_bar_h;
@@ -303,7 +303,7 @@ export component IdleBody inherits Rectangle {
 
     // Soft-button strip, same component and slot geometry as the menu.
     SoftBar {
-        hints: root.hints;
+        buttons: root.buttons;
         pressed_slot: root.pressed_slot;
     }
 }

@@ -136,7 +136,7 @@ fn key_names_round_trip() {
 }
 
 /// The bottom bar has one slot per physical soft key, and slot `i` labels
-/// `SOFT_ROW[i]`. A hints model of any other length would silently shift every
+/// `SOFT_ROW[i]`. A buttons model of any other length would silently shift every
 /// label away from the key underneath it, which is exactly the defect this pins:
 /// a "Menu" label sat over the `view` key while the handler answered only `ok`
 /// and `run`, so pressing the labelled key did nothing.

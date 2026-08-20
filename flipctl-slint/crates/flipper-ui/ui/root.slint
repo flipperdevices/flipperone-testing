@@ -20,7 +20,7 @@ export { ListItem, IdleLink, DetailRow, EthLink, EthDetailRow, BootRow, BootPopu
 // Idle is the root. The menu opens over it, the app list over that, and an app's
 // own screens over that. `app_form` and `app_log` are the two scene types the app
 // protocol admits so far.
-export enum Screen { idle, menu, detail, ethernet, boot, apps, app_form, app_log, text_input }
+export enum Screen { idle, menu, detail, ethernet, boot, apps, app_form, app_log, app_detail, text_input }
 
 export component Root inherits Window {
     width: 256px;
@@ -162,7 +162,7 @@ export component Root inherits Window {
         hostname: root.hostname;
         profile: root.profile;
         links: root.links;
-        hints: root.idle_hints;
+        buttons: root.idle_hints;
         pressed_slot: root.idle_pressed_slot;
     }
 
@@ -188,7 +188,7 @@ export component Root inherits Window {
         tick: root.tick;
         pressed: root.pressed;
         real_frame: true;
-        hints: root.app_hints;
+        buttons: root.app_hints;
         pressed_slot: root.app_pressed_slot;
     }
 
@@ -205,11 +205,11 @@ export component Root inherits Window {
         lines: root.app_lines;
         total: root.app_log_total;
         offset: root.app_log_offset;
-        hints: root.app_hints;
+        buttons: root.app_hints;
         pressed_slot: root.app_pressed_slot;
     }
 
-    if root.screen == Screen.detail: DetailBody {
+    if root.screen == Screen.detail || root.screen == Screen.app_detail: DetailBody {
         battery: root.battery;
         charging: root.charging;
         wifi_connected: root.wifi_connected;
@@ -222,8 +222,11 @@ export component Root inherits Window {
         rows: root.detail_rows;
         breadcrumb: root.breadcrumb;
         offset: root.detail_offset;
-        hints: root.detail_hints;
-        pressed_slot: root.detail_pressed_slot;
+        buttons: root.detail_hints;
+        fit_gauges: root.screen == Screen.app_detail;
+        pressed_slot: root.screen == Screen.app_detail
+            ? root.app_pressed_slot
+            : root.detail_pressed_slot;
     }
 
     if root.screen == Screen.ethernet: EthernetBody {
@@ -270,7 +273,7 @@ export component Root inherits Window {
         tab_label: root.kb_tab_label;
         tab_focus: root.kb_tab_focus;
         tab_pressed: root.kb_tab_pressed;
-        hints: root.kb_hints;
+        buttons: root.kb_hints;
         pressed_slot: root.kb_pressed_slot;
         discard: root.kb_discard;
     }
@@ -282,7 +285,7 @@ export component Root inherits Window {
         pressed: root.pressed;
         countdown: root.boot_countdown;
         remaining: root.boot_remaining;
-        hints: root.boot_hints;
+        buttons: root.boot_hints;
         pressed_slot: root.boot_pressed_slot;
         loading: root.boot_loading;
         spin_frame: root.boot_spin_frame;
@@ -317,7 +320,7 @@ export component Root inherits Window {
         tick: root.tick;
         pressed: root.pressed;
         real_frame: root.real_frame;
-        hints: root.menu_hints;
+        buttons: root.menu_hints;
         pressed_slot: root.menu_pressed_slot;
         breadcrumb: root.breadcrumb;
         arrow_pressed: root.arrow_pressed;

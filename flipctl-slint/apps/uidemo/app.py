@@ -14,8 +14,8 @@ Protocol, newline-delimited JSON on stdin and stdout:
     app -> flipctl   {"screen": {...}}
     flipctl -> app   {"key": "down", "down": true}
 
-    {"type": "form", "title", "rows": [{"label", "value"}], "selected", "hints"}
-    {"type": "log",  "title", "lines": [...], "total", "offset", "hints"}
+    {"type": "form", "title", "rows": [{"label", "value"}], "selected", "buttons"}
+    {"type": "log",  "title", "lines": [...], "total", "offset", "buttons"}
 """
 import json
 import sys
@@ -199,7 +199,7 @@ class App:
             "selected": self.selected - self.offset,
             "total": len(ELEMENTS),
             "offset": self.offset,
-            "hints": ["Back", "", "", "", "Open"],
+            "buttons": ["Back", "", "", "", "Open"],
         })
 
     def detail_screen(self):
@@ -210,7 +210,7 @@ class App:
             "lines": lines[:LOG_WINDOW],
             "total": len(lines),
             "offset": 0,
-            "hints": ["Back", "", "", "", ""],
+            "buttons": ["Back", "", "", "", ""],
         })
 
 

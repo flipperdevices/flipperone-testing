@@ -6,9 +6,9 @@
 use flipper_ui::app::{self, SceneKind};
 
 /// Exactly what apps/ping/app.py emits for its parameter form.
-const FORM: &str = r#"{"screen": {"type": "form", "title": "Ping", "rows": [{"label": "Host", "value": "1.1.1.1"}, {"label": "Count", "value": "5"}, {"label": "Interval", "value": "1.0s"}, {"label": "Size", "value": "56"}], "selected": 2, "hints": ["Back", "", "", "", "Start"]}}"#;
+const FORM: &str = r#"{"screen": {"type": "form", "title": "Ping", "rows": [{"label": "Host", "value": "1.1.1.1"}, {"label": "Count", "value": "5"}, {"label": "Interval", "value": "1.0s"}, {"label": "Size", "value": "56"}], "selected": 2, "buttons": ["Back", "", "", "", "Start"]}}"#;
 
-const LOG: &str = r#"{"screen": {"type": "log", "title": "Ping 1.1.1.1", "lines": ["PING 1.1.1.1", "seq 1  ttl 59  2.60 ms", "5/5 received, 0% loss"], "hints": ["Back", "", "", "", "Again"]}}"#;
+const LOG: &str = r#"{"screen": {"type": "log", "title": "Ping 1.1.1.1", "lines": ["PING 1.1.1.1", "seq 1  ttl 59  2.60 ms", "5/5 received, 0% loss"], "buttons": ["Back", "", "", "", "Again"]}}"#;
 
 #[test]
 fn parses_a_form_scene() {
@@ -16,16 +16,21 @@ fn parses_a_form_scene() {
     assert_eq!(scene.kind, SceneKind::Form);
     assert_eq!(scene.title, "Ping");
     assert_eq!(scene.selected, 2);
+    let pairs: Vec<(&str, &str)> = scene
+        .rows
+        .iter()
+        .map(|r| (r.label.as_str(), r.value.as_str()))
+        .collect();
     assert_eq!(
-        scene.rows,
-        vec![
-            ("Host".into(), "1.1.1.1".into()),
-            ("Count".into(), "5".into()),
-            ("Interval".into(), "1.0s".into()),
-            ("Size".into(), "56".into()),
+        pairs,
+        [
+            ("Host", "1.1.1.1"),
+            ("Count", "5"),
+            ("Interval", "1.0s"),
+            ("Size", "56"),
         ]
     );
-    assert_eq!(scene.hints, vec!["Back", "", "", "", "Start"]);
+    assert_eq!(scene.buttons, vec!["Back", "", "", "", "Start"]);
 }
 
 #[test]
@@ -34,9 +39,9 @@ fn parses_a_log_scene() {
     assert_eq!(scene.kind, SceneKind::Log);
     assert_eq!(scene.title, "Ping 1.1.1.1");
     assert_eq!(scene.rows.len(), 3);
-    assert_eq!(scene.rows[1].0, "seq 1  ttl 59  2.60 ms");
+    assert_eq!(scene.rows[1].label, "seq 1  ttl 59  2.60 ms");
     // A log row carries no value; only forms use the second column.
-    assert!(scene.rows.iter().all(|(_, v)| v.is_empty()));
+    assert!(scene.rows.iter().all(|r| r.value.is_empty()));
 }
 
 /// An app writing nonsense must not be able to crash the UI. Every one of these
@@ -64,8 +69,8 @@ fn malformed_input_is_ignored_not_fatal() {
 fn unescapes_strings() {
     let line = r#"{"screen":{"type":"log","lines":["a \" b","c \\ d"]}}"#;
     let scene = app::parse_line(line).expect("parses");
-    assert_eq!(scene.rows[0].0, "a \" b");
-    assert_eq!(scene.rows[1].0, "c \\ d");
+    assert_eq!(scene.rows[0].label, "a \" b");
+    assert_eq!(scene.rows[1].label, "c \\ d");
 }
 
 /// Discovery reads the manifests in `apps/` and sorts by name, so the menu order
@@ -295,4 +300,69 @@ fn a_rust_app_without_a_manifest_section_still_works() {
     assert_eq!(found[0].name, "bare");
     assert_eq!(found[0].kind, app::Kind::Rust);
     assert!(found[0].apt.is_empty());
+}
+
+/// A detail scene: rows that are gauges, dividers and full-width lines, which is
+/// what an app reporting progress sends.
+///
+/// The row kinds are the numbers DetailRow uses, because that is what draws them,
+/// so this pins the mapping rather than the rendering.
+#[test]
+fn parses_a_detail_scene() {
+    let line = r#"{"screen": {"type": "detail", "title": "Progress", "rows": [
+        {"kind": "text", "label": "Running  21% of two jobs"},
+        {"kind": "divider"},
+        {"kind": "gauge", "label": "Download", "percent": 42},
+        {"label": "", "value": "42%", "dim": true},
+        {"label": "Elapsed", "value": "12.4s"}
+    ], "buttons": ["Back", "", "Reset", "", "Pause"]}}"#;
+
+    let scene = app::parse_line(line).expect("detail parses");
+    assert_eq!(scene.kind, SceneKind::Detail);
+    assert_eq!(scene.title, "Progress");
+    assert_eq!(scene.buttons, ["Back", "", "Reset", "", "Pause"]);
+    assert_eq!(scene.rows.len(), 5, "a divider is a row of its own");
+
+    assert_eq!(scene.rows[0].kind, 3);
+    assert_eq!(scene.rows[0].label, "Running  21% of two jobs");
+
+    assert_eq!(scene.rows[1].kind, 1);
+    assert_eq!(scene.rows[1].label, "", "a divider carries no label");
+
+    assert_eq!(scene.rows[2].kind, 2);
+    assert_eq!(scene.rows[2].label, "Download");
+    assert_eq!(scene.rows[2].percent, 42);
+
+    assert!(scene.rows[3].dim);
+    assert_eq!(scene.rows[3].value, "42%");
+
+    // No kind named means a label and a value, which is what a form row is.
+    assert_eq!(scene.rows[4].kind, 0);
+    assert!(!scene.rows[4].dim);
+}
+
+/// A gauge outside 0..=100 is clamped rather than trusted: the fill is a width,
+/// and a negative or oversized one would draw outside the frame.
+#[test]
+fn a_gauge_percent_is_clamped() {
+    let over = r#"{"screen":{"type":"detail","rows":[{"kind":"gauge","label":"a","percent":140}]}}"#;
+    let under = r#"{"screen":{"type":"detail","rows":[{"kind":"gauge","label":"a","percent":-20}]}}"#;
+    assert_eq!(app::parse_line(over).unwrap().rows[0].percent, 100);
+    assert_eq!(app::parse_line(under).unwrap().rows[0].percent, 0);
+}
+
+/// The Progress app is discovered like any other, and needs nothing installed.
+#[test]
+fn the_progress_app_is_listed() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../apps")
+        .canonicalize()
+        .expect("apps dir");
+    let apps = app::discover(&root);
+    let progress = apps
+        .iter()
+        .find(|a| a.name == "Progress")
+        .expect("the progress app");
+    assert_eq!(progress.kind, app::Kind::Python);
+    assert!(progress.apt.is_empty() && progress.pip.is_empty(), "stdlib only");
 }

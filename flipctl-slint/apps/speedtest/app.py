@@ -115,7 +115,7 @@ class App:
             "offset": self.offset,
             # Nothing to press while a test is in flight: it cannot be cancelled
             # part way through without leaving a half-finished measurement.
-            "hints": ["Back", "", "", "", "" if self.running else "Start"],
+            "buttons": ["Back", "", "", "", "" if self.running else "Start"],
         })
 
     def say(self, line):

@@ -255,7 +255,7 @@ export component MenuBody inherits Rectangle {
     // One entry per physical soft key, in silkscreen order: esc, view, power,
     // edit, run. Slot i labels the key beneath it, so a model of any other length
     // shifts every label onto the wrong key. An empty string draws no button.
-    in property <[string]> hints;
+    in property <[string]> buttons;
     // Which soft slot is showing its pressed state, or -1.
     in property <int> pressed_slot: -1;
     // false: Slint border-radius. true: the transcribed MenuSelectorFrame.
@@ -449,5 +449,5 @@ export component MenuBody inherits Rectangle {
 
     // A row press inverts the selector; a soft key inverts its own button, which
     // is the only feedback there is before the screen changes.
-    SoftBar { hints: root.hints; pressed_slot: root.pressed_slot; }
+    SoftBar { buttons: root.buttons; pressed_slot: root.pressed_slot; }
 }

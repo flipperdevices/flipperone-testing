@@ -560,7 +560,7 @@ mod detail {
         }
 
         /// Soft-key labels. Only Update has a second action.
-        pub fn hints(&self, applying: &Applying) -> [&'static str; 5] {
+        pub fn buttons(&self, applying: &Applying) -> [&'static str; 5] {
             match self {
                 Live::Update(w) => {
                     let u = w.get();
@@ -1256,12 +1256,9 @@ fn dialog_wrap(apt: &[String], pip: &[String]) -> Vec<String> {
 #[cfg(feature = "slint")]
 fn apply_app_list(
     screen: &flipper_ui::ui::Root,
-    rows: &[(String, String)],
+    rows: &[flipper_ui::app::Row],
     selected: i32,
-    hints: &[String],
-    // Per row, whether its value is at the low or high end of its range, so the
-    // matching chevron is suppressed. Empty when the caller has no ranges.
-    ends: &[(bool, bool)],
+    buttons: &[String],
     // Real extent of the app's buffer and where the sent rows sit in it, for the
     // scrollbar. Equal to the row count and zero when the caller sends everything.
     bar: (i32, i32),
@@ -1271,15 +1268,14 @@ fn apply_app_list(
 ) {
     let items: Vec<flipper_ui::ui::ListItem> = rows
         .iter()
-        .enumerate()
-        .map(|(i, (label, value))| {
+        .map(|row| {
             // A value the app wrapped in chevrons asks for the adjust control, the
             // same way a menu row does.
-            let (chevrons, inner) = demo::chevrons_of(value);
-            let (at_start, at_end) = ends.get(i).copied().unwrap_or((false, false));
+            let (chevrons, inner) = demo::chevrons_of(&row.value);
+            let (at_start, at_end) = (row.at_start, row.at_end);
             flipper_ui::ui::ListItem {
-                label: label.as_str().into(),
-                status: value.as_str().into(),
+                label: row.label.as_str().into(),
+                status: row.value.as_str().into(),
                 // Apps have no icons yet. The column stays reserved so a manifest
                 // can name one later without the labels shifting.
                 icon: 0,
@@ -1298,7 +1294,7 @@ fn apply_app_list(
     screen.set_app_selected(selected);
     screen.set_app_items(slint::ModelRc::new(slint::VecModel::from(items)));
     screen.set_app_hints(slint::ModelRc::new(slint::VecModel::from(
-        hints
+        buttons
             .iter()
             .map(|h| slint::SharedString::from(h.as_str()))
             .collect::<Vec<_>>(),
@@ -1416,7 +1412,7 @@ fn png(
             let rows = open.rows(&applying);
             screen.set_detail_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
             screen.set_detail_offset(select.unwrap_or(0));
-            screen.set_detail_hints(demo::labels(&open.hints(&applying)));
+            screen.set_detail_hints(demo::labels(&open.buttons(&applying)));
             // Routing info and 5G Modem live under Network, the rest under
             // Settings, which is what the real breadcrumb derives from the stack.
             let parent = match want {
@@ -1555,7 +1551,11 @@ fn panel(
 
     // Apps live next to the binary's workspace root, so a deployed tree finds
     // them without configuration.
-    let apps = flipper_ui::app::discover(std::path::Path::new("apps"));
+    // Re-read whenever the Apps screen opens, so an app copied onto the device
+    // shows up without restarting this. Discovery is a directory listing and a
+    // manifest scan per app, which is nothing next to opening a menu.
+    let apps_dir = std::path::PathBuf::from("apps");
+    let mut apps = flipper_ui::app::discover(&apps_dir);
     eprintln!(
         "apps           {} found: {:?}",
         apps.len(),
@@ -1669,6 +1669,12 @@ fn panel(
     let mut kb_profile = flipper_ui::boot::Profile::default();
     let mut kb_dirty = false;
     let mut kb_cursor_shown = false;
+    // Where an app's detail screen is scrolled to, and how many rows its last
+    // scene had. The server owns scrolling: an app describes its rows and never
+    // has to implement a viewport, which is also why Up and Down are not
+    // forwarded to it on that screen.
+    let mut app_detail_offset = 0i32;
+    let mut app_detail_rows = 0i32;
     // Space and overlays for the selected profile, read on a thread because
     // btrfs-show-space measures every subvolume.
     let mut popup_space: Option<flipper_ui::boot::Space> = None;
@@ -1901,21 +1907,36 @@ fn panel(
             // While an app is running it owns the keys, except Back, which is
             // the way out of an app that has stopped responding.
             if let Some(app) = running.as_mut() {
-                if screen.get_screen() == Screen::AppForm && event.key == FlipperKey::Back {
+                if matches!(screen.get_screen(), Screen::AppForm | Screen::AppDetail)
+                    && event.key == FlipperKey::Back
+                {
                     app.stop();
                     running = None;
-                    let rows: Vec<(String, String)> = apps
+                    let rows: Vec<flipper_ui::app::Row> = apps
                         .iter()
-                        .map(|a| (a.name.clone(), String::new()))
+                        .map(|a| flipper_ui::app::Row::pair(&a.name, ""))
                         .collect();
-                    apply_app_list(&screen, &rows, app_selected, &EMPTY_HINTS, &[], (0, 0), app_scroll);
+                    apply_app_list(&screen, &rows, app_selected, &EMPTY_HINTS, (0, 0), app_scroll);
                     screen.set_screen(Screen::Apps);
+                } else if screen.get_screen() == Screen::AppDetail
+                    && matches!(event.key, FlipperKey::Up | FlipperKey::Down)
+                {
+                    // Scrolled here, not by the app. The scrollbar is drawn from
+                    // the row count, so the keys that move it have to act on the
+                    // same side that draws it.
+                    let visible = flipper_ui::theme::count::DETAIL_VISIBLE_ROWS;
+                    let max = (app_detail_rows - visible).max(0);
+                    app_detail_offset = match event.key {
+                        FlipperKey::Down => (app_detail_offset + 1).min(max),
+                        _ => (app_detail_offset - 1).max(0),
+                    };
+                    screen.set_detail_offset(app_detail_offset);
                 } else {
                     // Flash here rather than waiting for the app: its answer is a
                     // scene that arrives on its own schedule, and a button that
                     // does not invert until then reads as a key that was missed.
                     if let Some(i) = FlipperKey::SOFT_ROW.iter().position(|k| *k == event.key) {
-                        if app.scene().hints.get(i).is_some_and(|h| !h.is_empty()) {
+                        if app.scene().buttons.get(i).is_some_and(|h| !h.is_empty()) {
                             press.only(i, Instant::now() + flash);
                         }
                     }
@@ -2069,7 +2090,7 @@ fn panel(
                         detail_dirty = true;
                     }
                     FlipperKey::Run | FlipperKey::Ok
-                        if !open.hints(&applying)[4].is_empty() =>
+                        if !open.buttons(&applying)[4].is_empty() =>
                     {
                         press.soft(FlipperKey::Run, 4, Instant::now() + flash);
                     }
@@ -2105,11 +2126,11 @@ fn panel(
                     (app_selected - visible + 1).max(0),
                     app_selected.min((apps.len() as i32 - visible).max(0)),
                 );
-                let rows: Vec<(String, String)> = apps
+                let rows: Vec<flipper_ui::app::Row> = apps
                     .iter()
-                    .map(|a| (a.name.clone(), String::new()))
+                    .map(|a| flipper_ui::app::Row::pair(&a.name, ""))
                     .collect();
-                apply_app_list(&screen, &rows, app_selected, &EMPTY_HINTS, &[], (0, 0), app_scroll);
+                apply_app_list(&screen, &rows, app_selected, &EMPTY_HINTS, (0, 0), app_scroll);
                 continue;
             }
 
@@ -2440,6 +2461,7 @@ fn panel(
                                 let _ = tx.send(flipper_ui::app::missing(&entry));
                             })
                             .ok();
+                        app_detail_offset = 0;
                         deps = Some(Deps::Checking(app_selected, rx));
                         deps_log.clear();
                         deps_offset = 0;
@@ -2460,11 +2482,15 @@ fn panel(
                             eprintln!("menu           {}", next.title);
                         }
                         demo::Act::Apps => {
-                            let rows: Vec<(String, String)> = apps
+                            // Read the directory again: an app copied onto the
+                            // device between two visits belongs in this list.
+                            apps = flipper_ui::app::discover(&apps_dir);
+                            app_selected = app_selected.min((apps.len() as i32 - 1).max(0));
+                            let rows: Vec<flipper_ui::app::Row> = apps
                                 .iter()
-                                .map(|a| (a.name.clone(), String::new()))
+                                .map(|a| flipper_ui::app::Row::pair(&a.name, ""))
                                 .collect();
-                            apply_app_list(&screen, &rows, app_selected, &EMPTY_HINTS, &[], (0, 0), app_scroll);
+                            apply_app_list(&screen, &rows, app_selected, &EMPTY_HINTS, (0, 0), app_scroll);
                             screen.set_screen(Screen::Apps);
                             // `pressed` is shared by both lists, so a flash still
                             // running here would land on whichever app row is
@@ -2692,7 +2718,7 @@ fn panel(
                 let size = (14.0, 14.0);
                 let mut rows: Vec<flipper_ui::ui::BootPopupRow> = Vec::new();
                 let mut message: Vec<slint::SharedString> = Vec::new();
-                let mut hint = String::new();
+                let mut button = String::new();
 
                 let line = |text: String| flipper_ui::ui::BootPopupRow {
                     kind: 0,
@@ -2761,14 +2787,14 @@ fn panel(
                         message.push(
                             flipper_ui::boot::display_name(&profile.name).as_str().into(),
                         );
-                        hint = "OK = yes    Back = no".into();
+                        button = "OK = yes    Back = no".into();
                     }
                     Some(Popup::Busy(what, _)) => {
                         message.push(format!("{what} {spin}").as_str().into());
                     }
                     Some(Popup::Said(msg)) => {
                         message.push(msg.as_str().into());
-                        hint = "Press any key".into();
+                        button = "Press any key".into();
                     }
                     None => {}
                 }
@@ -2838,8 +2864,8 @@ fn panel(
                     for line in &message {
                         body = body.max(TITLE.text_width(line.as_str()));
                     }
-                    if !hint.is_empty() {
-                        body = body.max(TITLE.text_width(&hint));
+                    if !button.is_empty() {
+                        body = body.max(TITLE.text_width(&button));
                     }
                     let widest = size_line
                         .max(name_line)
@@ -2848,7 +2874,7 @@ fn panel(
                         f32::from((widest + 12).min(POPUP_MAX_W as u16)),
                     );
                 }
-                screen.set_boot_popup_hint(hint.as_str().into());
+                screen.set_boot_popup_hint(button.as_str().into());
                 screen.set_boot_popup_message(slint::ModelRc::new(slint::VecModel::from(message)));
                 screen.set_boot_popup_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
             }
@@ -3040,7 +3066,7 @@ fn panel(
                 detail_offset = detail_offset.clamp(0, max);
                 screen.set_detail_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
                 screen.set_detail_offset(detail_offset);
-                screen.set_detail_hints(demo::labels(&open.hints(&applying)));
+                screen.set_detail_hints(demo::labels(&open.buttons(&applying)));
             }
             if let Some(rx) = apply_rx.as_ref() {
                 match rx.try_recv() {
@@ -3100,12 +3126,12 @@ fn panel(
                             scene
                                 .rows
                                 .iter()
-                                .map(|(l, _)| slint::SharedString::from(l.as_str()))
+                                .map(|row| slint::SharedString::from(row.label.as_str()))
                                 .collect::<Vec<_>>(),
                         )));
                         screen.set_app_hints(slint::ModelRc::new(slint::VecModel::from(
                             scene
-                                .hints
+                                .buttons
                                 .iter()
                                 .map(|h| slint::SharedString::from(h.as_str()))
                                 .collect::<Vec<_>>(),
@@ -3119,12 +3145,53 @@ fn panel(
                             &screen,
                             &scene.rows,
                             scene.selected,
-                            &scene.hints,
-                            &scene.ends,
+                            &scene.buttons,
                             (scene.total, scene.offset),
                             0,
                         );
                         screen.set_screen(Screen::AppForm);
+                    }
+                    // Rows that can be a gauge, a divider or a line of text, drawn
+                    // by the same body the Settings screens use. An app reporting
+                    // progress needs a bar, and this is where the bar already is.
+                    flipper_ui::SceneKind::Detail => {
+                        let rows: Vec<flipper_ui::ui::DetailRow> = scene
+                            .rows
+                            .iter()
+                            .map(|r| flipper_ui::ui::DetailRow {
+                                kind: r.kind,
+                                label: r.label.as_str().into(),
+                                value: r.value.as_str().into(),
+                                percent: r.percent,
+                                dim: r.dim,
+                            })
+                            .collect();
+                        app_detail_rows = rows.len() as i32;
+                        screen.set_detail_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
+                        // Clamped rather than reset: an app resending its scene ten
+                        // times a second must not drag the view back to the top
+                        // under someone who has scrolled down.
+                        let visible = flipper_ui::theme::count::DETAIL_VISIBLE_ROWS;
+                        app_detail_offset =
+                            app_detail_offset.clamp(0, (app_detail_rows - visible).max(0));
+                        screen.set_detail_offset(app_detail_offset);
+                        screen.set_detail_hints(slint::ModelRc::new(slint::VecModel::from(
+                            scene
+                                .buttons
+                                .iter()
+                                .map(|h| slint::SharedString::from(h.as_str()))
+                                .collect::<Vec<_>>(),
+                        )));
+                        screen.set_breadcrumb(
+                            if scene.title.is_empty() {
+                                String::new()
+                            } else {
+                                format!("> {}", scene.title)
+                            }
+                            .as_str()
+                            .into(),
+                        );
+                        screen.set_screen(Screen::AppDetail);
                     }
                 }
             }
@@ -3133,11 +3200,11 @@ fn panel(
             if app.finished() {
                 eprintln!("app            exited");
                 running = None;
-                let rows: Vec<(String, String)> = apps
+                let rows: Vec<flipper_ui::app::Row> = apps
                     .iter()
-                    .map(|a| (a.name.clone(), String::new()))
+                    .map(|a| flipper_ui::app::Row::pair(&a.name, ""))
                     .collect();
-                apply_app_list(&screen, &rows, app_selected, &EMPTY_HINTS, &[], (0, 0), app_scroll);
+                apply_app_list(&screen, &rows, app_selected, &EMPTY_HINTS, (0, 0), app_scroll);
                 screen.set_screen(Screen::Apps);
             }
         }

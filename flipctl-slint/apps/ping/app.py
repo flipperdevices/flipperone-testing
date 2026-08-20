@@ -17,8 +17,8 @@ way to desync: if the app restarts, its first scene puts the screen right.
 Two scene types are used here:
 
     {"type": "form", "title", "rows": [{"label", "value", "at_start", "at_end"}],
-     "selected", "hints"}
-    {"type": "log",  "title", "lines": [...], "total", "offset", "hints"}
+     "selected", "buttons"}
+    {"type": "log",  "title", "lines": [...], "total", "offset", "buttons"}
 
 A log sends a window rather than its whole history: `total` and `offset` tell
 flipctl where that window sits so it can draw a scrollbar, without the app having
@@ -124,7 +124,7 @@ class App:
             ],
             "selected": self.selected,
             # One entry per physical soft key: esc, view, power, edit, run.
-            "hints": ["Back", "", "", "", "Start"],
+            "buttons": ["Back", "", "", "", "Start"],
         })
 
     def log(self):
@@ -137,7 +137,7 @@ class App:
             "lines": self.lines[self.offset:self.offset + WINDOW],
             "total": len(self.lines),
             "offset": self.offset,
-            "hints": ["Back", "", "", "", "Stop" if self.running() else "Again"],
+            "buttons": ["Back", "", "", "", "Stop" if self.running() else "Again"],
         })
 
     def scroll(self, delta):

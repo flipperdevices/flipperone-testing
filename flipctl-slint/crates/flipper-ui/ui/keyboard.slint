@@ -305,7 +305,7 @@ export component TextInputBody inherits Rectangle {
     // 0 none, 1 the 123 tab, 2 the backspace tab.
     in property <int> tab_focus;
     in property <int> tab_pressed;
-    in property <[string]> hints;
+    in property <[string]> buttons;
     in property <int> pressed_slot: -1;
     // Open with its highlighted row: 0 keeps the text, 1 throws it away.
     in property <int> discard: -1;
@@ -533,7 +533,7 @@ export component TextInputBody inherits Rectangle {
     }
 
     SoftBar {
-        hints: root.hints;
+        buttons: root.buttons;
         pressed_slot: root.pressed_slot;
         disabled_slot: root.warning != "" ? 4 : -1;
     }

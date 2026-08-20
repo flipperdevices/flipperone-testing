@@ -32,8 +32,12 @@ export component DetailBody inherits Rectangle {
     in property <string> breadcrumb;
     // First visible row, for lists longer than the viewport.
     in property <int> offset;
-    in property <[string]> hints;
+    in property <[string]> buttons;
     in property <int> pressed_slot: -1;
+    // Size the gauges around their labels instead of pinning them to the approved
+    // column. Set for a scene an app described, where the label is the app's to
+    // choose; a first-party screen leaves it off and keeps its fixed geometry.
+    in property <bool> fit_gauges;
 
     in property <int> battery: -1;
     in property <bool> charging;
@@ -86,6 +90,19 @@ export component DetailBody inherits Rectangle {
 
         property <color> ink: row.dim ? FlipperTheme.status_dim : FlipperTheme.black;
 
+        // The label, measured. A gauge's bar starts clear of its own label, so the
+        // width has to be known before the bar is placed, and the label element
+        // itself lives inside a conditional. This one is never drawn; it exists to
+        // be measured, as elsewhere. Slint's measured width is one more than the
+        // prototype's textWidth, hence the correction.
+        measure := Text {
+            text: row.label;
+            font-size: 16px;
+            font-family: "Busy9px";
+            visible: false;
+        }
+        property <length> label_w: row.label == "" ? 0 : measure.width - 1px;
+
         // Label. Kind 3 is a full-width line with no value; a gauge keeps its
         // label in the same column as every other row so the left edge is one
         // straight line down the screen.
@@ -123,42 +140,52 @@ export component DetailBody inherits Rectangle {
         // prototype draws the frame one pixel larger than the fill on every side,
         // so the fill never touches the border.
         if row.kind == 2: Rectangle {
-            x: root.left + 30px;
+            // The approved column, or layout::gauge_col_fit mirrored here when the
+            // caller asked for the label to be cleared.
+            x: root.left + (!root.fit_gauges
+                ? FlipperTheme.gauge_col
+                : (parent.label_w == 0 ? 0 : Math.max(
+                    FlipperTheme.gauge_col / 1px,
+                    (parent.label_w + FlipperTheme.gauge_label_gap) / 1px
+                  ) * 1px));
             // Centred on the text's ink band, not on the row box: the row is 12px
             // and the ink occupies 9 of them starting 3 down, so centring on the
             // box puts the bar a pixel above the label it belongs to.
             y: FlipperTheme.text_ink_top
                 + (FlipperTheme.text_ink_h - FlipperTheme.gauge_h - 2px) / 2;
-            width: root.right - root.left - 30px;
+            width: root.right - self.x;
             height: FlipperTheme.gauge_h + 2px;
             background: transparent;
+            // The row's tone, so a dim gauge is a dim bar and not a black one
+            // under a grey label.
+            property <color> ink: parent.ink;
 
             Rectangle {
                 x: 0; y: 0;
                 width: parent.width; height: 1px;
-                background: FlipperTheme.black;
+                background: parent.ink;
             }
             Rectangle {
                 x: 0; y: parent.height - 1px;
                 width: parent.width; height: 1px;
-                background: FlipperTheme.black;
+                background: parent.ink;
             }
             Rectangle {
                 x: 0; y: 0;
                 width: 1px; height: parent.height;
-                background: FlipperTheme.black;
+                background: parent.ink;
             }
             Rectangle {
                 x: parent.width - 1px; y: 0;
                 width: 1px; height: parent.height;
-                background: FlipperTheme.black;
+                background: parent.ink;
             }
             Rectangle {
                 x: 1px;
                 y: 1px;
                 width: Math.round((parent.width - 2px) / 1px * row.percent / 100) * 1px;
                 height: FlipperTheme.gauge_h;
-                background: FlipperTheme.black;
+                background: parent.ink;
             }
         }
     }
@@ -203,7 +230,7 @@ export component DetailBody inherits Rectangle {
     }
 
     SoftBar {
-        hints: root.hints;
+        buttons: root.buttons;
         pressed_slot: root.pressed_slot;
     }
 }

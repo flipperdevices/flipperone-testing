@@ -268,7 +268,7 @@ export component SoftButton {
 // puts every label on the wrong key. An empty string draws no button, which is how
 // a screen uses only the outer two slots.
 export component SoftBar inherits Rectangle {
-    in property <[string]> hints;
+    in property <[string]> buttons;
     in property <int> pressed_slot: -1;
     // A slot whose action is refused, drawn with the disabled chrome so it is
     // visible that pressing it will do nothing.
@@ -278,15 +278,15 @@ export component SoftBar inherits Rectangle {
     height: 100%;
     background: transparent;
 
-    for hint[i] in root.hints: Rectangle {
+    for button[i] in root.buttons: Rectangle {
         x: i * (FlipperTheme.button_w + FlipperTheme.button_gap);
         y: parent.height - FlipperTheme.button_h;
         width: FlipperTheme.button_w;
         height: FlipperTheme.button_h;
         background: transparent;
-        if hint != "": SoftButton {
+        if button != "": SoftButton {
             width: parent.width;
-            label: hint;
+            label: button;
             pressed: i == root.pressed_slot;
             disabled: i == root.disabled_slot;
             flush_left: i == 0;

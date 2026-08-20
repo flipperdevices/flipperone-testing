@@ -13,7 +13,7 @@ export component LogBody inherits Rectangle {
     // Where the window sits in the app's buffer, for the scrollbar.
     in property <int> total;
     in property <int> offset;
-    in property <[string]> hints;
+    in property <[string]> buttons;
     in property <int> pressed_slot: -1;
 
     // Status bar, shared with every other screen.
@@ -110,7 +110,7 @@ export component LogBody inherits Rectangle {
     }
 
     SoftBar {
-        hints: root.hints;
+        buttons: root.buttons;
         pressed_slot: root.pressed_slot;
     }
 }

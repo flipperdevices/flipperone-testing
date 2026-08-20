@@ -127,7 +127,7 @@ component BootPopup inherits Rectangle {
     in property <[BootPopupRow]> rows;
     // Shown instead of the rows: a confirmation, progress, or what happened.
     in property <[string]> message;
-    in property <string> hint;
+    in property <string> button;
     // Measured by the caller: Slint cannot take a maximum across a model, and the
     // font tables that decide it live on that side anyway.
     in property <length> frame_w_in;
@@ -143,7 +143,7 @@ component BootPopup inherits Rectangle {
             ? FlipperTheme.popup_row_h
             : FlipperTheme.popup_line_h);
     property <int> body_lines: root.has_message
-        ? root.message.length + (root.hint == "" ? 0 : 1)
+        ? root.message.length + (root.button == "" ? 0 : 1)
         : root.rows.length;
     property <length> body_h: root.body_lines * root.line_h;
     property <length> frame_h: FlipperTheme.popup_hdr_h + root.body_h + 8px;
@@ -277,7 +277,7 @@ component BootPopup inherits Rectangle {
         color: FlipperTheme.keycap_dim;
     }
 
-    // A message takes the body: its lines centred, then the hint under them.
+    // A message takes the body: its lines centred, then the button under them.
     for line[i] in root.message: Text {
         x: root.frame_x + Math.floor((root.frame_w - (self.width - 1px)) / 2 / 1px) * 1px;
         y: root.frame_y + FlipperTheme.popup_hdr_h + 4px + i * FlipperTheme.popup_line_h;
@@ -285,11 +285,11 @@ component BootPopup inherits Rectangle {
         font-size: 16px;
         color: FlipperTheme.black;
     }
-    if root.hint != "": Text {
+    if root.button != "": Text {
         x: root.frame_x + Math.floor((root.frame_w - (self.width - 1px)) / 2 / 1px) * 1px;
         y: root.frame_y + FlipperTheme.popup_hdr_h + 4px
             + root.message.length * FlipperTheme.popup_line_h;
-        text: root.hint;
+        text: root.button;
         font-size: 16px;
         color: FlipperTheme.status_dim;
     }
@@ -350,7 +350,7 @@ export component BootBody inherits Rectangle {
     in property <int> countdown;
     // Seconds left, shown next to the bar.
     in property <int> remaining;
-    in property <[string]> hints;
+    in property <[string]> buttons;
     in property <int> pressed_slot: -1;
     // The list read is still running. An empty list means two different things,
     // and only one of them is "there are none".
@@ -526,7 +526,7 @@ export component BootBody inherits Rectangle {
     }
 
     SoftBar {
-        hints: root.hints;
+        buttons: root.buttons;
         pressed_slot: root.pressed_slot;
     }
 
@@ -554,7 +554,7 @@ export component BootBody inherits Rectangle {
         size_slot_w: root.popup_size_slot_w;
         rows: root.popup_rows;
         message: root.popup_message;
-        hint: root.popup_hint;
+        button: root.popup_hint;
         frame_w_in: root.popup_w;
     }
 }

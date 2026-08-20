@@ -200,20 +200,46 @@ fn py_list(src: &str, key: &str) -> Vec<String> {
 pub struct Scene {
     pub kind: SceneKind,
     pub title: String,
-    /// `form`: label and value per row. `log`: the value is empty.
-    pub rows: Vec<(String, String)>,
+    pub rows: Vec<Row>,
     pub selected: i32,
     /// `log`: how many lines exist in total, and the index of the first one sent.
     /// The app keeps the buffer and sends a window; these let the renderer draw a
-    /// scrollbar without being sent the whole history on every frame.
+    /// scrollbar without being sent the whole history on every frame. A `detail`
+    /// scene uses `offset` the same way.
     pub total: i32,
     pub offset: i32,
     /// One per physical soft key, in silkscreen order.
-    pub hints: Vec<String>,
-    /// Per row, whether its value sits at the low or high end of its range. A row
-    /// at an end has that chevron suppressed, so the control shows which
-    /// directions are still available.
-    pub ends: Vec<(bool, bool)>,
+    pub buttons: Vec<String>,
+}
+
+/// One row of a scene, whatever kind of scene it belongs to.
+///
+/// A single type rather than one per scene kind, because the fields a kind does
+/// not use cost nothing and the alternative was a second vector running alongside
+/// `rows` that had to be kept the same length by hand.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Row {
+    /// `log`: the whole line. `form` and `detail`: the label.
+    pub label: String,
+    pub value: String,
+    /// `form`: the value sits at the low or the high end of its range, so that
+    /// chevron is suppressed and the control shows which way is still open.
+    pub at_start: bool,
+    pub at_end: bool,
+    /// `detail`: 0 label and value, 1 divider, 2 gauge, 3 full-width text. The
+    /// same numbering the renderer's DetailRow uses, because that is what draws it.
+    pub kind: i32,
+    /// `detail`: a gauge's fill, 0..=100.
+    pub percent: i32,
+    /// `detail`: draw in the dim tone rather than in ink.
+    pub dim: bool,
+}
+
+impl Row {
+    /// A plain label-and-value row, which is what a form is made of.
+    pub fn pair(label: &str, value: &str) -> Self {
+        Self { label: label.into(), value: value.into(), ..Self::default() }
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
@@ -221,6 +247,10 @@ pub enum SceneKind {
     #[default]
     Form,
     Log,
+    /// Rows that can be a gauge, a divider or a full-width line, which is what a
+    /// screen reporting progress needs. Same body the Settings and Network
+    /// screens draw with.
+    Detail,
 }
 
 /// Apps in `dir`, sorted by name so the menu order is stable.
@@ -386,6 +416,7 @@ pub fn parse_line(line: &str) -> Option<Scene> {
     let body = line.split_once("\"screen\"")?.1;
     let kind = match string_field(body, "type")?.as_str() {
         "log" => SceneKind::Log,
+        "detail" => SceneKind::Detail,
         _ => SceneKind::Form,
     };
     let mut scene = Scene {
@@ -394,24 +425,16 @@ pub fn parse_line(line: &str) -> Option<Scene> {
         selected: int_field(body, "selected").unwrap_or(0),
         total: int_field(body, "total").unwrap_or(0),
         offset: int_field(body, "offset").unwrap_or(0),
-        hints: string_array(body, "hints"),
+        buttons: string_array(body, "buttons"),
         rows: Vec::new(),
-        ends: Vec::new(),
     };
-    match kind {
-        SceneKind::Log => {
-            scene.rows = string_array(body, "lines")
-                .into_iter()
-                .map(|l| (l, String::new()))
-                .collect();
-        }
-        SceneKind::Form => {
-            for (label, value, at_start, at_end) in object_array(body, "rows") {
-                scene.rows.push((label, value));
-                scene.ends.push((at_start, at_end));
-            }
-        }
-    }
+    scene.rows = match kind {
+        SceneKind::Log => string_array(body, "lines")
+            .into_iter()
+            .map(|l| Row { label: l, ..Row::default() })
+            .collect(),
+        SceneKind::Form | SceneKind::Detail => object_array(body, "rows"),
+    };
     Some(scene)
 }
 
@@ -483,11 +506,16 @@ fn string_array(body: &str, key: &str) -> Vec<String> {
     out
 }
 
-/// The row objects inside `"rows": [ ... ]`, as (label, value, at_start, at_end).
+/// The row objects inside `"rows": [ ... ]`.
 ///
-/// `at_start` and `at_end` are optional and default to false, so a row that has no
-/// range says nothing and gets both chevrons.
-fn object_array(body: &str, key: &str) -> Vec<(String, String, bool, bool)> {
+/// Every field but the label is optional: a form row says `value` and possibly
+/// which end of its range it is at, and a detail row says what `kind` it is and,
+/// for a gauge, how full. A row that names no kind is a label and a value, which
+/// is what a form is made of.
+///
+/// A divider carries no label at all, so the label is optional here too, unlike
+/// the form-only parser this replaced.
+fn object_array(body: &str, key: &str) -> Vec<Row> {
     let Some(at) = body.find(&format!("\"{key}\"")) else {
         return Vec::new();
     };
@@ -500,13 +528,21 @@ fn object_array(body: &str, key: &str) -> Vec<(String, String, bool, bool)> {
     };
     rest[open + 1..open + close]
         .split('}')
-        .filter_map(|obj| {
-            Some((
-                string_field(obj, "label")?,
-                string_field(obj, "value").unwrap_or_default(),
-                bool_field(obj, "at_start"),
-                bool_field(obj, "at_end"),
-            ))
+        .filter(|obj| obj.contains('{'))
+        .map(|obj| Row {
+            label: string_field(obj, "label").unwrap_or_default(),
+            value: string_field(obj, "value").unwrap_or_default(),
+            at_start: bool_field(obj, "at_start"),
+            at_end: bool_field(obj, "at_end"),
+            kind: match string_field(obj, "kind").unwrap_or_default().as_str() {
+                "divider" => 1,
+                "gauge" => 2,
+                "text" => 3,
+                // Anything else, including nothing, is a label and a value.
+                _ => 0,
+            },
+            percent: int_field(obj, "percent").unwrap_or(0).clamp(0, 100),
+            dim: bool_field(obj, "dim"),
         })
         .collect()
 }

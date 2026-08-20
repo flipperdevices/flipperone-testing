@@ -248,6 +248,18 @@ text_ink_h          = 9
 # band exactly, which is the chosen look; the prototype's own value is 5, which
 # centres on the same band but sits inside it.
 gauge_h             = 7
+# The column a gauge's bar starts in, and the gap between a label and a bar.
+#
+# 30 is the approved column for this screen and every first-party gauge uses it
+# whatever its label says, because these screens are fixed geometry: the battery
+# and disk gauges are labelled with percentages and their bars do not move.
+#
+# A gauge an app describes is sized instead, since the label is the app's to
+# choose: it clears its own label with the gap, never starting before this column,
+# and a gauge with no label at all starts at the margin. That is the one place a
+# label's width decides a position.
+gauge_col           = 30
+gauge_label_gap     = 4
 
 # Horizontal geometry from the Figma export `soft_button_bar`: 5 * 48 + 4 * 4 =
 # 256 exactly, so the slots tile evenly and both outer edges land flush. canvas.js

@@ -54,7 +54,7 @@ export component Modal inherits Rectangle {
 
     // Only the outer slots carry a label, so the middle three draw nothing.
     SoftBar {
-        hints: [root.left_label, "", "", "", root.right_label];
+        buttons: [root.left_label, "", "", "", root.right_label];
         pressed_slot: root.pressed_slot;
     }
 }
