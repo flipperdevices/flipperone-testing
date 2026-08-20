@@ -2027,7 +2027,10 @@ fn panel(
             }
             if frames == 2 {
                 match sink.as_ref() {
-                    Some(sink) => eprintln!("flush path    {}", sink.flush_path()),
+                    Some(sink) => {
+                        eprintln!("flush path    {}", sink.flush_path());
+                        eprintln!("fb format     {}", sink.format());
+                    }
                     None => eprintln!("flush path    headless, browser only"),
                 }
             }

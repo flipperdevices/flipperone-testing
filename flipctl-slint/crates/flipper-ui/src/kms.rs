@@ -7,7 +7,7 @@
 //!
 //! `flipper-one-display.c` advertises `DRM_FORMAT_XRGB8888` only and converts
 //! with `drm_fb_xrgb8888_to_gray8`, so we expand our greyscale frame into a
-//! 32-bit dumb buffer on commit. Damage is tracked and reported, but the driver
+//! dumb buffer on commit. Damage is tracked and reported, but the driver
 //! clips to the whole framebuffer and re-transmits all 37152 SPI bytes on every
 //! atomic update, so it currently only lets us skip a commit entirely when
 //! nothing moved.
@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 use drm::buffer::{Buffer, DrmFourcc};
 use drm::control::dumbbuffer::DumbBuffer;
-use drm::control::{connector, crtc, framebuffer, Device as ControlDevice, Mode};
+use drm::control::{connector, crtc, framebuffer, Device as ControlDevice, FbCmd2Flags, Mode};
 use drm::Device as DrmDevice;
 
 use crate::pixel::Rect;
@@ -43,6 +43,8 @@ pub struct KmsSink {
     connector: connector::Handle,
     mode: Mode,
     buffer: DumbBuffer,
+    /// True when the framebuffer is R8, so a row is copied rather than expanded.
+    greyscale: bool,
     fb: framebuffer::Handle,
     modeset_done: bool,
     flush: Flush,
@@ -110,9 +112,38 @@ impl KmsSink {
             .ok_or_else(|| std::io::Error::other("no CRTC"))?;
 
         let (w, h) = mode.size();
-        let mut buffer =
-            card.create_dumb_buffer((u32::from(w), u32::from(h)), DrmFourcc::Xrgb8888, 32)?;
-        let fb = card.add_framebuffer(&buffer, 24, 32)?;
+
+        // R8 when the driver takes it, XRGB8888 otherwise.
+        //
+        // The panel is 8-bit greyscale and so is everything this crate renders, so
+        // an XRGB8888 buffer means expanding every pixel to 32bpp (147KB of writes
+        // per frame) for the driver to reduce it again with a per-pixel
+        // conversion. R8 makes the commit a row copy. Kernels without R8 in the
+        // plane's format list reject the framebuffer, and the fallback keeps this
+        // working on them.
+        //
+        // The framebuffer has to go through ADDFB2 with an explicit fourcc.
+        // Legacy ADDFB carries only depth and bpp, and the kernel maps 8/8 to C8,
+        // a palette format this driver does not advertise, so the R8 attempt would
+        // fail for the wrong reason and silently never be used.
+        let (mut buffer, fb, greyscale) = match card
+            .create_dumb_buffer((u32::from(w), u32::from(h)), DrmFourcc::R8, 8)
+            .and_then(|b| {
+                card.add_planar_framebuffer(&Planar(&b), FbCmd2Flags::empty())
+                    .map(|fb| (b, fb))
+            })
+        {
+            Ok((b, fb)) => (b, fb, true),
+            Err(_) => {
+                let b = card.create_dumb_buffer(
+                    (u32::from(w), u32::from(h)),
+                    DrmFourcc::Xrgb8888,
+                    32,
+                )?;
+                let fb = card.add_framebuffer(&b, 24, 32)?;
+                (b, fb, false)
+            }
+        };
 
         // Start from a known frame: an uninitialised dumb buffer is whatever the
         // allocator left behind, and on a device with no vblank that garbage
@@ -129,6 +160,7 @@ impl KmsSink {
             mode,
             buffer,
             fb,
+            greyscale,
             modeset_done: false,
             flush: Flush::Probe,
         })
@@ -166,6 +198,45 @@ impl KmsSink {
     }
 }
 
+/// A single-plane view of a dumb buffer, so it can be added with ADDFB2.
+///
+/// `DumbBuffer` implements only `Buffer`, which the legacy ADDFB path takes, and
+/// that path cannot express a fourcc.
+struct Planar<'a>(&'a DumbBuffer);
+
+impl drm::buffer::PlanarBuffer for Planar<'_> {
+    fn size(&self) -> (u32, u32) {
+        Buffer::size(self.0)
+    }
+    fn format(&self) -> DrmFourcc {
+        Buffer::format(self.0)
+    }
+    fn modifier(&self) -> Option<drm::buffer::DrmModifier> {
+        None
+    }
+    fn pitches(&self) -> [u32; 4] {
+        [Buffer::pitch(self.0), 0, 0, 0]
+    }
+    fn handles(&self) -> [Option<drm::buffer::Handle>; 4] {
+        [Some(Buffer::handle(self.0)), None, None, None]
+    }
+    fn offsets(&self) -> [u32; 4] {
+        [0; 4]
+    }
+}
+
+impl KmsSink {
+    /// The framebuffer format in use, for the startup log. R8 means the driver
+    /// took the panel's own format and the commit is a row copy.
+    pub fn format(&self) -> &'static str {
+        if self.greyscale {
+            "R8"
+        } else {
+            "XRGB8888 (no R8 in this kernel)"
+        }
+    }
+}
+
 impl FrameSink for KmsSink {
     fn commit(&mut self, frame: Frame<'_>, damage: Rect) -> std::io::Result<()> {
         if damage.is_empty() && self.modeset_done {
@@ -186,10 +257,18 @@ impl FrameSink for KmsSink {
             let dst = map.as_mut();
 
             for (row, pixels) in (damage.y..damage.y + damage.h).zip(frame.rows(damage)) {
-                let start = usize::from(row) * pitch + usize::from(damage.x) * 4;
-                let words = &mut dst[start..start + pixels.len() * 4];
-                for (word, px) in words.chunks_exact_mut(4).zip(pixels) {
-                    word.copy_from_slice(&px.to_xrgb8888().to_le_bytes());
+                if self.greyscale {
+                    // One byte per pixel, so the row is a straight transfer.
+                    let start = usize::from(row) * pitch + usize::from(damage.x);
+                    for (out, px) in dst[start..start + pixels.len()].iter_mut().zip(pixels) {
+                        *out = px.0;
+                    }
+                } else {
+                    let start = usize::from(row) * pitch + usize::from(damage.x) * 4;
+                    let words = &mut dst[start..start + pixels.len() * 4];
+                    for (word, px) in words.chunks_exact_mut(4).zip(pixels) {
+                        word.copy_from_slice(&px.to_xrgb8888().to_le_bytes());
+                    }
                 }
             }
         }
