@@ -114,6 +114,9 @@ echo "== restarting $UNIT ($MODE) =="
 run "sudo systemctl stop $UNIT.service 2>/dev/null; \
      sudo systemctl reset-failed $UNIT.service 2>/dev/null; \
      sudo systemd-run --unit=$UNIT --collect --working-directory=/home/$USER_/$DEST \
+        --setenv=PATH=/home/$USER_/.cargo/bin:/usr/local/bin:/usr/bin:/bin \
+        --setenv=RUSTUP_HOME=/home/$USER_/.rustup \
+        --setenv=CARGO_HOME=/home/$USER_/.cargo \
         /home/$USER_/$DEST/target/release/flipper-ui-demo $ARGS" >/dev/null
 
 # Wait for it rather than sleeping a guessed amount.

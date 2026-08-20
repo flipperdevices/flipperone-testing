@@ -649,6 +649,41 @@ fn missing_apt(packages: &[String]) -> Vec<String> {
 ///
 /// PATH is searched, plus the place a manual install puts it, because a service
 /// started by systemd does not necessarily inherit a login shell's PATH.
+/// Where cargo is, for building a Rust app.
+///
+/// Searched rather than assumed, because this runs as a systemd unit whose PATH is
+/// the unit's, not a login shell's: a rustup toolchain lives in a home directory
+/// that PATH knows nothing about, and `Command::new("cargo")` then fails with
+/// ENOENT, which reads as "the app is broken" rather than "the toolchain is not on
+/// the path".
+fn cargo() -> Option<PathBuf> {
+    if let Some(from_env) = std::env::var_os("CARGO").map(PathBuf::from) {
+        if from_env.exists() {
+            return Some(from_env);
+        }
+    }
+    let mut candidates = vec![
+        PathBuf::from("/usr/local/bin/cargo"),
+        PathBuf::from("/usr/bin/cargo"),
+    ];
+    if let Some(home) = std::env::var_os("HOME") {
+        candidates.insert(0, PathBuf::from(home).join(".cargo/bin/cargo"));
+    }
+    for path in candidates {
+        if path.exists() {
+            return Some(path);
+        }
+    }
+    Command::new("cargo")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .ok()
+        .filter(|s| s.success())
+        .map(|_| PathBuf::from("cargo"))
+}
+
 fn uv() -> Option<PathBuf> {
     let candidates = [PathBuf::from("/usr/local/bin/uv"), PathBuf::from("/usr/bin/uv")];
     for path in candidates {
@@ -754,9 +789,12 @@ pub fn install(entry: &AppEntry, missing: &Missing, mut log: impl FnMut(String))
     }
 
     if missing.needs_build {
-        log("cargo build --release".into());
+        let Some(cargo) = cargo() else {
+            return Err("cargo is not installed, or not on this service's PATH".into());
+        };
+        log(format!("{} build --release", cargo.display()));
         run_logged(
-            Command::new("cargo")
+            Command::new(&cargo)
                 .args(["build", "--release"])
                 .current_dir(&entry.dir)
                 // Cargo colours and redraws its progress, which a line-oriented
