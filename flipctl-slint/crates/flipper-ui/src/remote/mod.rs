@@ -25,10 +25,17 @@ use crate::pixel::Rect;
 use crate::platform::{Frame, FrameSink, InputSource};
 use crate::{FlipperKey, KeyEvent};
 
-/// Frames per second the stream is allowed to push. The panel itself sustains
-/// about 48, but a remote viewer does not need that and every frame is 36 KB
-/// uncompressed, so this is capped well below.
-const MAX_FPS: u64 = 10;
+/// Frames per second the stream is allowed to push.
+///
+/// 30 rather than 10, because the cap quantises how long a state is visible: a
+/// 30ms press flash sent at 10fps is held for the next 100ms, which reads as the
+/// UI being sluggish even though the panel itself drew it for 30ms. At 30fps the
+/// granularity is 33ms, close enough that a flash looks like a flash.
+///
+/// A whole frame is 36864 bytes, so this is 1.1MB/s while something is moving and
+/// nothing at all on a still screen, since frames are only produced when the
+/// screen changes.
+const MAX_FPS: u64 = 30;
 
 /// 8-byte little-endian header, then `w * h` bytes of 8-bit greyscale.
 /// Cap on a POST /input body. The only bodies are small JSON key events, so this
@@ -75,6 +82,15 @@ struct Shared {
     /// couple of frames means a state that appeared and vanished is still
     /// transmitted, in order.
     viewer_queues: Mutex<Vec<Arc<ViewerQueue>>>,
+    /// The last frame committed, kept so a viewer that connects to a still screen
+    /// is handed the screen as it stands.
+    ///
+    /// Counting arrivals in the render loop covers the same case, but only when
+    /// the count changes between two passes: a tab that reloads, or one that
+    /// replaces another, leaves the count where it was and the newcomer waits for
+    /// the screen to move. Priming at registration does not depend on the loop
+    /// noticing anything.
+    last: Mutex<Option<StoredFrame>>,
     generation: AtomicU64,
     viewers: AtomicUsize,
 }
@@ -118,6 +134,7 @@ impl RemoteView {
             generation: AtomicU64::new(0),
             viewers: AtomicUsize::new(0),
             viewer_queues: Mutex::new(Vec::new()),
+            last: Mutex::new(None),
         });
         let (tx, events) = mpsc::channel();
 
@@ -189,6 +206,12 @@ impl FrameSink for RemoteView {
                 viewer.ready.notify_all();
             }
         }
+
+        *self
+            .shared
+            .last
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(stored);
 
         self.shared.generation.fetch_add(1, Ordering::Release);
         Ok(())
@@ -262,9 +285,18 @@ fn serve(
     }
 
     let path = target.split('?').next().unwrap_or("/");
+    // The shared script's URL carries a version, and the pages are rewritten to
+    // request that exact one.
+    //
+    // Changing the cache header alone does not help a browser that already cached
+    // the old copy: it keeps using it until the original lifetime expires. When
+    // that stale copy predates a function the page calls, the page's script throws
+    // on load and nothing renders at all, which looks like the stream being broken
+    // rather than a caching problem. A versioned URL cannot be answered from a
+    // cache entry for a different version.
+    let shared_js = include_str!("remote.js");
     let device_page = include_str!("page.html");
     let compare_page = include_str!("compare.html");
-    let shared_js = include_str!("remote.js");
 
     match (method.as_str(), path) {
         // The panel in its device photo is the default view; the side-by-side
@@ -274,11 +306,16 @@ fn serve(
             write_response(&mut stream, "200 OK", "text/html; charset=utf-8", device_page.as_bytes())
         }
         // Shared browser code, so a fix cannot land in one page and not the other.
-        ("GET", "/remote.js") => write_cached(
+        //
+        // Revalidated, never held: a day-long cache meant a browser kept running
+        // the copy it had long after the device had a new one, and the page then
+        // called a function that was not there yet, which reads as a view that
+        // never connects. The file is 7KB, so a conditional request costs nothing
+        // worth saving. A query string is accepted so an old page still resolves.
+        ("GET", path) if path == "/remote.js" || path.starts_with("/remote.js?") => write_cached(
             &mut stream,
             "application/javascript; charset=utf-8",
             shared_js.as_bytes(),
-            // Revalidate: this changes on every deploy.
             0,
         ),
         ("GET", "/diff") | ("GET", "/compare") => {
@@ -382,9 +419,8 @@ fn parse_input(body: &[u8]) -> Option<KeyEvent> {
 /// A static body with an explicit cache lifetime.
 ///
 /// The device photo never changes and is worth caching for a day. The shared
-/// script changes on every deploy, and a day-long cache meant a browser kept
-/// running the old copy long after the device had the new one, which is a
-/// confusing way to test a fix. It revalidates instead; it is 6KB.
+/// script asks for 0, so the browser revalidates it on every load rather than
+/// running whatever it kept from an earlier deploy.
 fn write_cached(
     stream: &mut TcpStream,
     content_type: &str,
@@ -440,12 +476,31 @@ fn stream_frames(mut stream: TcpStream, shared: &Arc<Shared>) -> std::io::Result
         frames: Mutex::new(std::collections::VecDeque::new()),
         ready: Condvar::new(),
     });
+    // Registered and counted before the first frame goes in, so a commit landing
+    // in between reaches this queue too, and the worst case is the same frame
+    // twice rather than none at all.
     shared
         .viewer_queues
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .push(Arc::clone(&queue));
     shared.viewers.fetch_add(1, Ordering::Relaxed);
+    // The screen as it stands. Without this a viewer joining a still screen has
+    // nothing to draw until something moves, which on an idle menu can be a long
+    // wait, and reads as a page that never connected.
+    if let Some(frame) = shared
+        .last
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+    {
+        queue
+            .frames
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push_back(frame);
+        queue.ready.notify_all();
+    }
 
     let result = pump(&mut stream, &queue);
 

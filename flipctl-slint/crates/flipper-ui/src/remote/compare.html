@@ -44,6 +44,8 @@
     position: relative;
     /* Wider container scales every button with it, so the arrangement stays exact
        while the targets get comfortably clickable. */
+    /* Last on the page, after the overlay, so it can take the full width and
+       give the buttons comfortable targets. */
     width: min(820px, 100%);
     aspect-ratio: 2048 / 1080;
     background: #191D23;
@@ -104,6 +106,29 @@
     </figure>
   </div>
 
+  <figure id="overlay">
+    <figcaption>
+      <span class="name">overlay</span>
+      <label>
+        <select id="mode">
+          <option value="diff" selected>difference</option>
+          <option value="onion">onion skin</option>
+          <option value="blink">blink</option>
+        </select>
+      </label>
+      <label id="mixWrap" hidden>
+        mix <input type="range" id="mix" min="0" max="100" value="50">
+      </label>
+      <span id="diffstat" class="note">waiting for both sides</span>
+    </figcaption>
+    <canvas id="over" class="screen" width="256" height="144"></canvas>
+    <figcaption class="note" id="legend">
+      <span style="color:#FF8200">&#9632; only flipper-ui has ink</span>
+      <span style="color:#3B9EFF">&#9632; only the prototype has ink</span>
+      <span>grey where they agree</span>
+    </figcaption>
+  </figure>
+
   <!-- Controls for the Slint side. In headless mode cog owns the panel and its
        buttons, so this is the only way to drive it. -->
   <figure id="pad">
@@ -135,28 +160,6 @@
     </div>
   </figure>
 
-  <figure id="overlay">
-    <figcaption>
-      <span class="name">overlay</span>
-      <label>
-        <select id="mode">
-          <option value="diff" selected>difference</option>
-          <option value="onion">onion skin</option>
-          <option value="blink">blink</option>
-        </select>
-      </label>
-      <label id="mixWrap" hidden>
-        mix <input type="range" id="mix" min="0" max="100" value="50">
-      </label>
-      <span id="diffstat" class="note">waiting for both sides</span>
-    </figcaption>
-    <canvas id="over" class="screen" width="256" height="144"></canvas>
-    <figcaption class="note" id="legend">
-      <span style="color:#FF8200">&#9632; only flipper-ui has ink</span>
-      <span style="color:#3B9EFF">&#9632; only the prototype has ink</span>
-      <span>grey where they agree</span>
-    </figcaption>
-  </figure>
 </main>
 
 <script src="remote.js"></script>
