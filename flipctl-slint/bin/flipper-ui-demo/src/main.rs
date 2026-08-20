@@ -60,7 +60,7 @@ fn main() -> ExitCode {
 
 /// The app list and an app form supply their own soft labels; the list has none.
 #[cfg(feature = "slint")]
-const EMPTY_HINTS: [String; 0] = [];
+const EMPTY_BUTTONS: [String; 0] = [];
 
 const USAGE: &str = "\
 usage: flipper-ui-demo [--panel [--kms-device PATH]] [--png PATH]
@@ -299,6 +299,22 @@ mod demo {
     /// No icons: unlike `networkMenu`, that function sets no icon map, so every
     /// row here is label-only and the label starts where the icon would end.
     /// "System info" has no factory in the prototype either.
+    /// Whether a submenu is one the app switcher tracks.
+    ///
+    /// Network and Settings, which is what the prototype marks as apps: they are
+    /// places a person settles into and comes back to, unlike Files or the boot
+    /// menu, which are errands.
+    pub fn is_card_menu(menu: &'static Menu) -> bool {
+        std::ptr::eq(menu, &NETWORK) || std::ptr::eq(menu, &SETTINGS)
+    }
+
+    /// The tracked submenu with this title.
+    pub fn card_menu(title: &str) -> Option<&'static Menu> {
+        [&NETWORK, &SETTINGS]
+            .into_iter()
+            .find(|menu| menu.title == title)
+    }
+
     pub static SETTINGS: Menu = Menu {
         title: "Settings",
         rows: &[
@@ -1004,6 +1020,210 @@ enum Popup {
     Said(String),
 }
 
+/// Go back to a card: an app takes the keys, one of our screens is navigated to.
+///
+/// Both live in the same stack, so the switcher does not have to know the
+/// difference; this is the one place that does.
+#[cfg(feature = "slint")]
+#[allow(clippy::too_many_arguments)]
+fn launch_card(
+    screen: &flipper_ui::ui::Root,
+    live: &mut [(String, flipper_ui::RunningApp)],
+    focused: &mut Option<usize>,
+    recents: &mut flipper_ui::switcher::Recents,
+    stack: &mut Vec<(&'static demo::Menu, i32, i32)>,
+    screen_card: &mut Option<&'static str>,
+    name: &str,
+    kind: flipper_ui::switcher::Kind,
+    net: &flipper_ui::net::Net,
+) {
+    use flipper_ui::ui::Screen;
+    if kind == flipper_ui::switcher::Kind::App {
+        if live.iter().any(|(n, _)| n == name) {
+            focus_app(live, focused, recents, name);
+            // Its own next scene puts the screen right; until then the list is a
+            // safe place to be.
+            screen.set_screen(Screen::Apps);
+        } else {
+            // No process behind this card: it is an app that was started and is
+            // still waiting on a question, so going back to it means going back to
+            // where the question is. Uncovering it is enough, since the question
+            // itself was never answered.
+            recents.open(name, flipper_ui::switcher::Kind::App);
+            *focused = None;
+            screen.set_screen(Screen::Apps);
+        }
+        return;
+    }
+    let Some(menu) = demo::card_menu(name) else {
+        eprintln!("switcher       no screen called {name}");
+        recents.close(name);
+        return;
+    };
+    recents.open(name, kind);
+    *focused = None;
+    *screen_card = Some(menu.title);
+    // Back out to the main menu first, so the trail reads the same as it would
+    // have if the user had walked here.
+    stack.truncate(1);
+    stack.push((menu, 0, 0));
+    demo::apply_menu(screen, menu, net);
+    screen.set_screen(Screen::Menu);
+}
+
+/// Bring `name` to the front: the switcher's stack, and the keys.
+#[cfg(feature = "slint")]
+fn focus_app(
+    live: &mut [(String, flipper_ui::RunningApp)],
+    focused: &mut Option<usize>,
+    recents: &mut flipper_ui::switcher::Recents,
+    name: &str,
+) {
+    recents.open(name, flipper_ui::switcher::Kind::App);
+    *focused = live.iter().position(|(n, _)| n == name);
+    if focused.is_none() {
+        eprintln!("switcher       {name} has no process yet");
+    }
+}
+
+/// Stop `name` and drop it from everything that tracks it.
+///
+/// The only thing that ends an app. Backing out of one leaves it running, so if
+/// this misses a child it is a process nobody can reach any more.
+#[cfg(feature = "slint")]
+fn kill_app(
+    live: &mut Vec<(String, flipper_ui::RunningApp)>,
+    focused: &mut Option<usize>,
+    recents: &mut flipper_ui::switcher::Recents,
+    name: &str,
+) {
+    if let Some(i) = live.iter().position(|(n, _)| n == name) {
+        live[i].1.stop();
+        live.remove(i);
+        eprintln!("switcher       killed {name}");
+    }
+    recents.close(name);
+    *focused = None;
+}
+
+/// Which card the panel is showing, if any.
+///
+/// In order of precedence: a focused app, then an app whose question is on screen,
+/// then one of our tracked screens. A focused app comes first because a question
+/// outlives the screen it was asked on: `deps` stays set while an install log sits
+/// unread, and treating that as "in front" while the user is inside another app
+/// put the wrong card at the top of the stack, which sent every switch to whatever
+/// happened to be second.
+///
+/// This decides both what gets photographed and where the switcher's focus starts,
+/// and those two have to agree or the stack lies about what you were doing.
+#[cfg(feature = "slint")]
+fn front_card(
+    pending: Option<&str>,
+    live: &[(String, flipper_ui::RunningApp)],
+    focused: Option<usize>,
+    screen_card: Option<&'static str>,
+) -> Option<String> {
+    if let Some((name, _)) = focused.and_then(|i| live.get(i)) {
+        return Some(name.clone());
+    }
+    if let Some(name) = pending {
+        return Some(name.to_string());
+    }
+    screen_card.map(str::to_string)
+}
+
+/// Keep the panel as the thumbnail of whatever card is in front.
+///
+/// Called wherever the front changes, and once a second while it does not: a
+/// card's picture is what the user last saw of it, and a card with no picture is a
+/// white rectangle with a name on it.
+#[cfg(feature = "slint")]
+fn stash_front(
+    recents: &mut flipper_ui::switcher::Recents,
+    front: Option<String>,
+    frame: &[flipper_ui::pixel::Gray8],
+) {
+    if let Some(name) = front {
+        recents.snapshot(&name, snapshot_of(frame));
+    }
+}
+
+/// The panel as it stands, kept as a card's thumbnail.
+#[cfg(feature = "slint")]
+fn snapshot_of(frame: &[flipper_ui::pixel::Gray8]) -> flipper_ui::switcher::Snapshot {
+    std::sync::Arc::new(frame.iter().map(|p| p.0).collect())
+}
+
+/// A placed card, ready for Slint, with its thumbnail as an image.
+///
+/// The images are cached against the buffer they came from: an animation asks for
+/// the same handful thirty times a second, and expanding greyscale to RGB each
+/// time would allocate about a megabyte a frame to draw the same pixels.
+#[cfg(feature = "slint")]
+fn card_of(
+    p: &flipper_ui::switcher::Placed,
+    cache: &mut Vec<(usize, slint::Image)>,
+) -> flipper_ui::ui::SwitchCard {
+    use flipper_ui::switcher::Edge;
+    use flipper_ui::theme::{PANEL_H, PANEL_W};
+
+    let image = match p.snapshot.as_ref() {
+        Some(grey) => {
+            let key = std::sync::Arc::as_ptr(grey) as usize;
+            if let Some((_, image)) = cache.iter().find(|(k, _)| *k == key) {
+                image.clone()
+            } else {
+                let mut buffer = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(
+                    u32::from(PANEL_W),
+                    u32::from(PANEL_H),
+                );
+                for (px, v) in buffer.make_mut_slice().iter_mut().zip(grey.iter()) {
+                    *px = slint::Rgb8Pixel { r: *v, g: *v, b: *v };
+                }
+                let image = slint::Image::from_rgb8(buffer);
+                // A couple of cards' worth is all that is ever live; anything
+                // older belongs to a snapshot nothing points at any more.
+                if cache.len() >= 8 {
+                    cache.remove(0);
+                }
+                cache.push((key, image.clone()));
+                image
+            }
+        }
+        None => slint::Image::default(),
+    };
+
+    flipper_ui::ui::SwitchCard {
+        name: p.name.as_str().into(),
+        x: p.state.x as f32,
+        y: p.state.y as f32,
+        w: p.state.w as f32,
+        h: p.state.h as f32,
+        r_tl: p.state.r_tl as f32,
+        r_tr: p.state.r_tr as f32,
+        r_bl: p.state.r_bl as f32,
+        r_br: p.state.r_br as f32,
+        alpha: p.alpha,
+        pos_clamped: p.pos_clamped,
+        image,
+        image_alpha: p.image_alpha,
+        img_x: p.img_x as f32,
+        img_y: p.img_y as f32,
+        tab: p.tab,
+        tab_deep: p.tab_deep,
+        open_edge: match p.open_edge {
+            Edge::None => 0,
+            Edge::Top => 1,
+            Edge::Bottom => 2,
+        },
+        label_dx: p.label_dx as f32,
+        label_dy: p.label_dy as f32,
+        deep: p.deep,
+        killing: p.killing,
+    }
+}
+
 /// Why the current name cannot be used, or an empty string.
 ///
 /// Recomputed on every key, as the prototype's validator is, so the warning and
@@ -1565,7 +1785,31 @@ fn panel(
     // First visible row of the app list. More apps than the viewport holds means
     // the list scrolls and shows a bar, exactly as the menu does.
     let mut app_scroll = 0i32;
-    let mut running: Option<flipper_ui::RunningApp> = None;
+    // The apps that are alive. More than one can be: switching away leaves an app
+    // running and its output still drained, so coming back shows what it is doing
+    // now rather than the thumbnail it left behind. Only the focused one is sent
+    // keys and only its scene reaches the screen.
+    let mut apps_live: Vec<(String, flipper_ui::RunningApp)> = Vec::new();
+    let mut focused_app: Option<usize> = None;
+    // The switcher's own stack, which outlives any one switcher session, and the
+    // session itself while it is open.
+    let mut recents = flipper_ui::switcher::Recents::default();
+    let mut switcher: Option<flipper_ui::switcher::Switcher> = None;
+
+    // Snapshots turned into images, keyed by the buffer they came from: an
+    // animation asks for the same four images thirty times a second, and building
+    // them each time would allocate a megabyte a frame for nothing.
+    let mut card_images: Vec<(usize, slint::Image)> = Vec::new();
+    // Which of our own screens is in the stack right now, by name. Settings and
+    // Network go in it the way the prototype's marked-as-app submenus do: from the
+    // switcher they are things the user was doing, and going back to one is a
+    // navigation rather than a process taking focus.
+    let mut screen_card: Option<&'static str> = None;
+    // Whether the switcher's cards need handing over again. Slint compares a
+    // scalar but not a model, so a fresh model every pass marks the whole window
+    // dirty every pass: opening the switcher pinned the panel at its frame cap
+    // and 18% of a core while nothing moved.
+    let mut switch_dirty = false;
 
     // Frame buffer is allocated once and reused, so the steady state does not
     // allocate. flipctl inherits this requirement; the boot menu and the
@@ -1607,7 +1851,13 @@ fn panel(
     let mut dialog: Option<Dialog> = None;
     // What was last pushed to the window, so an unchanged dialog is not pushed
     // again. See the note at the push site.
-    let mut last_dialog: Option<(Vec<String>, &'static str, &'static str)> = None;
+    // The dialog as it was last handed over, plus whether the switcher was up:
+    // the cards hide it, and closing them has to put it back.
+    // The dialog as it was last handed over, plus whether anything is covering
+    // it: the switcher's cards, or an app in front. Both hide the question
+    // without answering it, and uncovering has to bring it back.
+    let mut last_dialog: (bool, Option<(Vec<String>, &'static str, &'static str)>) =
+        (false, None);
 
     // Which chevron of a selected toggle row is flashing, and until when.
     let mut arrow: Option<(i32, Instant)> = None;
@@ -1673,6 +1923,30 @@ fn panel(
     // scene had. The server owns scrolling: an app describes its rows and never
     // has to implement a viewport, which is also why Up and Down are not
     // forwarded to it on that screen.
+    // Set when an app has just been brought forward: its own last scene is put
+    // back at once. Waiting for the next one leaves the app list on screen for as
+    // long as the app has nothing new to say, which for an app sitting on a form
+    // is forever.
+    let mut redraw_app = false;
+    // When the card in front was last photographed. Cards are refreshed as the
+    // user works, not only when they switch away, so opening the switcher shows
+    // what each app is doing now rather than what it was doing when it lost focus.
+    let mut card_stash = Instant::now();
+    // The app a pending question belongs to, by name. Its card is what the user is
+    // looking at while the question is up.
+    macro_rules! pending_app {
+        () => {
+            match deps.as_ref() {
+                Some(
+                    Deps::Checking(i, _)
+                    | Deps::Asking(i, _)
+                    | Deps::Installing(i, ..)
+                    | Deps::Done(i, _),
+                ) => apps.get(*i as usize).map(|a| a.name.as_str()),
+                None => None,
+            }
+        };
+    }
     let mut app_detail_offset = 0i32;
     let mut app_detail_rows = 0i32;
     // Space and overlays for the selected profile, read on a thread because
@@ -1869,7 +2143,56 @@ fn panel(
             // The keyboard is the one screen that cares when a key is let go: a
             // held OK on the shift key latches caps lock.
             if !event.down {
-                if screen.get_screen() == Screen::TextInput {
+                if let Some(sw) = switcher.as_mut() {
+                switch_dirty = true;
+                match sw.key(event.key) {
+                    Some(flipper_ui::switcher::Action::Close) => {
+                        switcher = None;
+                        // Leaving empty-handed lands on the menu, which is where
+                        // something can be started. Nothing is focused and the
+                        // recents order is untouched, so every app that was running
+                        // still is, one Tab away. A question that was waiting when
+                        // the switcher opened is still waiting, so that comes back
+                        // instead.
+                        screen.set_screen(if deps.is_some() || dialog.is_some() {
+                            Screen::Apps
+                        } else {
+                            Screen::Menu
+                        });
+                    }
+                    Some(flipper_ui::switcher::Action::Launch(name, kind)) => {
+                        switcher = None;
+                        launch_card(
+                            &screen,
+                            &mut apps_live,
+                            &mut focused_app,
+                            &mut recents,
+                            &mut stack,
+                            &mut screen_card,
+                            &name,
+                            kind,
+                            &net_now,
+                        );
+                        redraw_app = focused_app.is_some();
+                    }
+                    Some(flipper_ui::switcher::Action::Kill(name, kind)) => {
+                        if kind == flipper_ui::switcher::Kind::App {
+                            kill_app(&mut apps_live, &mut focused_app, &mut recents, &name);
+                        } else {
+                            // Nothing to stop: a screen leaves the stack and that
+                            // is the whole of it.
+                            recents.close(&name);
+                            if screen_card == Some(name.as_str()) {
+                                screen_card = None;
+                            }
+                        }
+                    }
+                    None => {}
+                }
+                continue;
+            }
+
+            if screen.get_screen() == Screen::TextInput {
                     if let Some(input) = kb.as_mut() {
                         if input.release(event.key) {
                             kb_dirty = true;
@@ -1904,19 +2227,70 @@ fn panel(
             };
             let labelled_soft = slot.is_some_and(|i| !labels[i].is_empty());
 
+            // Tab belongs to the system, not to whatever is in front. It is
+            // handled before the focused app is offered the key, which is what
+            // lets a second app be brought forward at all. With nothing running
+            // there is nothing to switch between, so it does nothing.
+            // Say why nothing happened: an empty stack is a state the user cannot
+            // see, and a key that silently does nothing is the hardest kind of
+            // thing to report.
+            if event.key == FlipperKey::AppSwitch && switcher.is_none() && recents.is_empty() {
+                eprintln!("switcher       nothing running to switch to");
+            }
+            if event.key == FlipperKey::AppSwitch && switcher.is_none() && !recents.is_empty() {
+                // A question stays asked. Switching away hides it, dismissing the
+                // switcher brings it back, and it is still waiting for the same
+                // answer: an install that needed approving is not something to lose
+                // because the user looked at something else first.
+                let inside_app = matches!(
+                    screen.get_screen(),
+                    Screen::AppForm | Screen::AppDetail | Screen::AppLog
+                );
+                // What the user is looking at is the top card when it is a focused
+                // app or one of our tracked screens, and either way that is what
+                // the panel is showing right now.
+                let front = front_card(pending_app!(), &apps_live, focused_app, screen_card);
+                // Something of ours in front means the focus starts one below it,
+                // which is what makes Tab twice a switch to the previous app. An
+                // app waiting on a question counts: it is what the user is looking
+                // at.
+                let on_top = front.is_some() || inside_app;
+                // And it is the most recent thing by definition. Without this the
+                // stack keeps whatever order it had, so a card that was in front
+                // without being launched sat in the second slot: the very slot the
+                // focus starts on, which made every switch land back on it.
+                if let Some(name) = front.as_deref() {
+                    let kind = recents
+                        .kind(name)
+                        .unwrap_or(flipper_ui::switcher::Kind::App);
+                    recents.open(name, kind);
+                }
+                stash_front(&mut recents, front, &frame);
+                switcher = Some(flipper_ui::switcher::Switcher::open(&recents, on_top));
+                switch_dirty = true;
+                focused_app = None;
+                press.cancel();
+                screen.set_screen(Screen::Switcher);
+                continue;
+            }
+
             // While an app is running it owns the keys, except Back, which is
             // the way out of an app that has stopped responding.
-            if let Some(app) = running.as_mut() {
+            if let Some(app) = focused_app.and_then(|i| apps_live.get_mut(i)).map(|(_, a)| a) {
                 if matches!(screen.get_screen(), Screen::AppForm | Screen::AppDetail)
                     && event.key == FlipperKey::Back
                 {
-                    app.stop();
-                    running = None;
+                    // Back leaves the app running and puts the user back in the
+                    // list. Stopping it belongs to Kill in the switcher, which is
+                    // the only thing that claims to end an app.
+                    let front = front_card(pending_app!(), &apps_live, focused_app, screen_card);
+                    stash_front(&mut recents, front, &frame);
+                    focused_app = None;
                     let rows: Vec<flipper_ui::app::Row> = apps
                         .iter()
                         .map(|a| flipper_ui::app::Row::pair(&a.name, ""))
                         .collect();
-                    apply_app_list(&screen, &rows, app_selected, &EMPTY_HINTS, (0, 0), app_scroll);
+                    apply_app_list(&screen, &rows, app_selected, &EMPTY_BUTTONS, (0, 0), app_scroll);
                     screen.set_screen(Screen::Apps);
                 } else if screen.get_screen() == Screen::AppDetail
                     && matches!(event.key, FlipperKey::Up | FlipperKey::Down)
@@ -1972,6 +2346,17 @@ fn panel(
                             FlipperKey::Up => deps_offset = (deps_offset - 1).max(0),
                             FlipperKey::Escape | FlipperKey::Back => {
                                 deps = None;
+                                // Leaving without starting it: the card goes with
+                                // the question. A card is something the user has
+                                // running or a question they still owe an answer
+                                // to, and this is neither.
+                                if !ok {
+                                    if let Some(entry) = apps.get(idx as usize) {
+                                        if !apps_live.iter().any(|(n, _)| *n == entry.name) {
+                                            recents.close(&entry.name);
+                                        }
+                                    }
+                                }
                                 screen.set_screen(Screen::Apps);
                             }
                             // A successful install runs the app it was for.
@@ -1981,7 +2366,10 @@ fn panel(
                                     match flipper_ui::RunningApp::spawn(entry) {
                                         Ok(app) => {
                                             eprintln!("app            started {}", entry.name);
-                                            running = Some(app);
+                                            recents.open(&entry.name, flipper_ui::switcher::Kind::App);
+                                            apps_live.retain(|(n, _)| n != &entry.name);
+                                            apps_live.push((entry.name.clone(), app));
+                                            focused_app = Some(apps_live.len() - 1);
                                         }
                                         Err(e) => {
                                             eprintln!("app            {} failed: {e}", entry.name)
@@ -2130,7 +2518,7 @@ fn panel(
                     .iter()
                     .map(|a| flipper_ui::app::Row::pair(&a.name, ""))
                     .collect();
-                apply_app_list(&screen, &rows, app_selected, &EMPTY_HINTS, (0, 0), app_scroll);
+                apply_app_list(&screen, &rows, app_selected, &EMPTY_BUTTONS, (0, 0), app_scroll);
                 continue;
             }
 
@@ -2329,6 +2717,9 @@ fn panel(
                 // systemctl stop, or --frames, ends it instead.
                 (true, FlipperKey::Back) | (true, FlipperKey::Escape) => {
                     if stack.len() > 1 {
+                        if let Some(name) = screen_card.take() {
+                            recents.close(name);
+                        }
                         stack.pop();
                         let (menu, sel, scr) = *stack.last().unwrap();
                         selected = sel;
@@ -2382,8 +2773,11 @@ fn panel(
             {
                 let key = pressed_key;
                 // A dialog's own buttons, resolved before anything else since it
-                // was holding every key.
-                if let Some(d) = dialog.take() {
+                // was holding every key. Only while it is actually on screen: with
+                // an app or the switcher in front it is covered, not asked, and a
+                // soft key pressed over there is not an answer to it.
+                let covered = switcher.is_some() || focused_app.is_some();
+                if let Some(d) = dialog.take().filter(|_| !covered) {
                     if d.act == DialogAct::InstallDeps {
                         match (slot, deps.take()) {
                             // Install: run it, streaming output to the log.
@@ -2406,8 +2800,23 @@ fn panel(
                                     deps = Some(Deps::Installing(idx, log_rx, done_rx));
                                 }
                             }
-                            // Cancel, or a dialog with nothing behind it.
-                            _ => screen.set_screen(Screen::Apps),
+                            // Cancel, or a dialog with nothing behind it. The app
+                            // never started, so its card goes: a card that leads
+                            // back to a question nobody is asking any more is a
+                            // dead end.
+                            (_, stage) => {
+                                if let Some(idx) = stage.as_ref().map(|s| match s {
+                                    Deps::Checking(i, _)
+                                    | Deps::Asking(i, _)
+                                    | Deps::Installing(i, ..)
+                                    | Deps::Done(i, _) => *i,
+                                }) {
+                                    if let Some(entry) = apps.get(idx as usize) {
+                                        recents.close(&entry.name);
+                                    }
+                                }
+                                screen.set_screen(Screen::Apps);
+                            }
                         }
                     } else if slot == Some(4) && d.act == DialogAct::ClearAirplane {
                         net.set_airplane(false);
@@ -2455,13 +2864,22 @@ fn panel(
                     // traceback in the journal and nothing on screen.
                     if let Some(entry) = apps.get(app_selected as usize).cloned() {
                         let (tx, rx) = std::sync::mpsc::channel();
+                        let for_check = entry.clone();
                         std::thread::Builder::new()
                             .name("dep-check".into())
                             .spawn(move || {
-                                let _ = tx.send(flipper_ui::app::missing(&entry));
+                                let _ = tx.send(flipper_ui::app::missing(&for_check));
                             })
                             .ok();
                         app_detail_offset = 0;
+                        let front =
+                            front_card(pending_app!(), &apps_live, focused_app, screen_card);
+                        stash_front(&mut recents, front, &frame);
+                        // In the stack from the moment it is started, not from the
+                        // moment it succeeds: an app waiting to be built is
+                        // something the user set going, and its card is how they
+                        // get back to the question.
+                        recents.open(&entry.name, flipper_ui::switcher::Kind::App);
                         deps = Some(Deps::Checking(app_selected, rx));
                         deps_log.clear();
                         deps_offset = 0;
@@ -2473,6 +2891,12 @@ fn panel(
                     let row = &stack.last().unwrap().0.rows[selected as usize];
                     match &row.act {
                         demo::Act::Sub(next) => {
+                            // A submenu the switcher tracks. The snapshot is the
+                            // menu as it stands, taken before the screen changes.
+                            if demo::is_card_menu(next) {
+                                recents.open(next.title, flipper_ui::switcher::Kind::Screen);
+                                screen_card = Some(next.title);
+                            }
                             stack.last_mut().unwrap().1 = selected;
                             stack.last_mut().unwrap().2 = scroll;
                             stack.push((next, 0, 0));
@@ -2490,7 +2914,7 @@ fn panel(
                                 .iter()
                                 .map(|a| flipper_ui::app::Row::pair(&a.name, ""))
                                 .collect();
-                            apply_app_list(&screen, &rows, app_selected, &EMPTY_HINTS, (0, 0), app_scroll);
+                            apply_app_list(&screen, &rows, app_selected, &EMPTY_BUTTONS, (0, 0), app_scroll);
                             screen.set_screen(Screen::Apps);
                             // `pressed` is shared by both lists, so a flash still
                             // running here would land on whichever app row is
@@ -2576,6 +3000,68 @@ fn panel(
         // change and must not be tangled up with the press flash.
         if arrow.is_some_and(|(_, until)| Instant::now() >= until) {
             arrow = None;
+        }
+
+        // A second's worth of staleness at most, and only a 36KB copy when there is
+        // something in front worth photographing.
+        if switcher.is_none() && card_stash.elapsed() >= Duration::from_secs(1) {
+            card_stash = Instant::now();
+            let front = front_card(pending_app!(), &apps_live, focused_app, screen_card);
+            stash_front(&mut recents, front, &frame);
+        }
+
+        // The switcher, while it is open. Its cards are rebuilt on every frame of
+        // an animation, which is what an animation is; at rest nothing changes and
+        // the loop settles.
+        if let Some(sw) = switcher.as_mut() {
+            match sw.tick() {
+                Some(flipper_ui::switcher::Action::Launch(name, kind)) => {
+                    switcher = None;
+                    launch_card(
+                        &screen,
+                        &mut apps_live,
+                        &mut focused_app,
+                        &mut recents,
+                        &mut stack,
+                        &mut screen_card,
+                        &name,
+                        kind,
+                        &net_now,
+                    );
+                    redraw_app = focused_app.is_some();
+                }
+                Some(flipper_ui::switcher::Action::Close) => {
+                    switcher = None;
+                    screen.set_screen(if deps.is_some() || dialog.is_some() {
+                        Screen::Apps
+                    } else {
+                        Screen::Menu
+                    });
+                }
+                Some(flipper_ui::switcher::Action::Kill(name, kind)) => {
+                    if kind == flipper_ui::switcher::Kind::App {
+                        kill_app(&mut apps_live, &mut focused_app, &mut recents, &name);
+                    } else {
+                        recents.close(&name);
+                        if screen_card == Some(name.as_str()) {
+                            screen_card = None;
+                        }
+                    }
+                }
+                None => {}
+            }
+        }
+        if let Some(sw) = switcher.as_ref().filter(|sw| sw.animating() || switch_dirty) {
+            switch_dirty = sw.animating();
+            let cards: Vec<flipper_ui::ui::SwitchCard> = sw
+                .placed()
+                .into_iter()
+                .map(|p| card_of(&p, &mut card_images))
+                .collect();
+            screen.set_switch_cards(slint::ModelRc::new(slint::VecModel::from(cards)));
+            screen.set_switch_can_kill(sw.can_kill());
+            screen.set_switch_pressed_slot(press.soft_slot());
+            screen.set_switch_empty("No running apps".into());
         }
 
         // The text-input screen. Its cells are rebuilt only when something moved:
@@ -2924,7 +3410,10 @@ fn panel(
                         match flipper_ui::RunningApp::spawn(entry) {
                             Ok(app) => {
                                 eprintln!("app            started {}", entry.name);
-                                running = Some(app);
+                                recents.open(&entry.name, flipper_ui::switcher::Kind::App);
+                                apps_live.retain(|(n, _)| n != &entry.name);
+                                apps_live.push((entry.name.clone(), app));
+                                focused_app = Some(apps_live.len() - 1);
                             }
                             Err(e) => eprintln!("app            {} failed: {e}", entry.name),
                         }
@@ -2995,7 +3484,10 @@ fn panel(
 
         // The install log is its own screen: it can outlast several frames and has
         // more lines than a dialog can hold.
-        if matches!(deps, Some(Deps::Installing(..)) | Some(Deps::Done(..))) {
+        if switcher.is_none()
+            && focused_app.is_none()
+            && matches!(deps, Some(Deps::Installing(..)) | Some(Deps::Done(..)))
+        {
             let visible = flipper_ui::theme::count::LOG_VISIBLE_LINES;
             let total = deps_log.len() as i32;
             let bottom = (total - visible).max(0);
@@ -3116,8 +3608,17 @@ fn panel(
 
         // An app's scenes arrive on their own schedule, so they are pulled every
         // iteration rather than on a timer.
-        if let Some(app) = running.as_mut() {
-            if app.poll().is_some() {
+        // Every app is polled, focused or not: an unread pipe fills and stops the
+        // app that is writing to it, which would make a backgrounded app freeze
+        // rather than keep working.
+        for (i, (_, app)) in apps_live.iter_mut().enumerate() {
+            if Some(i) != focused_app {
+                let _ = app.poll();
+            }
+        }
+        if let Some(app) = focused_app.and_then(|i| apps_live.get_mut(i)).map(|(_, a)| a) {
+            let fresh = app.poll().is_some();
+            if fresh || std::mem::take(&mut redraw_app) {
                 let scene = app.scene().clone();
                 screen.set_app_title(scene.title.as_str().into());
                 match scene.kind {
@@ -3195,18 +3696,6 @@ fn panel(
                     }
                 }
             }
-            // An app that exits returns the user to the list rather than leaving
-            // its last frame on screen forever.
-            if app.finished() {
-                eprintln!("app            exited");
-                running = None;
-                let rows: Vec<flipper_ui::app::Row> = apps
-                    .iter()
-                    .map(|a| flipper_ui::app::Row::pair(&a.name, ""))
-                    .collect();
-                apply_app_list(&screen, &rows, app_selected, &EMPTY_HINTS, (0, 0), app_scroll);
-                screen.set_screen(Screen::Apps);
-            }
         }
 
         if sensor_poll.elapsed() >= Duration::from_secs(5) {
@@ -3245,14 +3734,23 @@ fn panel(
         // screen that pinned the remote view at its 10fps cap and kept the SPI
         // bus busy for nothing. Setting a scalar property to the same value is
         // free, because Slint compares it; a model is not.
-        let dialog_key = dialog
-            .as_ref()
-            .map(|d| (d.lines.clone(), d.left, d.right));
+        // The switcher is part of the key: a dialog does not draw over the cards,
+        // and closing the switcher has to put it back, which means the comparison
+        // has to notice the switcher opening and closing.
+        let covered = switcher.is_some() || focused_app.is_some();
+        let dialog_key = (
+            covered,
+            dialog
+                .as_ref()
+                .filter(|_| !covered)
+                .map(|d| (d.lines.clone(), d.left, d.right)),
+        );
         if dialog_key != last_dialog {
             last_dialog = dialog_key;
             screen.set_modal_lines(slint::ModelRc::new(slint::VecModel::from(
                 dialog
                     .as_ref()
+                    .filter(|_| !covered)
                     .map(|d| {
                         d.lines
                             .iter()

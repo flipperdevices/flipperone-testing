@@ -14,13 +14,14 @@ import { DetailBody, DetailRow } from "detail.slint";
 import { EthernetBody, EthLink, EthDetailRow } from "ethernet.slint";
 import { BootBody, BootRow, BootPopupRow } from "boot.slint";
 import { TextInputBody, KbCell } from "keyboard.slint";
+import { SwitcherBody, SwitchCard } from "switcher.slint";
 
-export { ListItem, IdleLink, DetailRow, EthLink, EthDetailRow, BootRow, BootPopupRow, KbCell }
+export { ListItem, IdleLink, DetailRow, EthLink, EthDetailRow, BootRow, BootPopupRow, KbCell, SwitchCard }
 
 // Idle is the root. The menu opens over it, the app list over that, and an app's
 // own screens over that. `app_form` and `app_log` are the two scene types the app
 // protocol admits so far.
-export enum Screen { idle, menu, detail, ethernet, boot, apps, app_form, app_log, app_detail, text_input }
+export enum Screen { idle, menu, detail, ethernet, boot, apps, app_form, app_log, app_detail, text_input, switcher }
 
 export component Root inherits Window {
     width: 256px;
@@ -140,6 +141,12 @@ export component Root inherits Window {
     in property <[string]> kb_hints;
     in property <int> kb_pressed_slot: -1;
     in property <int> kb_discard: -1;
+
+    // The app switcher, over whatever was showing when it opened.
+    in property <[SwitchCard]> switch_cards;
+    in property <bool> switch_can_kill;
+    in property <int> switch_pressed_slot: -1;
+    in property <string> switch_empty;
 
     // Blocking dialog over whatever screen is showing. Non-empty lines open it.
     in property <[string]> modal_lines;
@@ -276,6 +283,13 @@ export component Root inherits Window {
         buttons: root.kb_hints;
         pressed_slot: root.kb_pressed_slot;
         discard: root.kb_discard;
+    }
+
+    if root.screen == Screen.switcher: SwitcherBody {
+        cards: root.switch_cards;
+        can_kill: root.switch_can_kill;
+        pressed_slot: root.switch_pressed_slot;
+        empty_text: root.switch_empty;
     }
 
     if root.screen == Screen.boot: BootBody {

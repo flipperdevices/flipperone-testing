@@ -1,0 +1,357 @@
+// The app switcher: a stack of cards, one per running app.
+//
+// From app_switcher.js. Every card arrives already placed by switcher.rs, with
+// its frame, its opacity and how far it is from the focus; nothing here decides
+// where anything goes. What this file owns is the shape: a rectangle with a
+// radius per corner, drawn from single pixels rather than with border-radius,
+// because the corner is a straight stair and the tabs are square where they meet
+// the card above them.
+import { FlipperTheme } from "@theme";
+import { SoftBar, SoftButton } from "frame.slint";
+
+// One placed card.
+export struct SwitchCard {
+    name: string,
+    x: length,
+    y: length,
+    w: length,
+    h: length,
+    r_tl: length,
+    r_tr: length,
+    r_bl: length,
+    r_br: length,
+    // The whole card's opacity, for one joining or leaving the carousel.
+    alpha: float,
+    // 0 focused, 1 a tab, in between while it moves: the crossfade between the
+    // two styles rides on this.
+    pos_clamped: float,
+    // The app's last screen, and how visible it is.
+    image: image,
+    image_alpha: float,
+    img_x: length,
+    img_y: length,
+    // Drawn as a tab: white, a grey label on the left, three sides stroked.
+    tab: bool,
+    // The deepest tab, in the lighter grey.
+    tab_deep: bool,
+    // Which side a tab leaves open: 0 none, 1 top, 2 bottom.
+    open_edge: int,
+    label_dx: length,
+    label_dy: length,
+    // Deeper than a tab: the plain grey bar, no crossfade.
+    deep: bool,
+    killing: bool,
+}
+
+// The body of a card: white, with each corner cut by its own radius.
+//
+// Three rectangles plus a stair per corner, rather than one rectangle per row:
+// the same shape for a fraction of the elements, which matters when four cards
+// animate at 30fps.
+component CardBody inherits Rectangle {
+    in property <SwitchCard> card;
+    in property <color> fill: FlipperTheme.white;
+
+    x: root.card.x;
+    y: root.card.y;
+    width: root.card.w;
+    height: root.card.h;
+    background: transparent;
+
+    // The middle, held back by the deepest radius at top and bottom.
+    property <length> top_r: Math.max(root.card.r_tl / 1px, root.card.r_tr / 1px) * 1px;
+    property <length> bottom_r: Math.max(root.card.r_bl / 1px, root.card.r_br / 1px) * 1px;
+
+    Rectangle {
+        x: 0;
+        y: root.top_r;
+        width: root.width;
+        height: root.height - root.top_r - root.bottom_r;
+        background: root.fill;
+    }
+    // The chamfered rows, one per pixel of radius, stepping in from each side.
+    for i in [0, 1, 2, 3]: Rectangle {
+        visible: i < root.top_r / 1px;
+        property <length> l: Math.max(0, root.card.r_tl / 1px - 1 - i) * 1px;
+        property <length> r: Math.max(0, root.card.r_tr / 1px - 1 - i) * 1px;
+        x: self.l;
+        y: i * 1px;
+        width: root.width - self.l - self.r;
+        height: 1px;
+        background: root.fill;
+    }
+    for i in [0, 1, 2, 3]: Rectangle {
+        visible: i < root.bottom_r / 1px;
+        property <length> l: Math.max(0, root.card.r_bl / 1px - 1 - i) * 1px;
+        property <length> r: Math.max(0, root.card.r_br / 1px - 1 - i) * 1px;
+        x: self.l;
+        y: root.height - 1px - i * 1px;
+        width: root.width - self.l - self.r;
+        height: 1px;
+        background: root.fill;
+    }
+}
+
+// The outline of the same shape, with any one side left off.
+component CardStroke inherits Rectangle {
+    in property <SwitchCard> card;
+    in property <color> stroke;
+    // 0 none, 1 top, 2 bottom.
+    in property <int> open_edge;
+
+    x: root.card.x;
+    y: root.card.y;
+    width: root.card.w;
+    height: root.card.h;
+    background: transparent;
+
+    property <bool> top: root.open_edge != 1;
+    property <bool> bottom: root.open_edge != 2;
+
+    if root.top: Rectangle {
+        x: root.card.r_tl;
+        y: 0;
+        width: root.width - root.card.r_tl - root.card.r_tr;
+        height: 1px;
+        background: root.stroke;
+    }
+    if root.bottom: Rectangle {
+        x: root.card.r_bl;
+        y: root.height - 1px;
+        width: root.width - root.card.r_bl - root.card.r_br;
+        height: 1px;
+        background: root.stroke;
+    }
+    Rectangle {
+        x: 0;
+        y: root.card.r_tl;
+        width: 1px;
+        height: root.height - root.card.r_tl - root.card.r_bl;
+        background: root.stroke;
+    }
+    Rectangle {
+        x: root.width - 1px;
+        y: root.card.r_tr;
+        width: 1px;
+        height: root.height - root.card.r_tr - root.card.r_br;
+        background: root.stroke;
+    }
+    // A stair pixel per corner, skipped with the edge it belongs to.
+    for i in [0, 1, 2, 3]: Rectangle {
+        visible: root.top && i < root.card.r_tl / 1px;
+        x: i * 1px;
+        y: root.card.r_tl - 1px - i * 1px;
+        width: 1px; height: 1px;
+        background: root.stroke;
+    }
+    for i in [0, 1, 2, 3]: Rectangle {
+        visible: root.top && i < root.card.r_tr / 1px;
+        x: root.width - root.card.r_tr + i * 1px;
+        y: i * 1px;
+        width: 1px; height: 1px;
+        background: root.stroke;
+    }
+    for i in [0, 1, 2, 3]: Rectangle {
+        visible: root.bottom && i < root.card.r_bl / 1px;
+        x: i * 1px;
+        y: root.height - root.card.r_bl + i * 1px;
+        width: 1px; height: 1px;
+        background: root.stroke;
+    }
+    for i in [0, 1, 2, 3]: Rectangle {
+        visible: root.bottom && i < root.card.r_br / 1px;
+        x: root.width - root.card.r_br + i * 1px;
+        y: root.height - 1px - i * 1px;
+        width: 1px; height: 1px;
+        background: root.stroke;
+    }
+}
+
+// One card, bottom up: body, snapshot, title bar, outline.
+component Card inherits Rectangle {
+    in property <SwitchCard> card;
+
+    width: 100%;
+    height: 100%;
+    background: transparent;
+    opacity: root.card.alpha;
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+
+        CardBody { card: root.card; }
+
+        // The snapshot, cropped to the frame. Its top is deliberately cut: the
+        // source's own status bar would otherwise sit under the title bar.
+        if root.card.image_alpha > 0.004: Rectangle {
+            x: root.card.x;
+            y: root.card.y;
+            width: root.card.w;
+            height: root.card.h;
+            clip: true;
+            background: transparent;
+            opacity: root.card.image_alpha;
+
+            Image {
+                x: root.card.img_x - root.card.x;
+                y: root.card.img_y - root.card.y;
+                // Panel-sized, explicitly: an Image left to size itself inside a
+                // parent stretches to it, and a squashed screenshot of a pixel
+                // screen is worse than a cropped one. The card fills the window, so
+                // its own size is the panel's. The frame's clip does the cropping.
+                width: root.width;
+                height: root.height;
+                source: root.card.image;
+                image-fit: fill;
+                image-rendering: pixelated;
+            }
+        }
+        // The corners the rectangular clip could not cut, painted back in.
+        if root.card.image_alpha > 0.004: CardBody {
+            card: root.card;
+            // Only the chamfered rows are wanted here, so the middle is drawn in
+            // nothing and the stairs in the card's own white.
+            fill: transparent;
+        }
+
+        // An always-opaque bar under both styles. Without it each style draws at
+        // its own alpha and at the midpoint the body shows through between them.
+        if !root.card.tab || root.card.pos_clamped < 0.999: Rectangle {
+            x: root.card.x;
+            y: root.card.y;
+            width: root.card.w;
+            height: FlipperTheme.card_bar_h_focused;
+            clip: true;
+            background: transparent;
+
+            Rectangle {
+                x: 0; y: 0;
+                width: parent.width;
+                height: parent.height;
+                background: FlipperTheme.black.mix(FlipperTheme.white, 1 - root.card.pos_clamped);
+            }
+        }
+
+        // Focused style: a black bar with the name in Born2bSporty, and all four
+        // sides stroked. Both drift toward the tab's look as the card leaves.
+        if root.card.pos_clamped < 0.999 && !root.card.deep: Rectangle {
+            width: 100%;
+            height: 100%;
+            background: transparent;
+            opacity: 1 - root.card.pos_clamped;
+
+            Rectangle {
+                x: root.card.x;
+                y: root.card.y;
+                width: root.card.w;
+                height: FlipperTheme.card_bar_h_focused;
+                background: FlipperTheme.black.mix(FlipperTheme.white, 1 - root.card.pos_clamped);
+
+                Text {
+                    x: FlipperTheme.icon_pad;
+                    // floor((barH - 14) / 2) - 2 for a 16px bar, and a pixel down
+                    // for the focused card, as the prototype nudges it.
+                    y: -1px + 1px;
+                    text: root.card.name;
+                    font-size: 16px;
+                    font-family: "Born2bSportyV2";
+                    color: FlipperTheme.white;
+                }
+            }
+            CardStroke {
+                card: root.card;
+                open_edge: 0;
+                stroke: FlipperTheme.black.mix(FlipperTheme.card_tab, 1 - root.card.pos_clamped);
+            }
+        }
+
+        // Tab style: white, a grey label on the left, and the side that abuts the
+        // focused stack left open.
+        if root.card.tab && root.card.pos_clamped > 0.001: Rectangle {
+            width: 100%;
+            height: 100%;
+            background: transparent;
+            opacity: root.card.pos_clamped;
+            property <color> tone: root.card.tab_deep
+                ? FlipperTheme.card_tab_deep
+                : FlipperTheme.card_tab;
+
+            Text {
+                x: root.card.x + FlipperTheme.icon_pad + root.card.label_dx;
+                y: root.card.y + root.card.label_dy;
+                text: root.card.name;
+                font-size: 16px;
+                color: parent.tone;
+            }
+            CardStroke {
+                card: root.card;
+                open_edge: root.card.open_edge;
+                stroke: parent.tone;
+            }
+        }
+
+        // Deeper than a tab, or on its way off the left edge: the plain grey bar,
+        // no crossfade to take part in.
+        if root.card.deep || root.card.killing: Rectangle {
+            x: root.card.x;
+            y: root.card.y;
+            width: root.card.w;
+            height: FlipperTheme.card_bar_h;
+            clip: true;
+            background: FlipperTheme.card_bar_deep;
+
+            Text {
+                x: FlipperTheme.icon_pad;
+                y: -2px;
+                text: root.card.name;
+                font-size: 16px;
+                font-family: "Born2bSportyV2";
+                color: FlipperTheme.white;
+            }
+        }
+    }
+}
+
+export component SwitcherBody inherits Rectangle {
+    in property <[SwitchCard]> cards;
+    // Whether the Kill button is offered: it is not, while a card is on its way
+    // out or when the focus is the screen the user came from.
+    in property <bool> can_kill;
+    in property <int> pressed_slot: -1;
+    // Shown instead of the stack when nothing is running.
+    in property <string> empty_text;
+
+    width: 100%;
+    height: 100%;
+    // White, and no status bar: the cards are the screen.
+    background: FlipperTheme.white;
+
+    for card in root.cards: Card {
+        card: card;
+    }
+
+    if root.cards.length == 0 && root.empty_text != "": Text {
+        x: Math.round((root.width - (self.width - 1px)) / 2 / 1px) * 1px;
+        y: Math.round((root.height - self.height) / 2 / 1px) * 1px;
+        text: root.empty_text;
+        font-size: 16px;
+        color: FlipperTheme.status_dim;
+    }
+
+    // The Kill button, on the leftmost key, saying what Escape does here. Built
+    // from SoftButton rather than a SoftBar because it is the only button on this
+    // screen and it carries an icon.
+    if root.can_kill: SoftButton {
+        x: 0;
+        y: root.height - FlipperTheme.button_h;
+        width: FlipperTheme.button_w;
+        label: "Kill";
+        icon: @image-url("../assets/icons/kill_app.png");
+        icon_w: 11px;
+        icon_h: 11px;
+        pressed: root.pressed_slot == 0;
+        flush_left: true;
+    }
+}

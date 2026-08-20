@@ -12,6 +12,7 @@ pub mod key;
 pub mod keyboard;
 pub mod layout;
 pub mod net;
+pub mod switcher;
 pub mod sysinfo;
 pub mod watch;
 pub mod platform;

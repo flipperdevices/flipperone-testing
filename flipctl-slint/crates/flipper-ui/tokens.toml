@@ -38,6 +38,12 @@ rule_light   = "#e5e5e5"   # ethernet.js MODAL_DIVIDER_COLOR
 chevron_flash = "#222222"   # MenuLine < > arrow tap flash
 popup_edge    = "#d0d0d0"   # drawPopupLeft shadow edge
 keycap_dim    = "#888888"   # keyboard language-switcher label
+# The app switcher's cards. A tab's label and its stroke are the same tone, and
+# the deepest tab is lighter so the stack reads as receding; a card deeper than a
+# tab keeps the plain bar.
+card_tab      = "#666666"   # app_switcher.js TAB_CONFIG -1 and +1
+card_tab_deep = "#a7a7a7"   # TAB_CONFIG -2
+card_bar_deep = "#6e6e6e"   # TITLE_BAR_BG_DEFAULT
 dialog_body   = "#666666"   # keyboard_test.js discard-modal body line
 field_label   = "#6d6d6d"   # desktop.js field labels: Temperature, Hostname:, IPv4:
 
@@ -166,6 +172,12 @@ modal_line_h        = 11
 
 # The boot menu, which has its own denser geometry: a header instead of a status
 # bar, 16px rows instead of 20, and six of them instead of five.
+# The app switcher's title bars. The focused card's is taller for emphasis; every
+# other card keeps the default. The card frames themselves live in switcher.rs,
+# which is where a table of rectangles belongs.
+card_bar_h          = 14    # app_switcher.js TITLE_BAR_H_DEFAULT
+card_bar_h_focused  = 16    # TITLE_BAR_H_BY_POSITION[0]
+
 boot_header_h       = 18    # boot_menu.js HEADER_H
 boot_container_y    = 20    # boot_menu.js CONTAINER_Y, the first row's top
 boot_row_h          = 16    # boot_menu.js ROW_H
