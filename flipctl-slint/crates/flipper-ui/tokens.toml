@@ -165,13 +165,17 @@ modal_line_h        = 11
 # are restyled rather than transcribed: the prototype draws them white-on-black in
 # a fourth bitmap font with "[Back]" as literal text, predating its own design
 # system. Same data and row order, drawn like every other screen.
+#
 # A row's text ink, measured rather than assumed: a 16px Busy9px line drawn at
 # the row's top has its first inked row 3 down and spans 9 rows (cap height plus
 # descender). The gauge centres on that band rather than on the row box, so the bar
 # and the label read as one line.
 text_ink_top        = 3
 text_ink_h          = 9
-gauge_h             = 7     # diskspace.js / power.js bar height, fill only
+# Fill height, so the bar is gauge_h + 2 with its border. 7 fills the text's ink
+# band exactly, which is the chosen look; the prototype's own value is 5, which
+# centres on the same band but sits inside it.
+gauge_h             = 7
 
 # Horizontal geometry from the Figma export `soft_button_bar`: 5 * 48 + 4 * 4 =
 # 256 exactly, so the slots tile evenly and both outer edges land flush. canvas.js

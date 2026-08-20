@@ -126,8 +126,21 @@ impl KmsSink {
         // Legacy ADDFB carries only depth and bpp, and the kernel maps 8/8 to C8,
         // a palette format this driver does not advertise, so the R8 attempt would
         // fail for the wrong reason and silently never be used.
+        // An override, so the two formats can be measured against each other on one
+        // binary. Without it the comparison needs two builds, and then the numbers
+        // differ for reasons other than the format.
+        let force_xrgb = std::env::var("FLIPPER_FB_FORMAT")
+            .is_ok_and(|v| v.eq_ignore_ascii_case("xrgb8888"));
+
         let (mut buffer, fb, greyscale) = match card
             .create_dumb_buffer((u32::from(w), u32::from(h)), DrmFourcc::R8, 8)
+            .and_then(|b| {
+                if force_xrgb {
+                    Err(std::io::Error::other("FLIPPER_FB_FORMAT=xrgb8888"))
+                } else {
+                    Ok(b)
+                }
+            })
             .and_then(|b| {
                 card.add_planar_framebuffer(&Planar(&b), FbCmd2Flags::empty())
                     .map(|fb| (b, fb))
@@ -232,7 +245,7 @@ impl KmsSink {
         if self.greyscale {
             "R8"
         } else {
-            "XRGB8888 (no R8 in this kernel)"
+            "XRGB8888"
         }
     }
 }
