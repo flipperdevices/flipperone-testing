@@ -20,6 +20,8 @@ Protocol, newline-delimited JSON on stdin and stdout:
 import json
 import sys
 
+APP_NAME = "UI Demo"
+
 # Rows the list shows at once. flipctl clips to what fits regardless; knowing the
 # number lets the app send a window and report where it sits so a scrollbar can be
 # drawn.

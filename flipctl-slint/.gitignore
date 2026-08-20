@@ -8,3 +8,7 @@ target/
 # Python bytecode from the apps.
 __pycache__/
 *.pyc
+
+# Per-app virtualenvs, created on the device when an app's Python dependencies
+# are installed. Machine-specific and rebuildable from APP_PIP.
+apps/*/.venv/

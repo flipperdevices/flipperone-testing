@@ -923,6 +923,108 @@ mod detail {
     }
 }
 
+/// Break one line of output into lines that fit the log body.
+///
+/// `[rule] overflow = "wrap"` says long text wraps wherever there is vertical
+/// room, and a scrolling log has plenty. Clipping instead loses the end of exactly
+/// the lines that matter: apt reports its real problem in one long sentence, and
+/// "E: Unable to locate package definitely-not-a-real-packa" is not an error
+/// message.
+///
+/// Breaks at spaces, and splits a single token that cannot fit on its own, because
+/// a package name or a path is often longer than the screen and dropping the tail
+/// of it would be the same bug again.
+#[cfg(feature = "slint")]
+fn wrap_log(line: &str) -> Vec<String> {
+    use flipper_ui::font::TITLE;
+    use flipper_ui::theme::metric::MARGIN_H;
+
+    let budget = flipper_ui::theme::PANEL_W - 2 * MARGIN_H as u16;
+    let fits = |s: &str| TITLE.text_width(s) <= budget;
+
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for word in line.split_whitespace() {
+        let candidate = if cur.is_empty() {
+            word.to_string()
+        } else {
+            format!("{cur} {word}")
+        };
+        if fits(&candidate) {
+            cur = candidate;
+            continue;
+        }
+        if !cur.is_empty() {
+            out.push(std::mem::take(&mut cur));
+        }
+        // A word too long for a line of its own is cut at the last character that
+        // fits, and continues on the next.
+        let mut rest = word;
+        while !fits(rest) {
+            let mut take = rest.len();
+            while take > 1 && !fits(&rest[..take]) {
+                take -= 1;
+                while take > 1 && !rest.is_char_boundary(take) {
+                    take -= 1;
+                }
+            }
+            out.push(rest[..take].to_string());
+            rest = &rest[take..];
+        }
+        cur = rest.to_string();
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
+}
+
+/// The package names, wrapped to lines that fit the dialog.
+///
+/// Measured against the frame's inner width with the real advance table, because a
+/// character count either overflows or wastes room: HaxrCorp is not fixed pitch.
+/// At most three lines, so the dialog cannot grow past its frame; anything beyond
+/// that is summarised.
+#[cfg(feature = "slint")]
+fn dialog_wrap(apt: &[String], pip: &[String]) -> Vec<String> {
+    use flipper_ui::font::TITLE;
+    use flipper_ui::theme::metric::{MODAL_W, PAD_LEFT};
+
+    const MAX_LINES: usize = 3;
+    let budget = (MODAL_W - 2 * PAD_LEFT) as u16;
+    // pip packages are marked, because "requests" from pip and from apt are not
+    // the same thing and the user is being asked to approve one of them.
+    let names: Vec<String> = apt
+        .iter()
+        .cloned()
+        .chain(pip.iter().map(|p| format!("{p} (pip)")))
+        .collect();
+
+    let mut lines: Vec<String> = Vec::new();
+    for name in &names {
+        match lines.last_mut() {
+            Some(last) if TITLE.text_width(&format!("{last} {name}")) <= budget => {
+                last.push(' ');
+                last.push_str(name);
+            }
+            _ => {
+                if lines.len() == MAX_LINES {
+                    let shown: usize = lines.iter().map(|l| l.split(' ').count()).sum();
+                    let rest = names.len() - shown;
+                    let last = lines.last_mut().expect("MAX_LINES > 0");
+                    *last = format!("{} and {rest} more", last);
+                    break;
+                }
+                lines.push(name.clone());
+            }
+        }
+    }
+    lines
+}
+
 /// Show a list of apps, or an app's own form, on the shared list body.
 #[cfg(feature = "slint")]
 fn apply_app_list(
@@ -1261,7 +1363,7 @@ fn panel(
     // The blocking dialog, when one is open. `right` is what the run key does; the
     // left key always just closes.
     struct Dialog {
-        lines: Vec<&'static str>,
+        lines: Vec<String>,
         left: &'static str,
         right: &'static str,
         act: DialogAct,
@@ -1273,12 +1375,13 @@ fn panel(
     enum DialogAct {
         None,
         ClearAirplane,
+        InstallDeps,
     }
     let mut dialog: Option<Dialog> = None;
     let mut dialog_slot: Option<usize> = None;
     // What was last pushed to the window, so an unchanged dialog is not pushed
     // again. See the note at the push site.
-    let mut last_dialog: Option<(Vec<&'static str>, &'static str, &'static str)> = None;
+    let mut last_dialog: Option<(Vec<String>, &'static str, &'static str)> = None;
 
     // Which chevron of a selected toggle row is flashing, and until when.
     let mut arrow: Option<(i32, Instant)> = None;
@@ -1287,6 +1390,32 @@ fn panel(
     // the equivalent of the prototype's `exit()`: the polling thread stops.
     let mut live: Option<detail::Live> = None;
     let mut detail_offset = 0i32;
+    // Installing an app's dependencies.
+    //
+    // Three stages, each off the render loop because dpkg-query, apt and pip all
+    // block for a long time: a check when the app is opened, a dialog asking the
+    // user, then the install itself with its output on a log screen.
+    enum Deps {
+        /// A check is running for the app at this index.
+        Checking(i32, std::sync::mpsc::Receiver<flipper_ui::app::Missing>),
+        /// The dialog is up, waiting for an answer.
+        Asking(i32, flipper_ui::app::Missing),
+        /// Installing, with output arriving and a result at the end.
+        Installing(
+            i32,
+            std::sync::mpsc::Receiver<String>,
+            std::sync::mpsc::Receiver<Result<(), String>>,
+        ),
+        /// Finished, with the log left on screen.
+        Done(i32, Result<(), String>),
+    }
+    let mut deps: Option<Deps> = None;
+    let mut deps_log: Vec<String> = Vec::new();
+    let mut deps_offset = 0i32;
+    // Stick to the tail while output arrives, until the user scrolls back. Same
+    // behaviour as an app's own log: watch it live, or read what went past.
+    let mut deps_follow = true;
+
     // The Ethernet page's selected card, and its open dump.
     let mut eth_selected = 0i32;
     let mut eth_open = false;
@@ -1423,40 +1552,56 @@ fn panel(
                 continue;
             }
 
-            // The app list.
-            if screen.get_screen() == Screen::Apps {
-                match event.key {
-                    FlipperKey::Down if !apps.is_empty() => {
-                        app_selected = (app_selected + 1).rem_euclid(apps.len() as i32);
-                    }
-                    FlipperKey::Up if !apps.is_empty() => {
-                        app_selected = (app_selected - 1).rem_euclid(apps.len() as i32);
-                    }
-                    FlipperKey::Ok | FlipperKey::Run => {
-                        if let Some(entry) = apps.get(app_selected as usize) {
-                            match flipper_ui::RunningApp::spawn(entry) {
-                                Ok(app) => {
-                                    eprintln!("app            started {}", entry.name);
-                                    running = Some(app);
-                                }
-                                Err(e) => eprintln!("app            {} failed: {e}", entry.name),
+            // The dependency flow owns the keys while it is on screen. Its dialog
+            // goes through the normal dialog path below; the log does not, because
+            // it scrolls.
+            if let Some(stage) = deps.as_ref() {
+                match stage {
+                    Deps::Checking(..) => continue,
+                    Deps::Installing(..) => {
+                        // Scroll only: cancelling an apt run halfway would leave
+                        // packages half configured.
+                        match event.key {
+                            FlipperKey::Down => deps_offset += 1,
+                            FlipperKey::Up => {
+                                deps_offset = (deps_offset - 1).max(0);
+                                deps_follow = false;
                             }
+                            _ => {}
                         }
+                        continue;
                     }
-                    FlipperKey::Back | FlipperKey::Escape => screen.set_screen(Screen::Menu),
-                    _ => {}
+                    Deps::Done(idx, result) => {
+                        let idx = *idx;
+                        let ok = result.is_ok();
+                        match event.key {
+                            FlipperKey::Down => deps_offset += 1,
+                            FlipperKey::Up => deps_offset = (deps_offset - 1).max(0),
+                            FlipperKey::Escape | FlipperKey::Back => {
+                                deps = None;
+                                screen.set_screen(Screen::Apps);
+                            }
+                            // A successful install runs the app it was for.
+                            FlipperKey::Ok | FlipperKey::Run if ok => {
+                                deps = None;
+                                if let Some(entry) = apps.get(idx as usize) {
+                                    match flipper_ui::RunningApp::spawn(entry) {
+                                        Ok(app) => {
+                                            eprintln!("app            started {}", entry.name);
+                                            running = Some(app);
+                                        }
+                                        Err(e) => {
+                                            eprintln!("app            {} failed: {e}", entry.name)
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+                    Deps::Asking(..) => {}
                 }
-                let visible = flipper_ui::theme::count::LIST_VISIBLE_ROWS;
-                app_scroll = app_scroll.clamp(
-                    (app_selected - visible + 1).max(0),
-                    app_selected.min((apps.len() as i32 - visible).max(0)),
-                );
-                let rows: Vec<(String, String)> = apps
-                    .iter()
-                    .map(|a| (a.name.clone(), String::new()))
-                    .collect();
-                apply_app_list(&screen, &rows, app_selected, &EMPTY_HINTS, &[], (0, 0), app_scroll);
-                continue;
             }
 
             // A dialog owns every key while it is open, exactly as the
@@ -1574,6 +1719,49 @@ fn panel(
                 continue;
             }
 
+            // The app list.
+            if screen.get_screen() == Screen::Apps {
+                match event.key {
+                    FlipperKey::Down if !apps.is_empty() => {
+                        app_selected = (app_selected + 1).rem_euclid(apps.len() as i32);
+                    }
+                    FlipperKey::Up if !apps.is_empty() => {
+                        app_selected = (app_selected - 1).rem_euclid(apps.len() as i32);
+                    }
+                    FlipperKey::Ok | FlipperKey::Run => {
+                        // Check what it needs before starting it. An app whose
+                        // packages are missing would otherwise die on import with
+                        // its traceback in the journal and nothing on screen.
+                        if let Some(entry) = apps.get(app_selected as usize).cloned() {
+                            let (tx, rx) = std::sync::mpsc::channel();
+                            std::thread::Builder::new()
+                                .name("dep-check".into())
+                                .spawn(move || {
+                                    let _ = tx.send(flipper_ui::app::missing(&entry));
+                                })
+                                .ok();
+                            deps = Some(Deps::Checking(app_selected, rx));
+                            deps_log.clear();
+                            deps_offset = 0;
+                        }
+                    }
+                    FlipperKey::Back | FlipperKey::Escape => screen.set_screen(Screen::Menu),
+                    _ => {}
+                }
+                let visible = flipper_ui::theme::count::LIST_VISIBLE_ROWS;
+                app_scroll = app_scroll.clamp(
+                    (app_selected - visible + 1).max(0),
+                    app_selected.min((apps.len() as i32 - visible).max(0)),
+                );
+                let rows: Vec<(String, String)> = apps
+                    .iter()
+                    .map(|a| (a.name.clone(), String::new()))
+                    .collect();
+                apply_app_list(&screen, &rows, app_selected, &EMPTY_HINTS, &[], (0, 0), app_scroll);
+                continue;
+            }
+
+
             let rows = stack.last().unwrap().0.rows.len() as i32;
             let row = &stack.last().unwrap().0.rows[selected as usize];
             let is_toggle = matches!(row.act, demo::Act::Airplane);
@@ -1645,11 +1833,36 @@ fn panel(
                 // A dialog's own buttons, resolved before anything else since it
                 // was holding every key.
                 if let Some(d) = dialog.take() {
-                    if slot == Some(4) && d.act == DialogAct::ClearAirplane {
+                    if d.act == DialogAct::InstallDeps {
+                        match (slot, deps.take()) {
+                            // Install: run it, streaming output to the log.
+                            (Some(4), Some(Deps::Asking(idx, m))) => {
+                                if let Some(entry) = apps.get(idx as usize).cloned() {
+                                    let (log_tx, log_rx) = std::sync::mpsc::channel();
+                                    let (done_tx, done_rx) = std::sync::mpsc::channel();
+                                    std::thread::Builder::new()
+                                        .name("dep-install".into())
+                                        .spawn(move || {
+                                            let r = flipper_ui::app::install(&entry, &m, |line| {
+                                                let _ = log_tx.send(line);
+                                            });
+                                            let _ = done_tx.send(r);
+                                        })
+                                        .ok();
+                                    deps_log.clear();
+                                    deps_offset = 0;
+                                    deps_follow = true;
+                                    deps = Some(Deps::Installing(idx, log_rx, done_rx));
+                                }
+                            }
+                            // Cancel, or a dialog with nothing behind it.
+                            _ => screen.set_screen(Screen::Apps),
+                        }
+                    } else if slot == Some(4) && d.act == DialogAct::ClearAirplane {
                         net.set_airplane(false);
                         // menu.js proceeds to the action the dialog interrupted.
                         dialog = Some(Dialog {
-                            lines: vec!["5G Modem", "is not ported yet"],
+                            lines: vec!["5G Modem".into(), "is not ported yet".into()],
                             left: "Back",
                             right: "",
                             act: DialogAct::None,
@@ -1744,8 +1957,8 @@ fn panel(
                         demo::Act::Unported if row.label == "5G Modem" && net_now.airplane => {
                             dialog = Some(Dialog {
                                 lines: vec![
-                                    "To use 5G Modem you need",
-                                    "to turn off Airplane mode",
+                                    "To use 5G Modem you need".into(),
+                                    "to turn off Airplane mode".into(),
                                 ],
                                 left: "Cancel",
                                 right: "Turn off",
@@ -1757,7 +1970,7 @@ fn panel(
                         // scene here.
                         demo::Act::Unported => {
                             dialog = Some(Dialog {
-                                lines: vec![row.label, "is not ported yet"],
+                                lines: vec![row.label.into(), "is not ported yet".into()],
                                 left: "Back",
                                 right: "",
                                 act: DialogAct::None,
@@ -1774,6 +1987,118 @@ fn panel(
         // change and must not be tangled up with the press flash.
         if arrow.is_some_and(|(_, until)| Instant::now() >= until) {
             arrow = None;
+        }
+
+        // Advance the dependency flow. Each stage hands over on its own channel,
+        // so nothing here waits on a subprocess.
+        match deps.take() {
+            Some(Deps::Checking(idx, rx)) => match rx.try_recv() {
+                Ok(m) if m.is_empty() => {
+                    // Nothing missing: start it, no questions.
+                    if let Some(entry) = apps.get(idx as usize) {
+                        match flipper_ui::RunningApp::spawn(entry) {
+                            Ok(app) => {
+                                eprintln!("app            started {}", entry.name);
+                                running = Some(app);
+                            }
+                            Err(e) => eprintln!("app            {} failed: {e}", entry.name),
+                        }
+                    }
+                }
+                Ok(m) => {
+                    eprintln!("app            {} needs {}", 
+                        apps.get(idx as usize).map_or("?", |a| a.name.as_str()), m.summary());
+                    // Name them: agreeing to install something without being
+                    // told what is not consent.
+                    let apt = m.apt_all();
+                    let mut lines = vec![format!(
+                        "Install {} package{}?",
+                        apt.len() + m.pip.len(),
+                        if apt.len() + m.pip.len() == 1 { "" } else { "s" }
+                    )];
+                    lines.extend(dialog_wrap(&apt, &m.pip));
+                    dialog = Some(Dialog {
+                        lines,
+                        left: "Cancel",
+                        right: "Install",
+                        act: DialogAct::InstallDeps,
+                    });
+                    deps = Some(Deps::Asking(idx, m));
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    deps = Some(Deps::Checking(idx, rx));
+                }
+                Err(_) => {}
+            },
+            Some(Deps::Installing(idx, log_rx, done_rx)) => {
+                while let Ok(line) = log_rx.try_recv() {
+                    deps_log.extend(wrap_log(&line));
+                }
+                match done_rx.try_recv() {
+                    Ok(result) => {
+                        if let Err(e) = &result {
+                            eprintln!("app            install failed: {e}");
+                            // Only when it is not already there: stderr is
+                            // streamed into the log, so the reason for a failed
+                            // apt run has usually been shown once already and the
+                            // title says it failed.
+                            if !deps_log.iter().any(|l| e.contains(l.trim())) {
+                                deps_log.extend(wrap_log(e));
+                            }
+                        }
+                        deps = Some(Deps::Done(idx, result));
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        deps = Some(Deps::Installing(idx, log_rx, done_rx));
+                    }
+                    Err(_) => deps = Some(Deps::Done(idx, Err("install thread died".into()))),
+                }
+            }
+            other => deps = other,
+        }
+
+        // The install log is its own screen: it can outlast several frames and has
+        // more lines than a dialog can hold.
+        if matches!(deps, Some(Deps::Installing(..)) | Some(Deps::Done(..))) {
+            let visible = flipper_ui::theme::count::LOG_VISIBLE_LINES;
+            let total = deps_log.len() as i32;
+            let bottom = (total - visible).max(0);
+            // Following stops when the user scrolls back and resumes when they
+            // return to the bottom, so a long apt run can be read as it goes.
+            if deps_offset >= bottom {
+                deps_follow = true;
+            }
+            // Follow in both stages, not just while installing: the last lines
+            // arrive in the same iteration as the result, so a check for
+            // Installing here leaves them off the bottom of the screen for good.
+            if deps_follow {
+                deps_offset = bottom;
+            }
+            deps_offset = deps_offset.clamp(0, bottom);
+            let window: Vec<slint::SharedString> = deps_log
+                .iter()
+                .skip(deps_offset as usize)
+                .take(visible as usize)
+                .map(|l| slint::SharedString::from(l.as_str()))
+                .collect();
+            let done = matches!(deps, Some(Deps::Done(_, Ok(()))));
+            screen.set_app_title(
+                match &deps {
+                    Some(Deps::Done(_, Ok(()))) => "Installed",
+                    Some(Deps::Done(_, Err(_))) => "Install failed",
+                    _ => "Installing",
+                }
+                .into(),
+            );
+            screen.set_app_lines(slint::ModelRc::new(slint::VecModel::from(window)));
+            screen.set_app_log_total(total);
+            screen.set_app_log_offset(deps_offset);
+            screen.set_app_hints(demo::labels(&if done {
+                ["Back", "", "", "", "Run"]
+            } else {
+                ["Back", "", "", "", ""]
+            }));
+            screen.set_screen(Screen::AppLog);
         }
 
         // An open detail screen repaints when its poller has something new, and
@@ -1956,7 +2281,7 @@ fn panel(
                     .map(|d| {
                         d.lines
                             .iter()
-                            .map(|l| slint::SharedString::from(*l))
+                            .map(|l| slint::SharedString::from(l.as_str()))
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default(),

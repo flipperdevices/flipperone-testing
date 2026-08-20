@@ -32,6 +32,16 @@ import subprocess
 import sys
 import threading
 
+# Read by flipctl without running this file, so an app whose dependencies are
+# missing can still be listed and offered an install. Only APP_NAME is required.
+#
+#   APP_NAME  what the Apps menu shows
+#   APP_ICON  a file in this directory, 14x14
+#   APP_APT   Debian packages
+#   APP_PIP   Python packages, installed into this app's own .venv
+APP_NAME = "Ping"
+APP_APT = ["iputils-ping"]
+
 # Editable parameters. `values` makes a field a cycle; `step` makes it numeric.
 FIELDS = [
     {"label": "Host", "value": "1.1.1.1",
