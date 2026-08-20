@@ -1,0 +1,29 @@
+# Its own workspace, so this crate is independent of whatever it happens to sit
+# inside. Without it cargo refuses to build: a crate under a workspace directory
+# is assumed to be a member of it.
+[workspace]
+
+[package]
+name = "uptime-app"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Read by flipctl without building this crate, so the app can be listed and
+# offered a build before a binary exists. Only `name` is required.
+#
+#   name  what the Apps menu shows
+#   icon  a file in this directory, 14x14
+#   apt   Debian packages
+[package.metadata.flipctl]
+name = "Uptime"
+apt = ["procps"]
+
+# No dependencies on purpose. An app talks newline-delimited JSON over stdin and
+# stdout, which is a println away, so the smallest useful app needs no crates at
+# all and builds in a couple of seconds on the device.
+[dependencies]
+
+[profile.release]
+opt-level = "z"
+strip = true

@@ -4,6 +4,9 @@ members = [
     "crates/flipper-ui",
     "bin/flipper-ui-demo",
 ]
+# Apps are not listed here. Each app crate carries its own empty [workspace]
+# table, which keeps it independent without this file having to name it: a user
+# adding an app should not have to edit the workspace it happens to sit inside.
 
 [workspace.package]
 version = "0.1.0"

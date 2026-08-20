@@ -1,14 +1,22 @@
 //! Running user applications.
 //!
-//! An app is a directory under `apps/` containing `app.py`. It does not draw: it
-//! writes a scene description and reads key events, so it links no GUI toolkit.
-//! The ping app is 250 lines of stdlib-only Python.
+//! An app is a directory under `apps/`. It does not draw: it writes a scene
+//! description and reads key events, so it links no GUI toolkit and can be written
+//! in any language that can read a line and print one.
 //!
-//! Its name, icon and dependencies are module-level constants in `app.py`, read by
-//! scanning the source rather than by running it. That matters: an app that
-//! depends on a package which is not installed yet fails on import, so anything
-//! that executes the app to ask what it needs cannot work. Scanning also means the
-//! list of apps is available without starting a single interpreter.
+//! Two kinds are recognised, by what the directory contains:
+//!
+//!   * `app.py`, a Python app, started through an interpreter. Its manifest is
+//!     module-level constants: APP_NAME, APP_ICON, APP_APT, APP_PIP.
+//!   * `Cargo.toml`, a Rust app, started as the binary cargo builds. Its manifest
+//!     is `[package.metadata.flipctl]`, which is where Cargo already expects
+//!     third-party keys to live.
+//!
+//! Either way the manifest is read by scanning the file, never by running or
+//! building anything. That matters: an app whose dependencies are missing fails on
+//! import, and a Rust app has no binary at all until it is built, so anything that
+//! executes an app to ask what it needs cannot work. Scanning also means the list
+//! of apps is available without starting an interpreter or a compiler.
 //!
 //! Transport is newline-delimited JSON over the child's stdin and stdout. That is
 //! a deliberate v0, not the end state: the plan calls for CBOR over a
@@ -29,8 +37,17 @@ use std::sync::mpsc::{self, Receiver};
 
 use crate::KeyEvent;
 
-/// The file every app is started from.
+/// The file a Python app is started from.
 pub const ENTRY: &str = "app.py";
+
+/// What language an app is written in, which decides how it starts and what
+/// "install its dependencies" means.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum Kind {
+    #[default]
+    Python,
+    Rust,
+}
 
 /// The per-app virtualenv, inside the app's own directory.
 pub const VENV: &str = ".venv";
@@ -38,18 +55,38 @@ pub const VENV: &str = ".venv";
 /// An app found on disk, before it runs.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct AppEntry {
-    /// `APP_NAME`, or the directory name when it says nothing.
+    /// The declared name, or the directory name when it says nothing.
     pub name: String,
     pub dir: PathBuf,
-    /// `APP_ICON`: a file in the app's own directory. Empty when absent.
+    pub kind: Kind,
+    /// A file in the app's own directory. Empty when absent.
     pub icon: String,
-    /// `APP_APT`: Debian packages the app needs.
+    /// Debian packages the app needs.
     pub apt: Vec<String>,
-    /// `APP_PIP`: Python packages, installed into the app's own venv.
+    /// Python packages, installed into the app's own venv. Python apps only.
     pub pip: Vec<String>,
+    /// The binary cargo produces, from the crate's name. Rust apps only.
+    pub bin: String,
 }
 
 impl AppEntry {
+    /// The program to run and the arguments to pass it.
+    ///
+    /// A Python app is started through an interpreter rather than as an
+    /// executable, so `app.py` needs no shebang and no execute bit, and so the
+    /// app's own venv is used when it has one. A Rust app is its own binary.
+    pub fn command(&self) -> (PathBuf, Vec<PathBuf>) {
+        match self.kind {
+            Kind::Python => (self.python(), vec![self.entry()]),
+            Kind::Rust => (self.binary(), Vec::new()),
+        }
+    }
+
+    /// Where cargo puts the binary for a Rust app.
+    pub fn binary(&self) -> PathBuf {
+        self.dir.join("target").join("release").join(&self.bin)
+    }
+
     /// The interpreter to start it with.
     ///
     /// The app's own venv when it has one, so its packages are visible and no
@@ -71,6 +108,26 @@ impl AppEntry {
     pub fn icon_path(&self) -> Option<PathBuf> {
         (!self.icon.is_empty()).then(|| self.dir.join(&self.icon))
     }
+}
+
+/// The body of a TOML table, e.g. everything under `[package.metadata.flipctl]`.
+///
+/// Returned as text so the same key scanners work on it. A section ends at the
+/// next line that opens a table, which is all the structure this needs: the
+/// manifest is a handful of strings and arrays.
+fn toml_section<'a>(src: &'a str, header: &str) -> Option<&'a str> {
+    let at = src.find(&format!("[{header}]"))? + header.len() + 2;
+    let rest = &src[at..];
+    let end = rest
+        .lines()
+        .scan(0usize, |off, line| {
+            let start = *off;
+            *off += line.len() + 1;
+            Some((start, line))
+        })
+        .find(|(start, line)| *start > 0 && line.trim_start().starts_with('['))
+        .map_or(rest.len(), |(start, _)| start);
+    Some(&rest[..end])
 }
 
 /// A module-level string assignment, e.g. `APP_NAME = "Ping"`.
@@ -178,13 +235,36 @@ pub fn discover(dir: &Path) -> Vec<AppEntry> {
         .flatten()
         .filter_map(|entry| {
             let dir = entry.path();
-            let src = std::fs::read_to_string(dir.join(ENTRY)).ok()?;
             let fallback = dir.file_name()?.to_string_lossy().to_string();
+
+            // Python first: a directory with both is a Python app that happens to
+            // vendor a crate.
+            if let Ok(src) = std::fs::read_to_string(dir.join(ENTRY)) {
+                return Some(AppEntry {
+                    name: py_string(&src, "APP_NAME").unwrap_or(fallback),
+                    kind: Kind::Python,
+                    icon: py_string(&src, "APP_ICON").unwrap_or_default(),
+                    apt: py_list(&src, "APP_APT"),
+                    pip: py_list(&src, "APP_PIP"),
+                    bin: String::new(),
+                    dir: dir.canonicalize().unwrap_or(dir),
+                });
+            }
+
+            let cargo = std::fs::read_to_string(dir.join("Cargo.toml")).ok()?;
+            // The binary cargo will produce. `name` under [package], not the
+            // manifest's display name.
+            let bin = toml_section(&cargo, "package")
+                .and_then(|s| py_string(s, "name"))
+                .unwrap_or_else(|| fallback.clone());
+            let meta = toml_section(&cargo, "package.metadata.flipctl").unwrap_or("");
             Some(AppEntry {
-                name: py_string(&src, "APP_NAME").unwrap_or(fallback),
-                icon: py_string(&src, "APP_ICON").unwrap_or_default(),
-                apt: py_list(&src, "APP_APT"),
-                pip: py_list(&src, "APP_PIP"),
+                name: py_string(meta, "name").unwrap_or(fallback),
+                kind: Kind::Rust,
+                icon: py_string(meta, "icon").unwrap_or_default(),
+                apt: py_list(meta, "apt"),
+                pip: Vec::new(),
+                bin,
                 // Absolute, because spawn sets the child's working directory to
                 // this and a relative program path would then be resolved against
                 // the new directory rather than ours: apps/ping plus
@@ -213,8 +293,9 @@ impl RunningApp {
     /// needs no shebang and no execute bit, and so the app's own venv is used when
     /// it has one.
     pub fn spawn(entry: &AppEntry) -> std::io::Result<Self> {
-        let mut child = Command::new(entry.python())
-            .arg(entry.entry())
+        let (program, args) = entry.command();
+        let mut child = Command::new(program)
+            .args(args)
             .current_dir(&entry.dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -447,6 +528,11 @@ pub struct Missing {
     pub apt: Vec<String>,
     /// Python packages, when the app's venv does not already have exactly them.
     pub pip: Vec<String>,
+    /// True when a Rust app has no binary yet, so it has to be built.
+    ///
+    /// Not a package to fetch but a compile, which is why it is a flag rather than
+    /// a list: cargo works out what to download from the crate's own manifest.
+    pub needs_build: bool,
     /// True when Python packages are wanted but `uv` is not installed.
     ///
     /// Not something the user can be offered, because uv is not in the Debian
@@ -457,7 +543,7 @@ pub struct Missing {
 
 impl Missing {
     pub fn is_empty(&self) -> bool {
-        self.apt.is_empty() && self.pip.is_empty()
+        self.apt.is_empty() && self.pip.is_empty() && !self.needs_build
     }
 
     /// Everything to install with apt.
@@ -465,14 +551,18 @@ impl Missing {
         self.apt.clone()
     }
 
-    /// One line for a dialog, e.g. "2 packages: curl, python3-venv".
+    /// One line for a log, e.g. "2 packages: curl, requests".
     pub fn summary(&self) -> String {
         let apt = self.apt_all();
         let n = apt.len() + self.pip.len();
         let mut names = apt;
         names.extend(self.pip.iter().cloned());
+        if n == 0 && self.needs_build {
+            return "a build".into();
+        }
+        let build = if self.needs_build { " and a build" } else { "" };
         format!(
-            "{n} package{}: {}",
+            "{n} package{}: {}{build}",
             if n == 1 { "" } else { "s" },
             names.join(", ")
         )
@@ -540,6 +630,30 @@ fn uv() -> Option<PathBuf> {
         .map(|_| PathBuf::from("uv"))
 }
 
+/// The most recent modification time among an app's sources.
+///
+/// Walks the crate but skips `target`, which is where the binary being compared
+/// against lives: including it would always look newer than itself.
+fn newest_source(dir: &Path) -> Option<std::time::SystemTime> {
+    let mut newest = None;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(at) = stack.pop() {
+        for entry in std::fs::read_dir(&at).ok()?.flatten() {
+            let path = entry.path();
+            if path.file_name().is_some_and(|n| n == "target" || n == ".git") {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else { continue };
+            if meta.is_dir() {
+                stack.push(path);
+            } else if let Ok(t) = meta.modified() {
+                newest = newest.max(Some(t));
+            }
+        }
+    }
+    newest
+}
+
 /// The file recording what was installed into an app's venv.
 fn venv_stamp(dir: &Path) -> PathBuf {
     dir.join(VENV).join("flipctl-installed")
@@ -554,6 +668,16 @@ pub fn missing(entry: &AppEntry) -> Missing {
         apt: missing_apt(&entry.apt),
         ..Default::default()
     };
+    if entry.kind == Kind::Rust {
+        // Rebuild when the binary is absent or older than any source file. Cargo
+        // decides what actually needs recompiling; this only decides whether to
+        // ask, and asking after every edit is what a person expects.
+        m.needs_build = match entry.binary().metadata().and_then(|m| m.modified()) {
+            Err(_) => true,
+            Ok(built) => newest_source(&entry.dir).is_some_and(|src| src > built),
+        };
+        return m;
+    }
     if entry.pip.is_empty() {
         return m;
     }
@@ -591,6 +715,22 @@ pub fn install(entry: &AppEntry, missing: &Missing, mut log: impl FnMut(String))
                 .env("DEBIAN_FRONTEND", "noninteractive"),
             &mut log,
         )?;
+    }
+
+    if missing.needs_build {
+        log("cargo build --release".into());
+        run_logged(
+            Command::new("cargo")
+                .args(["build", "--release"])
+                .current_dir(&entry.dir)
+                // Cargo colours and redraws its progress, which a line-oriented
+                // log cannot show.
+                .env("CARGO_TERM_COLOR", "never")
+                .env("CARGO_TERM_PROGRESS_WHEN", "never"),
+            &mut log,
+        )?;
+        log("done".into());
+        return Ok(());
     }
 
     if missing.pip.is_empty() {

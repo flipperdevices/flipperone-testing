@@ -127,11 +127,18 @@ fn discovered_paths_are_absolute() {
             entry.name,
             entry.dir.display()
         );
+        // What must exist depends on the kind. A Python app's entry is its
+        // source; a Rust app's is a binary that may not be built yet, so the
+        // manifest is what proves the directory is an app.
+        let proof = match entry.kind {
+            app::Kind::Python => entry.entry(),
+            app::Kind::Rust => entry.dir.join("Cargo.toml"),
+        };
         assert!(
-            entry.entry().is_file(),
-            "{} points at a missing entry file: {}",
+            proof.is_file(),
+            "{} points at a missing file: {}",
             entry.name,
-            entry.entry().display()
+            proof.display()
         );
     }
 }
@@ -193,4 +200,99 @@ fn discovery_needs_app_py_and_falls_back_to_the_directory_name() {
     assert!(found[0].apt.is_empty());
     assert!(found[0].pip.is_empty());
     assert_eq!(found[0].icon, "");
+}
+
+/// A directory with a Cargo.toml is a Rust app, and its manifest is read from
+/// `[package.metadata.flipctl]` without building it.
+///
+/// Reading rather than building is the point: a Rust app has no binary at all
+/// until it is compiled, so anything that runs an app to ask what it needs cannot
+/// list one.
+#[test]
+fn a_rust_app_is_read_from_its_cargo_manifest() {
+    let dir = tempdir("rust-app");
+    let app = dir.join("thing");
+    std::fs::create_dir_all(app.join("src")).unwrap();
+    std::fs::write(
+        app.join("Cargo.toml"),
+        r#"[workspace]
+
+[package]
+name = "thing-app"
+version = "0.1.0"
+edition = "2021"
+
+[package.metadata.flipctl]
+name = "Thing"
+icon = "thing.png"
+apt = ["procps", "curl"]
+
+[dependencies]
+"#,
+    )
+    .unwrap();
+    std::fs::write(app.join("src/main.rs"), "fn main() {}\n").unwrap();
+
+    let found = app::discover(&dir);
+    assert_eq!(found.len(), 1);
+    let a = &found[0];
+    assert_eq!(a.kind, app::Kind::Rust);
+    assert_eq!(a.name, "Thing", "the display name, not the crate name");
+    assert_eq!(a.bin, "thing-app", "the crate name, which is what cargo builds");
+    assert_eq!(a.icon, "thing.png");
+    assert_eq!(a.apt, ["procps", "curl"]);
+    assert!(a.pip.is_empty(), "pip is a Python notion");
+
+    // It runs as its own binary, with no interpreter in front of it.
+    let (program, args) = a.command();
+    assert_eq!(program, a.dir.join("target/release/thing-app"));
+    assert!(args.is_empty());
+
+    // With no binary built, the app needs one, and that is not a package to fetch.
+    let m = app::missing(a);
+    assert!(m.needs_build);
+    assert!(!m.is_empty());
+    assert!(m.pip.is_empty());
+}
+
+/// The section scanner must not confuse `name` under [package] with the display
+/// name under [package.metadata.flipctl].
+///
+/// Both keys are called `name` at column zero, so a scan that ignores which table
+/// it is in reads the crate name as the app's title.
+#[test]
+fn the_crate_name_and_the_display_name_are_kept_apart() {
+    let dir = tempdir("rust-app-names");
+    let app = dir.join("thing");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(
+        app.join("Cargo.toml"),
+        "[workspace]\n\n[package]\nname = \"crate-name\"\n\n\
+         [package.metadata.flipctl]\nname = \"Display Name\"\n",
+    )
+    .unwrap();
+
+    let found = app::discover(&dir);
+    assert_eq!(found[0].name, "Display Name");
+    assert_eq!(found[0].bin, "crate-name");
+}
+
+/// A Rust app with no [package.metadata.flipctl] is still an app, named after its
+/// directory.
+#[test]
+fn a_rust_app_without_a_manifest_section_still_works() {
+    let dir = tempdir("rust-app-bare");
+    let app = dir.join("bare");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(
+        app.join("Cargo.toml"),
+        "[workspace]\n\n[package]\nname = \"bare\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+
+    let found = app::discover(&dir);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].name, "bare");
+    assert_eq!(found[0].kind, app::Kind::Rust);
+    assert!(found[0].apt.is_empty());
 }
