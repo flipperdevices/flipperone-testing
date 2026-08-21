@@ -1,0 +1,8 @@
+# Midnight Commander, on the panel.
+#
+# A file manager is the other thing a device with no keyboard cannot do, and mc
+# needs only arrows, Enter and F-keys, which is exactly what the buttons are.
+# Bring it up with the soft keys as F1 to F5 and it is navigable as it stands.
+name = "Midnight Commander"
+console = "mc"
+apt = ["mc"]

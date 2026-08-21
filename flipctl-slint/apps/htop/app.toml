@@ -1,0 +1,8 @@
+# An app with no code of its own.
+#
+# htop draws into a terminal, so flipctl lets go of the panel and lets the
+# kernel's VT paint it. Nothing here is ours except the declaration: the command,
+# what it needs installed, and the name the Apps list shows.
+name = "htop"
+console = "htop"
+apt = ["htop"]
