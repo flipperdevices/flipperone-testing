@@ -2352,6 +2352,10 @@ fn panel(
     let mut status = flipper_ui::StatusSource::new(Duration::from_secs(1));
     // Merged queue so panel buttons and browser clicks take the same path.
     let mut pending_input: Vec<flipper_ui::KeyEvent> = Vec::new();
+    // The browser view's presses, kept apart only so a console app in front can tell
+    // them from the buttons: those it has to be handed, these the kernel has already
+    // delivered. Everywhere else the two are the same thing and are read together.
+    let mut pending_remote: Vec<flipper_ui::KeyEvent> = Vec::new();
 
     let report = |frames: u64,
                   started: &Instant,
@@ -2391,7 +2395,10 @@ fn panel(
                 )?;
             }
             while let Some(event) = view.poll() {
-                pending_input.push(event);
+                // Kept apart from the buttons until the console block has had them:
+                // a simulated press has reached nothing yet, where a real one has
+                // already been delivered to the VT by the kernel.
+                pending_remote.push(event);
             }
         }
         if let Some(input) = input.as_mut() {
@@ -2404,24 +2411,30 @@ fn panel(
         // pad and its centre go to the program, and three of ours stay ours. Esc
         // ends it, Back leaves it running and goes back to the list, and Tab does
         // the same and opens the deck. Nothing here waits on a button being held.
-        // A console app in front takes the keys first, and takes most of them: the
-        // pad and its centre go to the program, and three of ours stay ours. Esc
-        // ends it, Back leaves it running and goes back to the list, and Tab does
-        // the same and opens the deck. Nothing here waits on a button being held.
         if let Some(at) = console_front {
             let mut end = false;
             let mut leave = None;
-            for event in pending_input.drain(..) {
-                // Physical presses arrive on their own: the kernel's keyboard
-                // handler is attached to the MCU's device and delivers to whichever
-                // VT is in front. This is for the ones flipctl was handed rather
-                // than read, above all the browser view's.
+            // Simulated presses are put into the input core, where the kernel
+            // delivers them to the VT exactly as it delivers a real one. Physical
+            // presses are not: the kernel has already given them to the VT, and
+            // forwarding those as well made every pad press act twice.
+            for event in pending_remote.drain(..) {
                 let forwarded = console_keys
                     .as_mut()
                     .is_some_and(|k| k.forward(event).unwrap_or(false));
                 if forwarded {
                     continue;
                 }
+                if event.down {
+                    match event.key {
+                        FlipperKey::Escape => end = true,
+                        FlipperKey::Back => leave = Some(false),
+                        FlipperKey::AppSwitch => leave = Some(true),
+                        _ => {}
+                    }
+                }
+            }
+            for event in pending_input.drain(..) {
                 if !event.down {
                     continue;
                 }
@@ -2564,6 +2577,11 @@ fn panel(
                 }
             }
         }
+
+        // Nothing of ours can tell a simulated press from a real one, and nothing of
+        // ours should: only the console block cares, because only it has to decide
+        // whether the kernel has already delivered the key.
+        pending_input.append(&mut pending_remote);
 
         for event in pending_input.drain(..) {
             // The keyboard is the one screen that cares when a key is let go: a
