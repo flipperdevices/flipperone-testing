@@ -1203,6 +1203,72 @@ fn canvas_image(grey: &[u8]) -> Option<slint::Image> {
     Some(slint::Image::from_rgb8(buffer))
 }
 
+/// A card's icon, loaded from the app's own directory and cached by path.
+///
+/// Cached because it is the same handful of 14x14 sprites on every frame, and a
+/// scanning app resends its scene several times a second. Loaded as RGBA rather
+/// than greyscale so `colorize` has an alpha channel to work with: a card in the
+/// dim tone dims its icon too, and the same sprite is drawn white on a dark band.
+#[cfg(feature = "slint")]
+fn card_icon(
+    dir: &std::path::Path,
+    name: &str,
+    cache: &mut Vec<(std::path::PathBuf, slint::Image)>,
+) -> slint::Image {
+    if name.is_empty() {
+        return slint::Image::default();
+    }
+    let path = dir.join(name);
+    if let Some((_, image)) = cache.iter().find(|(p, _)| *p == path) {
+        return image.clone();
+    }
+    let image = load_rgba(&path).unwrap_or_default();
+    // An app with more icons than this is drawing something other than a list.
+    if cache.len() >= 16 {
+        cache.remove(0);
+    }
+    cache.push((path, image.clone()));
+    image
+}
+
+/// One RGBA PNG as a Slint image, or `None` if it will not read.
+///
+/// A missing or broken icon leaves the card without one rather than taking the
+/// app's screen down: the row still says what it is, in words.
+#[cfg(feature = "slint")]
+fn load_rgba(path: &std::path::Path) -> Option<slint::Image> {
+    let file = std::fs::File::open(path).ok()?;
+    let decoder = png::Decoder::new(std::io::BufReader::new(file));
+    let mut reader = decoder.read_info().ok()?;
+    let mut raw = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut raw).ok()?;
+    let (w, h) = (info.width, info.height);
+    let mut buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(w, h);
+    let out = buffer.make_mut_slice();
+    match info.color_type {
+        png::ColorType::Rgba => {
+            for (px, chunk) in out.iter_mut().zip(raw.chunks_exact(4)) {
+                *px = slint::Rgba8Pixel {
+                    r: chunk[0],
+                    g: chunk[1],
+                    b: chunk[2],
+                    a: chunk[3],
+                };
+            }
+        }
+        // Greyscale, the format the panel itself speaks: ink is opaque and the
+        // ground is transparent, so an icon lifted straight out of a mockup can be
+        // colorized like any other.
+        png::ColorType::Grayscale => {
+            for (px, v) in out.iter_mut().zip(raw.iter()) {
+                *px = slint::Rgba8Pixel { r: 0, g: 0, b: 0, a: 255 - *v };
+            }
+        }
+        _ => return None,
+    }
+    Some(slint::Image::from_rgba8(buffer))
+}
+
 /// A placed card, ready for Slint, with its thumbnail as an image.
 ///
 /// The images are cached against the buffer they came from: an animation asks for
@@ -1852,6 +1918,16 @@ fn panel(
     // animation asks for the same four images thirty times a second, and building
     // them each time would allocate a megabyte a frame for nothing.
     let mut card_images: Vec<(usize, slint::Image)> = Vec::new();
+    // A cards scene's icons, by path. Separate from the switcher's thumbnails
+    // above: those are keyed on the buffer they came from and die with it, these
+    // are files that outlive any one frame.
+    let mut card_icons: Vec<(std::path::PathBuf, slint::Image)> = Vec::new();
+    // Where a cards page's window sits. Kept here rather than in the app for the
+    // reason the detail body's offset is: the app does not know how much fits.
+    let mut app_cards_scroll = 0i32;
+    // Where the busy marker on a cards page counts from, and when it last moved.
+    let slide_at = Instant::now();
+    let mut slide_shown = Instant::now();
 
     // Whether the switcher's cards need handing over again. Slint compares a
     // scalar but not a model, so a fresh model every pass marks the whole window
@@ -2288,7 +2364,11 @@ fn panel(
                 // because the user looked at something else first.
                 let inside_app = matches!(
                     screen.get_screen(),
-                    Screen::AppForm | Screen::AppDetail | Screen::AppLog | Screen::AppCanvas
+                    Screen::AppForm
+                        | Screen::AppDetail
+                        | Screen::AppLog
+                        | Screen::AppCanvas
+                        | Screen::AppCards
                 );
                 // What the user is looking at is the top card when it is a focused
                 // app or one of our tracked screens, and either way that is what
@@ -2331,7 +2411,11 @@ fn panel(
                 // Back as "put me away" then looked stuck.
                 if matches!(
                     screen.get_screen(),
-                    Screen::AppForm | Screen::AppDetail | Screen::AppLog | Screen::AppCanvas
+                    Screen::AppForm
+                        | Screen::AppDetail
+                        | Screen::AppLog
+                        | Screen::AppCanvas
+                        | Screen::AppCards
                 ) && event.key == FlipperKey::Back
                 {
                     // Back leaves the app running and puts the user back in the
@@ -3755,6 +3839,62 @@ fn panel(
                         );
                         screen.set_screen(Screen::AppForm);
                     }
+                    // Framed rows, the Ethernet page's card generalised. The
+                    // page is ours: the app says what each card holds and which
+                    // one is selected, and the scrolling, the clipping and the
+                    // marker's movement stay on this side.
+                    flipper_ui::SceneKind::Cards => {
+                        let dir = app.dir().to_path_buf();
+                        let cards: Vec<flipper_ui::ui::CardItem> = scene
+                            .rows
+                            .iter()
+                            .map(|r| flipper_ui::ui::CardItem {
+                                icon: card_icon(&dir, &r.icon, &mut card_icons),
+                                name: r.label.as_str().into(),
+                                info: r.info.as_str().into(),
+                                right: r.value.as_str().into(),
+                                pill: r.pill,
+                                dim: r.dim,
+                                actionable: r.actionable,
+                            })
+                            .collect();
+                        // The viewport is ours. How many cards fit depends on
+                        // whether the page is showing a progress track, which the
+                        // app has no way of working out, so it sends every card and
+                        // says which one is selected.
+                        let count = cards.len() as i32;
+                        screen.set_app_cards(slint::ModelRc::new(slint::VecModel::from(cards)));
+                        screen.set_app_note(scene.note.as_str().into());
+                        let shown = {
+                            use flipper_ui::theme::metric::{
+                                CARDS_BAR_GAP, CARDS_TOP_PAD, CARD_GAP, CARD_H, GAUGE_H,
+                                STATUS_BAR_H,
+                            };
+                            // The bar is a gauge: its fill plus the frame around it.
+                            let top = STATUS_BAR_H
+                                + CARDS_TOP_PAD
+                                + if scene.busy { GAUGE_H + 2 + CARDS_BAR_GAP } else { 0 };
+                            (130 - top) / (CARD_H + CARD_GAP)
+                        };
+                        let selected = scene.selected.clamp(0, (count - 1).max(0));
+                        app_cards_scroll = app_cards_scroll.clamp(
+                            (selected - shown + 1).max(0),
+                            selected.min((count - shown).max(0)),
+                        );
+                        screen.set_app_selected(selected);
+                        screen.set_app_scroll(app_cards_scroll);
+                        screen.set_app_total(count);
+                        screen.set_app_busy(scene.busy);
+                        screen.set_app_percent(scene.percent);
+                        screen.set_app_buttons(slint::ModelRc::new(slint::VecModel::from(
+                            scene
+                                .buttons
+                                .iter()
+                                .map(|b| slint::SharedString::from(b.as_str()))
+                                .collect::<Vec<_>>(),
+                        )));
+                        screen.set_screen(Screen::AppCards);
+                    }
                     // The app painted it: hand the bitmap over as an image and
                     // let it have the whole panel.
                     flipper_ui::SceneKind::Canvas => {
@@ -3774,6 +3914,7 @@ fn panel(
                             })
                             .collect();
                         screen.set_app_texts(slint::ModelRc::new(slint::VecModel::from(texts)));
+                        screen.set_app_status_bar(scene.status_bar);
                         screen.set_app_buttons(slint::ModelRc::new(slint::VecModel::from(
                             scene
                                 .buttons
@@ -3827,6 +3968,23 @@ fn panel(
                     }
                 }
             }
+        }
+
+        // The marker on a busy cards page moves on the clock, so it needs a
+        // repaint asked for: an app scanning a network sends a scene a second at
+        // best, and between those the panel would sit still while work goes on.
+        if screen.get_screen() == Screen::AppCards
+            && screen.get_app_busy()
+            && slide_shown.elapsed() >= Duration::from_millis(33)
+        {
+            slide_shown = Instant::now();
+            // 60px a second along the track, which is the speed the painted
+            // version ran at.
+            // Inside the frame, so the marker never sits on the border.
+            let span = flipper_ui::theme::metric::CARD_W
+                - flipper_ui::theme::metric::CARDS_MARKER_W
+                - 2;
+            screen.set_app_slide(((slide_at.elapsed().as_millis() / 17) % span as u128) as i32);
         }
 
         if sensor_poll.elapsed() >= Duration::from_secs(5) {

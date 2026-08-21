@@ -409,3 +409,51 @@ fn the_8_ball_app_is_listed() {
     assert_eq!(ball.kind, app::Kind::Python);
     assert!(ball.apt.is_empty() && ball.pip.is_empty(), "stdlib only");
 }
+
+/// A cards scene, as the nmap app sends one mid-scan.
+///
+/// The scene-level fields and the per-card ones share names on purpose (`percent`
+/// is a scene's progress and a detail row's gauge), so this checks the scene keeps
+/// its own rather than picking up the first one it finds inside a card.
+#[test]
+fn a_cards_scene_carries_its_page_and_its_rows() {
+    let line = r#"{"screen": {"type": "cards", "title": "Scanning 192.168.1.0-255",
+        "note": "2 hosts up", "busy": true, "percent": 37, "selected": 1,
+        "offset": 0, "total": 9, "cards": [
+        {"label": "Desktop-AKBGGTH", "info": "192.168.1.194 Intel Corporate",
+         "value": "Ports: 2 open", "icon": "icons/monitor.png", "actionable": true},
+        {"label": "No hosts up", "info": "Nothing answered", "dim": true}],
+        "buttons": ["Stop", "Help", "", "", "View"]}}"#;
+    let scene = app::parse_line(line).expect("a scene");
+
+    assert_eq!(scene.kind, app::SceneKind::Cards);
+    assert_eq!(scene.title, "Scanning 192.168.1.0-255");
+    assert_eq!(scene.note, "2 hosts up");
+    assert!(scene.busy);
+    assert_eq!(scene.percent, 37);
+    assert_eq!(scene.selected, 1);
+    assert_eq!(scene.total, 9);
+    assert_eq!(scene.buttons.len(), 5);
+
+    assert_eq!(scene.rows.len(), 2);
+    let first = &scene.rows[0];
+    assert_eq!(first.label, "Desktop-AKBGGTH");
+    assert_eq!(first.info, "192.168.1.194 Intel Corporate");
+    assert_eq!(first.value, "Ports: 2 open");
+    assert_eq!(first.icon, "icons/monitor.png");
+    assert!(first.actionable && !first.dim);
+
+    let second = &scene.rows[1];
+    assert!(second.dim, "a card that only reports says so by being dim");
+    assert!(!second.actionable, "and by having nothing to open");
+    assert_eq!(second.value, "", "no right-hand column");
+}
+
+/// An app that cannot say how far along it is leaves the track empty.
+#[test]
+fn a_cards_scene_without_a_percentage_reads_as_minus_one() {
+    let line = r#"{"screen": {"type": "cards", "title": "Scanning", "busy": true,
+        "cards": [{"label": "host", "percent": 40}]}}"#;
+    let scene = app::parse_line(line).expect("a scene");
+    assert_eq!(scene.percent, -1, "absent, not the card's 40");
+}

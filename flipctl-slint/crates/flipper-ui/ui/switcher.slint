@@ -222,7 +222,7 @@ component Card inherits Rectangle {
             x: root.card.x;
             y: root.card.y;
             width: root.card.w;
-            height: FlipperTheme.card_bar_h_focused;
+            height: FlipperTheme.sw_bar_h_focused;
             clip: true;
             background: transparent;
 
@@ -246,7 +246,7 @@ component Card inherits Rectangle {
                 x: root.card.x;
                 y: root.card.y;
                 width: root.card.w;
-                height: FlipperTheme.card_bar_h_focused;
+                height: FlipperTheme.sw_bar_h_focused;
                 background: FlipperTheme.black.mix(FlipperTheme.white, 1 - root.card.pos_clamped);
 
                 Text {
@@ -263,7 +263,7 @@ component Card inherits Rectangle {
             CardStroke {
                 card: root.card;
                 open_edge: 0;
-                stroke: FlipperTheme.black.mix(FlipperTheme.card_tab, 1 - root.card.pos_clamped);
+                stroke: FlipperTheme.black.mix(FlipperTheme.sw_tab, 1 - root.card.pos_clamped);
             }
         }
 
@@ -275,8 +275,8 @@ component Card inherits Rectangle {
             background: transparent;
             opacity: root.card.pos_clamped;
             property <color> tone: root.card.tab_deep
-                ? FlipperTheme.card_tab_deep
-                : FlipperTheme.card_tab;
+                ? FlipperTheme.sw_tab_deep
+                : FlipperTheme.sw_tab;
 
             Text {
                 x: root.card.x + FlipperTheme.icon_pad + root.card.label_dx;
@@ -298,9 +298,9 @@ component Card inherits Rectangle {
             x: root.card.x;
             y: root.card.y;
             width: root.card.w;
-            height: FlipperTheme.card_bar_h;
+            height: FlipperTheme.sw_bar_h;
             clip: true;
-            background: FlipperTheme.card_bar_deep;
+            background: FlipperTheme.sw_bar_deep;
 
             Text {
                 x: FlipperTheme.icon_pad;

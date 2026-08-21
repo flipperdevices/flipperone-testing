@@ -16,13 +16,14 @@ import { BootBody, BootRow, BootPopupRow } from "boot.slint";
 import { TextInputBody, KbCell } from "keyboard.slint";
 import { SwitcherBody, SwitchCard } from "switcher.slint";
 import { CanvasBody, CanvasText } from "canvas.slint";
+import { CardsBody, CardItem } from "card.slint";
 
-export { ListItem, IdleLink, DetailRow, EthLink, EthDetailRow, BootRow, BootPopupRow, KbCell, SwitchCard, CanvasText }
+export { ListItem, IdleLink, DetailRow, EthLink, EthDetailRow, BootRow, BootPopupRow, KbCell, SwitchCard, CanvasText, CardItem }
 
 // Idle is the root. The menu opens over it, the app list over that, and an app's
 // own screens over that. `app_form` and `app_log` are the two scene types the app
 // protocol admits so far.
-export enum Screen { idle, menu, detail, ethernet, boot, apps, app_form, app_log, app_detail, app_canvas, text_input, switcher }
+export enum Screen { idle, menu, detail, ethernet, boot, apps, app_form, app_log, app_detail, app_canvas, app_cards, text_input, switcher }
 
 export component Root inherits Window {
     width: 256px;
@@ -144,8 +145,14 @@ export component Root inherits Window {
     in property <int> kb_discard: -1;
 
     // An app's own canvas: its bitmap, and the text it asked us to draw on it.
+    in property <[CardItem]> app_cards;
+    in property <string> app_note;
+    in property <bool> app_busy;
+    in property <int> app_percent: -1;
+    in property <int> app_slide;
     in property <image> app_bitmap;
     in property <[CanvasText]> app_texts;
+    in property <bool> app_status_bar;
 
     // The app switcher, over whatever was showing when it opened.
     in property <[SwitchCard]> switch_cards;
@@ -290,9 +297,42 @@ export component Root inherits Window {
         discard: root.kb_discard;
     }
 
+    if root.screen == Screen.app_cards: CardsBody {
+        title: root.app_title;
+        note: root.app_note;
+        cards: root.app_cards;
+        selected: root.app_selected;
+        scroll: root.app_scroll;
+        total: root.app_total;
+        busy: root.app_busy;
+        percent: root.app_percent;
+        slide: root.app_slide;
+        battery: root.battery;
+        charging: root.charging;
+        wifi_connected: root.wifi_connected;
+        wifi_quality: root.wifi_quality;
+        ethernet: root.ethernet;
+        recording: root.recording;
+        modem_available: root.modem_available;
+        access_tech: root.access_tech;
+        modem_quality: root.modem_quality;
+        buttons: root.app_buttons;
+        pressed_slot: root.app_pressed_slot;
+    }
+
     if root.screen == Screen.app_canvas: CanvasBody {
         bitmap: root.app_bitmap;
         texts: root.app_texts;
+        status_bar: root.app_status_bar;
+        battery: root.battery;
+        charging: root.charging;
+        wifi_connected: root.wifi_connected;
+        wifi_quality: root.wifi_quality;
+        ethernet: root.ethernet;
+        recording: root.recording;
+        modem_available: root.modem_available;
+        access_tech: root.access_tech;
+        modem_quality: root.modem_quality;
         buttons: root.app_buttons;
         pressed_slot: root.app_pressed_slot;
     }

@@ -215,6 +215,18 @@ pub struct Scene {
     pub canvas: Vec<u8>,
     /// `canvas`: text for flipctl to draw over the bitmap.
     pub texts: Vec<CanvasText>,
+    /// `canvas`: draw the system status bar over the app's picture. An app cannot
+    /// draw it itself, having no idea what the battery or the radios are doing, so
+    /// a canvas that wants the panel's usual top row asks for it.
+    pub status_bar: bool,
+    /// `cards`: a short right-aligned line beside the title. A count, a state, a
+    /// total: whatever the title's sentence ends with.
+    pub note: String,
+    /// `cards`: work is still going on, so the page draws the track that says so.
+    pub busy: bool,
+    /// `cards`: how far along that work is, or -1 for an app that cannot say. The
+    /// marker runs either way; the fill only appears when there is a number.
+    pub percent: i32,
 }
 
 /// One row of a scene, whatever kind of scene it belongs to.
@@ -236,8 +248,19 @@ pub struct Row {
     pub kind: i32,
     /// `detail`: a gauge's fill, 0..=100.
     pub percent: i32,
-    /// `detail`: draw in the dim tone rather than in ink.
+    /// `detail` and `cards`: draw in the dim tone rather than in ink.
     pub dim: bool,
+    /// `cards`: the second line, under the name. Empty for a one-line card.
+    pub info: String,
+    /// `cards`: the card's icon, as a path relative to the app's own directory.
+    /// A path rather than pixels because it is the same 14x14 every frame, and a
+    /// bitmap per card per frame would be a kilobyte of nothing changing.
+    pub icon: String,
+    /// `cards`: opening this card does something, so the selected card shows the
+    /// drill-in bar. A card that is only a readout says nothing by leaving it off.
+    pub actionable: bool,
+    /// `cards`: put the right-hand column on the grey pill.
+    pub pill: bool,
 }
 
 impl Row {
@@ -256,6 +279,11 @@ pub enum SceneKind {
     /// screen reporting progress needs. Same body the Settings and Network
     /// screens draw with.
     Detail,
+    /// Framed rows with an icon, a name, a line under it and a right-hand column,
+    /// stacked down the page. The Ethernet page's card, generalised: what a list of
+    /// things each worth two lines wants, where the menu's one-line row is not
+    /// enough and a detail screen is too much.
+    Cards,
     /// The app owns every pixel: it sends a panel-sized greyscale bitmap and
     /// flipctl blits it. For anything that is not a list, and the only scene where
     /// the app decides what the screen looks like rather than what it contains.
@@ -341,6 +369,9 @@ pub struct RunningApp {
     stdin: ChildStdin,
     scenes: Receiver<Scene>,
     latest: Scene,
+    /// Where the app lives, so the paths in its scenes can be resolved. A card's
+    /// icon is named relative to this, as the app's own entry icon is.
+    dir: PathBuf,
 }
 
 impl RunningApp {
@@ -385,7 +416,13 @@ impl RunningApp {
             stdin,
             scenes,
             latest: Scene::default(),
+            dir: entry.dir.clone(),
         })
+    }
+
+    /// Where the app lives. Paths in its scenes are relative to this.
+    pub fn dir(&self) -> &std::path::Path {
+        &self.dir
     }
 
     /// The newest scene, or `None` if nothing arrived.
@@ -442,33 +479,46 @@ impl Drop for RunningApp {
 /// then a malformed line from an app must not be able to take the UI down.
 pub fn parse_line(line: &str) -> Option<Scene> {
     let body = line.split_once("\"screen\"")?.1;
-    let kind = match string_field(body, "type")?.as_str() {
+    // The scene's own fields, read from the body with the rows' objects taken out.
+    // Names repeat between the two levels by design (`percent` is how far a page
+    // has got and how full a gauge is), and a first-match scan over the whole line
+    // otherwise answers a question about the page with a number from a card.
+    let scalars = outside_objects(body);
+    let scalars = scalars.as_str();
+    let kind = match string_field(scalars, "type")?.as_str() {
         "log" => SceneKind::Log,
         "detail" => SceneKind::Detail,
+        "cards" => SceneKind::Cards,
         "canvas" => SceneKind::Canvas,
         _ => SceneKind::Form,
     };
     let mut scene = Scene {
         kind,
-        title: string_field(body, "title").unwrap_or_default(),
-        selected: int_field(body, "selected").unwrap_or(0),
-        total: int_field(body, "total").unwrap_or(0),
-        offset: int_field(body, "offset").unwrap_or(0),
-        buttons: string_array(body, "buttons"),
+        title: string_field(scalars, "title").unwrap_or_default(),
+        selected: int_field(scalars, "selected").unwrap_or(0),
+        total: int_field(scalars, "total").unwrap_or(0),
+        offset: int_field(scalars, "offset").unwrap_or(0),
+        buttons: string_array(scalars, "buttons"),
         rows: Vec::new(),
         canvas: Vec::new(),
         texts: Vec::new(),
+        status_bar: false,
+        note: string_field(scalars, "note").unwrap_or_default(),
+        busy: bool_field(scalars, "busy"),
+        percent: int_field(scalars, "percent").unwrap_or(-1),
     };
     match kind {
         SceneKind::Log => {
-            scene.rows = string_array(body, "lines")
+            scene.rows = string_array(scalars, "lines")
                 .into_iter()
                 .map(|l| Row { label: l, ..Row::default() })
                 .collect();
         }
         SceneKind::Form | SceneKind::Detail => scene.rows = object_array(body, "rows"),
+        SceneKind::Cards => scene.rows = object_array(body, "cards"),
         SceneKind::Canvas => {
-            scene.canvas = string_field(body, "data").map(|d| unbase64(&d)).unwrap_or_default();
+            scene.status_bar = bool_field(scalars, "status");
+            scene.canvas = string_field(scalars, "data").map(|d| unbase64(&d)).unwrap_or_default();
             scene.texts = object_chunks(body, "text")
                 .iter()
                 .map(|chunk| CanvasText {
@@ -611,6 +661,35 @@ fn object_chunks(body: &str, key: &str) -> Vec<String> {
         .collect()
 }
 
+/// The body with every nested object removed.
+///
+/// The scene is one object, so its own fields are whatever sits at depth one; the
+/// rows, cards and text runs inside it are all one level deeper. Cutting them out
+/// leaves the page's own fields and nothing that could be mistaken for them.
+fn outside_objects(body: &str) -> String {
+    let mut out = String::with_capacity(body.len());
+    let mut depth = 0;
+    for ch in body.chars() {
+        match ch {
+            '{' => {
+                depth += 1;
+                if depth == 1 {
+                    out.push(ch);
+                }
+            }
+            '}' => {
+                if depth == 1 {
+                    out.push(ch);
+                }
+                depth -= 1;
+            }
+            _ if depth <= 1 => out.push(ch),
+            _ => {}
+        }
+    }
+    out
+}
+
 /// The row objects inside `"rows": [ ... ]`.
 ///
 /// Every field but the label is optional: a form row says `value` and possibly
@@ -648,6 +727,10 @@ fn object_array(body: &str, key: &str) -> Vec<Row> {
             },
             percent: int_field(obj, "percent").unwrap_or(0).clamp(0, 100),
             dim: bool_field(obj, "dim"),
+            info: string_field(obj, "info").unwrap_or_default(),
+            icon: string_field(obj, "icon").unwrap_or_default(),
+            actionable: bool_field(obj, "actionable"),
+            pill: bool_field(obj, "pill"),
         })
         .collect()
 }

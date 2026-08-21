@@ -28,7 +28,7 @@ status_dim    = "#999999"   # MenuLine right-aligned status text, DEFAULT state
 # The unselected interface card's outline: a neutral grey whatever the link state,
 # so a disconnected card reads as grey content in a normal frame rather than as a
 # disabled control.
-eth_stroke   = "#999999"   # EthernetTab unselected ResponsiveFrame stroke
+card_stroke   = "#999999"   # EthernetTab unselected ResponsiveFrame stroke
 # Backdrop behind a card's top-right cluster, and the selector's drill-in bar.
 pill         = "#cccccc"   # EthernetTab pill
 chevron_bar  = "#666666"   # ComponentSelectorFrame chevronColor
@@ -41,9 +41,9 @@ keycap_dim    = "#888888"   # keyboard language-switcher label
 # The app switcher's cards. A tab's label and its stroke are the same tone, and
 # the deepest tab is lighter so the stack reads as receding; a card deeper than a
 # tab keeps the plain bar.
-card_tab      = "#666666"   # app_switcher.js TAB_CONFIG -1 and +1
-card_tab_deep = "#a7a7a7"   # TAB_CONFIG -2
-card_bar_deep = "#6e6e6e"   # TITLE_BAR_BG_DEFAULT
+sw_tab      = "#666666"   # app_switcher.js TAB_CONFIG -1 and +1
+sw_tab_deep = "#a7a7a7"   # TAB_CONFIG -2
+sw_bar_deep = "#6e6e6e"   # TITLE_BAR_BG_DEFAULT
 dialog_body   = "#666666"   # keyboard_test.js discard-modal body line
 field_label   = "#6d6d6d"   # desktop.js field labels: Temperature, Hostname:, IPv4:
 
@@ -106,13 +106,42 @@ eth_text_gap        = 4     # EthernetTab TEXT_GAP
 eth_status_pad_r    = 10    # EthernetTab STATUS_PAD_R
 eth_name_draw_y     = 3     # EthernetTab NAME_DRAW_Y, Born2bSporty sits higher
 eth_info_draw_y     = 4     # EthernetTab INFO_DRAW_Y
-eth_pill_h          = 17    # grey backdrop behind the top-right cluster
-eth_pill_r          = 4     # its bottom-left radius
-eth_chevron_w       = 7     # ComponentSelectorFrame chevronWidth
+card_pill_h          = 17    # grey backdrop behind the top-right cluster
+card_pill_r          = 4     # its bottom-left radius
+card_chevron_w       = 7     # ComponentSelectorFrame chevronWidth
 eth_bottom_pad_b    = 5     # EthernetTab BOTTOM_INFO_PAD_B
 eth_bottom_pad_l    = 5     # EthernetTab BOTTOM_INFO_PAD_L
 eth_bottom_gap      = 2     # EthernetTab BOTTOM_INFO_GAP, arrow to its value
 eth_bottom_col_gap  = 5     # EthernetTab BOTTOM_INFO_COL_GAP, between columns
+
+# The generic stacked card: an icon, a bold name, an optional second line under it
+# and a right-hand column. The Ethernet card is the same frame with a denser set of
+# things in it; these are the metrics for the plain one, measured off the nmap host
+# list mockup at device resolution rather than eyeballed from it.
+#
+# 26 on a 27 pitch, so three cards sit between the rule and the soft strip. The
+# mockup shows a fourth cut off by the buttons; whole rows are what every other
+# body in this system draws.
+card_x              = 4
+card_w              = 246   # 4..249, clear of the scrollbar at 252
+card_h              = 26
+card_gap            = 1
+card_icon_x         = 9
+card_icon_y         = 6
+card_text_x         = 30
+card_name_y         = 0     # with a second line under it
+card_name_y_alone   = 5     # centred when the card holds one line
+card_info_y         = 13
+card_right_y        = 0     # the right column sits on the name's line
+card_pad_r          = 6
+
+# The cards page's own rows: the title, the rule under it, and the bar a page shows
+# while its app is still working. The bar is the gauge every other screen draws, so
+# its height comes from gauge_h and not from anything here; these are only where it
+# sits and how wide the marker running along it is.
+cards_top_pad       = 14    # rule to the bar, or to the first card without one
+cards_bar_gap       = 2     # bar to first card
+cards_marker_w      = 5
 
 # The verbose interface dump, opened with OK on a connected card. A full-width
 # frame over the page with its own scroll, in pixel space rather than rows because
@@ -175,8 +204,8 @@ modal_line_h        = 11
 # The app switcher's title bars. The focused card's is taller for emphasis; every
 # other card keeps the default. The card frames themselves live in switcher.rs,
 # which is where a table of rectangles belongs.
-card_bar_h          = 14    # app_switcher.js TITLE_BAR_H_DEFAULT
-card_bar_h_focused  = 16    # TITLE_BAR_H_BY_POSITION[0]
+sw_bar_h          = 14    # app_switcher.js TITLE_BAR_H_DEFAULT
+sw_bar_h_focused  = 16    # TITLE_BAR_H_BY_POSITION[0]
 
 boot_header_h       = 18    # boot_menu.js HEADER_H
 boot_container_y    = 20    # boot_menu.js CONTAINER_Y, the first row's top
