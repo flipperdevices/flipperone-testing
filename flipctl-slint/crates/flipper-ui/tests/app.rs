@@ -366,3 +366,46 @@ fn the_progress_app_is_listed() {
     assert_eq!(progress.kind, app::Kind::Python);
     assert!(progress.apt.is_empty() && progress.pip.is_empty(), "stdlib only");
 }
+
+/// A canvas scene: the app owns the pixels and asks for text on top.
+///
+/// Base64 in, one byte per pixel out, and the text ops keep their own alignment
+/// and font, since an app has no way to measure a string.
+#[test]
+fn parses_a_canvas_scene() {
+    // Four pixels: black, white, mid, black. "AP+AAA==" is 00 FF 80 00.
+    let line = r#"{"screen": {"type": "canvas", "data": "AP+AAA==", "text": [
+        {"x": 128, "y": 46, "text": "ASK LATER", "align": "center", "font": "title"},
+        {"x": 4, "y": 2, "text": "3 asked", "white": true, "font": "row"}
+    ], "buttons": ["Back", "", "", "", "Shake"]}}"#;
+
+    let scene = app::parse_line(line).expect("canvas parses");
+    assert_eq!(scene.kind, SceneKind::Canvas);
+    assert_eq!(scene.canvas, [0x00, 0xff, 0x80, 0x00]);
+    assert!(scene.rows.is_empty(), "a canvas has no rows");
+    assert_eq!(scene.buttons, ["Back", "", "", "", "Shake"]);
+
+    assert_eq!(scene.texts.len(), 2);
+    assert_eq!(scene.texts[0].text, "ASK LATER");
+    assert_eq!(scene.texts[0].x, 128);
+    assert_eq!(scene.texts[0].align, 0, "centred");
+    assert_eq!(scene.texts[0].font, 0, "the title font");
+    assert!(!scene.texts[0].white);
+
+    assert_eq!(scene.texts[1].align, -1, "left of x by default");
+    assert_eq!(scene.texts[1].font, 1, "a list row");
+    assert!(scene.texts[1].white);
+}
+
+/// The 8 Ball app is discovered, and paints with nothing installed.
+#[test]
+fn the_8_ball_app_is_listed() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../apps")
+        .canonicalize()
+        .expect("apps dir");
+    let apps = app::discover(&root);
+    let ball = apps.iter().find(|a| a.name == "8 Ball").expect("the 8 ball app");
+    assert_eq!(ball.kind, app::Kind::Python);
+    assert!(ball.apt.is_empty() && ball.pip.is_empty(), "stdlib only");
+}

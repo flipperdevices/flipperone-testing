@@ -1,0 +1,64 @@
+// An app's own canvas.
+//
+// The one screen where flipctl draws nothing of its own: the app sends a
+// panel-sized bitmap and it goes up as it is. The only thing added on top is text,
+// because an app has no font and so cannot measure a string, let alone centre one.
+//
+// No status bar either. An app that has taken the whole panel has taken the whole
+// panel; the soft buttons are the exception, since the keys underneath them are
+// still the system's.
+import { FlipperTheme } from "@theme";
+import { SoftBar } from "frame.slint";
+
+export struct CanvasText {
+    x: length,
+    y: length,
+    text: string,
+    // 0 the title font, 1 a list row, 2 a selected row.
+    font: int,
+    // Measured on this side, so the app can ask for centred text without knowing
+    // how wide its own string is: -1 right of x, 0 centred on x, 1 left of x.
+    align: int,
+    white: bool,
+}
+
+export component CanvasBody inherits Rectangle {
+    in property <image> bitmap;
+    in property <[CanvasText]> texts;
+    in property <[string]> buttons;
+    in property <int> pressed_slot: -1;
+
+    width: 100%;
+    height: 100%;
+    background: FlipperTheme.white;
+
+    Image {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        source: root.bitmap;
+        image-fit: fill;
+        image-rendering: pixelated;
+    }
+
+    for label in root.texts: Text {
+        // The prototype's textWidth is one less than Slint's measured width, as
+        // everywhere else.
+        x: label.align == 0
+            ? label.x - Math.round((self.width - 1px) / 2 / 1px) * 1px
+            : (label.align == 1 ? label.x - (self.width - 1px) : label.x);
+        y: label.y;
+        text: label.text;
+        font-size: 16px;
+        font-family: label.font == 0
+            ? "HaxrCorp 4090"
+            : (label.font == 2 ? "Born2bSportyV2" : "Busy9px");
+        color: label.white ? FlipperTheme.white : FlipperTheme.black;
+    }
+
+    SoftBar {
+        buttons: root.buttons;
+        pressed_slot: root.pressed_slot;
+    }
+}

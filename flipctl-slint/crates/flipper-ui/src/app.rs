@@ -210,6 +210,11 @@ pub struct Scene {
     pub offset: i32,
     /// One per physical soft key, in silkscreen order.
     pub buttons: Vec<String>,
+    /// `canvas`: one byte per pixel, panel-sized, 0 black and 255 white. Empty for
+    /// every other kind.
+    pub canvas: Vec<u8>,
+    /// `canvas`: text for flipctl to draw over the bitmap.
+    pub texts: Vec<CanvasText>,
 }
 
 /// One row of a scene, whatever kind of scene it belongs to.
@@ -251,6 +256,29 @@ pub enum SceneKind {
     /// screen reporting progress needs. Same body the Settings and Network
     /// screens draw with.
     Detail,
+    /// The app owns every pixel: it sends a panel-sized greyscale bitmap and
+    /// flipctl blits it. For anything that is not a list, and the only scene where
+    /// the app decides what the screen looks like rather than what it contains.
+    Canvas,
+}
+
+/// A line of text drawn onto a canvas by flipctl rather than by the app.
+///
+/// The app has no font: it cannot measure a string, so it cannot centre one, and
+/// baking a font into every app would make each one carry its own idea of what the
+/// system looks like. So the app says what and where, in its own coordinates, and
+/// the three fonts stay on this side.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct CanvasText {
+    pub x: i32,
+    pub y: i32,
+    pub text: String,
+    /// 0 the title font, 1 a list row, 2 a selected row.
+    pub font: i32,
+    /// -1 right of x, 0 centred on x, 1 left of x.
+    pub align: i32,
+    /// White ink, for text on something the app painted dark.
+    pub white: bool,
 }
 
 /// Apps in `dir`, sorted by name so the menu order is stable.
@@ -417,6 +445,7 @@ pub fn parse_line(line: &str) -> Option<Scene> {
     let kind = match string_field(body, "type")?.as_str() {
         "log" => SceneKind::Log,
         "detail" => SceneKind::Detail,
+        "canvas" => SceneKind::Canvas,
         _ => SceneKind::Form,
     };
     let mut scene = Scene {
@@ -427,14 +456,40 @@ pub fn parse_line(line: &str) -> Option<Scene> {
         offset: int_field(body, "offset").unwrap_or(0),
         buttons: string_array(body, "buttons"),
         rows: Vec::new(),
+        canvas: Vec::new(),
+        texts: Vec::new(),
     };
-    scene.rows = match kind {
-        SceneKind::Log => string_array(body, "lines")
-            .into_iter()
-            .map(|l| Row { label: l, ..Row::default() })
-            .collect(),
-        SceneKind::Form | SceneKind::Detail => object_array(body, "rows"),
-    };
+    match kind {
+        SceneKind::Log => {
+            scene.rows = string_array(body, "lines")
+                .into_iter()
+                .map(|l| Row { label: l, ..Row::default() })
+                .collect();
+        }
+        SceneKind::Form | SceneKind::Detail => scene.rows = object_array(body, "rows"),
+        SceneKind::Canvas => {
+            scene.canvas = string_field(body, "data").map(|d| unbase64(&d)).unwrap_or_default();
+            scene.texts = object_chunks(body, "text")
+                .iter()
+                .map(|chunk| CanvasText {
+                    x: int_field(chunk, "x").unwrap_or(0),
+                    y: int_field(chunk, "y").unwrap_or(0),
+                    text: string_field(chunk, "text").unwrap_or_default(),
+                    font: match string_field(chunk, "font").unwrap_or_default().as_str() {
+                        "row" => 1,
+                        "row_active" => 2,
+                        _ => 0,
+                    },
+                    align: match string_field(chunk, "align").unwrap_or_default().as_str() {
+                        "center" | "centre" => 0,
+                        "right" => 1,
+                        _ => -1,
+                    },
+                    white: bool_field(chunk, "white"),
+                })
+                .collect();
+        }
+    }
     Some(scene)
 }
 
@@ -504,6 +559,56 @@ fn string_array(body: &str, key: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// Decode base64, ignoring anything that is not part of the alphabet.
+///
+/// Written out rather than pulled in: it is twenty lines, and a canvas scene is
+/// the only thing that needs it. Padding is implied by the length, so `=` is just
+/// another character to skip.
+fn unbase64(src: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(src.len() / 4 * 3);
+    let mut acc = 0u32;
+    let mut bits = 0u32;
+    for b in src.bytes() {
+        let value = match b {
+            b'A'..=b'Z' => b - b'A',
+            b'a'..=b'z' => b - b'a' + 26,
+            b'0'..=b'9' => b - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => continue,
+        };
+        acc = (acc << 6) | u32::from(value);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((acc >> bits) & 0xff) as u8);
+        }
+    }
+    out
+}
+
+/// The objects inside `"key": [ {...}, {...} ]`, as the text between the braces.
+///
+/// A string literal in this protocol never contains a brace, so splitting on one
+/// is enough structure for a list of flat objects.
+fn object_chunks(body: &str, key: &str) -> Vec<String> {
+    let Some(at) = body.find(&format!("\"{key}\"")) else {
+        return Vec::new();
+    };
+    let rest = &body[at..];
+    let Some(open) = rest.find('[') else {
+        return Vec::new();
+    };
+    let Some(close) = rest[open..].find(']') else {
+        return Vec::new();
+    };
+    rest[open + 1..open + close]
+        .split('}')
+        .filter(|obj| obj.contains('{'))
+        .map(str::to_string)
+        .collect()
 }
 
 /// The row objects inside `"rows": [ ... ]`.

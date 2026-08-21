@@ -15,13 +15,14 @@ import { EthernetBody, EthLink, EthDetailRow } from "ethernet.slint";
 import { BootBody, BootRow, BootPopupRow } from "boot.slint";
 import { TextInputBody, KbCell } from "keyboard.slint";
 import { SwitcherBody, SwitchCard } from "switcher.slint";
+import { CanvasBody, CanvasText } from "canvas.slint";
 
-export { ListItem, IdleLink, DetailRow, EthLink, EthDetailRow, BootRow, BootPopupRow, KbCell, SwitchCard }
+export { ListItem, IdleLink, DetailRow, EthLink, EthDetailRow, BootRow, BootPopupRow, KbCell, SwitchCard, CanvasText }
 
 // Idle is the root. The menu opens over it, the app list over that, and an app's
 // own screens over that. `app_form` and `app_log` are the two scene types the app
 // protocol admits so far.
-export enum Screen { idle, menu, detail, ethernet, boot, apps, app_form, app_log, app_detail, text_input, switcher }
+export enum Screen { idle, menu, detail, ethernet, boot, apps, app_form, app_log, app_detail, app_canvas, text_input, switcher }
 
 export component Root inherits Window {
     width: 256px;
@@ -50,7 +51,7 @@ export component Root inherits Window {
     in property <string> hostname;
     in property <string> profile;
     in property <[IdleLink]> links;
-    in property <[string]> idle_hints;
+    in property <[string]> idle_buttons;
     in property <int> idle_pressed_slot: -1;
 
     // App list and app scenes.
@@ -64,7 +65,7 @@ export component Root inherits Window {
     in property <[string]> app_lines;
     in property <int> app_log_total;
     in property <int> app_log_offset;
-    in property <[string]> app_hints;
+    in property <[string]> app_buttons;
     in property <int> app_pressed_slot: -1;
 
     // Menu.
@@ -75,7 +76,7 @@ export component Root inherits Window {
     in property <int> tick;
     in property <bool> pressed;
     in property <bool> real_frame: true;
-    in property <[string]> menu_hints;
+    in property <[string]> menu_buttons;
     in property <int> menu_pressed_slot: -1;
     // Set to open the menu as a submenu, e.g. "> Network". Empty for the main
     // menu, which anchors 3px higher and draws no trail.
@@ -86,7 +87,7 @@ export component Root inherits Window {
     // Detail screens behind Settings and Network.
     in property <[DetailRow]> detail_rows;
     in property <int> detail_offset;
-    in property <[string]> detail_hints;
+    in property <[string]> detail_buttons;
     in property <int> detail_pressed_slot: -1;
 
     // The Ethernet page.
@@ -103,7 +104,7 @@ export component Root inherits Window {
     in property <int> boot_scroll;
     in property <int> boot_countdown: -1;
     in property <int> boot_remaining;
-    in property <[string]> boot_hints;
+    in property <[string]> boot_buttons;
     in property <int> boot_pressed_slot: -1;
     in property <bool> boot_loading;
     in property <int> boot_spin_frame;
@@ -138,9 +139,13 @@ export component Root inherits Window {
     in property <string> kb_tab_label;
     in property <int> kb_tab_focus;
     in property <int> kb_tab_pressed;
-    in property <[string]> kb_hints;
+    in property <[string]> kb_buttons;
     in property <int> kb_pressed_slot: -1;
     in property <int> kb_discard: -1;
+
+    // An app's own canvas: its bitmap, and the text it asked us to draw on it.
+    in property <image> app_bitmap;
+    in property <[CanvasText]> app_texts;
 
     // The app switcher, over whatever was showing when it opened.
     in property <[SwitchCard]> switch_cards;
@@ -169,7 +174,7 @@ export component Root inherits Window {
         hostname: root.hostname;
         profile: root.profile;
         links: root.links;
-        buttons: root.idle_hints;
+        buttons: root.idle_buttons;
         pressed_slot: root.idle_pressed_slot;
     }
 
@@ -195,7 +200,7 @@ export component Root inherits Window {
         tick: root.tick;
         pressed: root.pressed;
         real_frame: true;
-        buttons: root.app_hints;
+        buttons: root.app_buttons;
         pressed_slot: root.app_pressed_slot;
     }
 
@@ -212,7 +217,7 @@ export component Root inherits Window {
         lines: root.app_lines;
         total: root.app_log_total;
         offset: root.app_log_offset;
-        buttons: root.app_hints;
+        buttons: root.app_buttons;
         pressed_slot: root.app_pressed_slot;
     }
 
@@ -229,7 +234,7 @@ export component Root inherits Window {
         rows: root.detail_rows;
         breadcrumb: root.breadcrumb;
         offset: root.detail_offset;
-        buttons: root.detail_hints;
+        buttons: root.detail_buttons;
         fit_gauges: root.screen == Screen.app_detail;
         pressed_slot: root.screen == Screen.app_detail
             ? root.app_pressed_slot
@@ -280,9 +285,16 @@ export component Root inherits Window {
         tab_label: root.kb_tab_label;
         tab_focus: root.kb_tab_focus;
         tab_pressed: root.kb_tab_pressed;
-        buttons: root.kb_hints;
+        buttons: root.kb_buttons;
         pressed_slot: root.kb_pressed_slot;
         discard: root.kb_discard;
+    }
+
+    if root.screen == Screen.app_canvas: CanvasBody {
+        bitmap: root.app_bitmap;
+        texts: root.app_texts;
+        buttons: root.app_buttons;
+        pressed_slot: root.app_pressed_slot;
     }
 
     if root.screen == Screen.switcher: SwitcherBody {
@@ -299,7 +311,7 @@ export component Root inherits Window {
         pressed: root.pressed;
         countdown: root.boot_countdown;
         remaining: root.boot_remaining;
-        buttons: root.boot_hints;
+        buttons: root.boot_buttons;
         pressed_slot: root.boot_pressed_slot;
         loading: root.boot_loading;
         spin_frame: root.boot_spin_frame;
@@ -334,7 +346,7 @@ export component Root inherits Window {
         tick: root.tick;
         pressed: root.pressed;
         real_frame: root.real_frame;
-        buttons: root.menu_hints;
+        buttons: root.menu_buttons;
         pressed_slot: root.menu_pressed_slot;
         breadcrumb: root.breadcrumb;
         arrow_pressed: root.arrow_pressed;

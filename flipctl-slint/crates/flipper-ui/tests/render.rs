@@ -59,7 +59,7 @@ fn list_screen(screen: &Root, pressed: bool) {
     // live ethernet link so the left cluster is exercised.
     screen.set_battery(87);
     screen.set_ethernet(1);
-    screen.set_menu_hints(slint::ModelRc::new(slint::VecModel::from(
+    screen.set_menu_buttons(slint::ModelRc::new(slint::VecModel::from(
         // The menu shows no soft buttons, as the prototype's MenuScene does not.
         ["", "", "", "", ""]
             .iter()
@@ -296,7 +296,7 @@ fn the_soft_button_strip_matches_the_design_export() {
     screen.set_screen(Screen::Menu);
     list_screen(&screen, false);
     // The export labels every slot with the 8-character budget it was drawn for.
-    screen.set_menu_hints(slint::ModelRc::new(slint::VecModel::from(
+    screen.set_menu_buttons(slint::ModelRc::new(slint::VecModel::from(
         std::iter::repeat(slint::SharedString::from("8chartxt"))
             .take(5)
             .collect::<Vec<_>>(),
@@ -429,7 +429,7 @@ fn a_pressed_row_inverts_its_label_and_icon() {
 fn a_pressed_soft_button_inverts() {
     let window = FlipperSlintPlatform::install();
     let screen = Root::new().expect("create Root");
-    screen.set_idle_hints(slint::ModelRc::new(slint::VecModel::from(
+    screen.set_idle_buttons(slint::ModelRc::new(slint::VecModel::from(
         ["", "Menu", "", "", "Desktop"]
             .iter()
             .map(|s| slint::SharedString::from(*s))

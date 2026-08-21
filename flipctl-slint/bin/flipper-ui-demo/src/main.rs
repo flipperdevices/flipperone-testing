@@ -103,8 +103,8 @@ mod demo {
         let screen = Root::new().expect("create Root");
         apply_menu(&screen, &MAIN, &flipper_ui::net::Net::default());
         screen.set_real_frame(true);
-        screen.set_idle_hints(labels(&IDLE_LABELS));
-        screen.set_menu_hints(labels(&SOFT_LABELS));
+        screen.set_idle_buttons(labels(&IDLE_LABELS));
+        screen.set_menu_buttons(labels(&SOFT_LABELS));
         screen
     }
 
@@ -1032,7 +1032,6 @@ fn launch_card(
     focused: &mut Option<usize>,
     recents: &mut flipper_ui::switcher::Recents,
     stack: &mut Vec<(&'static demo::Menu, i32, i32)>,
-    screen_card: &mut Option<&'static str>,
     name: &str,
     kind: flipper_ui::switcher::Kind,
     net: &flipper_ui::net::Net,
@@ -1062,7 +1061,6 @@ fn launch_card(
     };
     recents.open(name, kind);
     *focused = None;
-    *screen_card = Some(menu.title);
     // Back out to the main menu first, so the trail reads the same as it would
     // have if the user had walked here.
     stack.truncate(1);
@@ -1104,6 +1102,27 @@ fn kill_app(
     }
     recents.close(name);
     *focused = None;
+}
+
+/// The tracked screen the user is looking at, if that is what they are looking at.
+///
+/// Derived from the navigation rather than stored: a single slot could hold one
+/// name, so opening Network forgot that Settings was open, and both belong in the
+/// stack at once the way two apps do. Settings and Network are cards the way the
+/// prototype's marked-as-app submenus are.
+#[cfg(feature = "slint")]
+fn open_screen(
+    screen: flipper_ui::ui::Screen,
+    stack: &[(&'static demo::Menu, i32, i32)],
+) -> Option<&'static str> {
+    if screen != flipper_ui::ui::Screen::Menu {
+        return None;
+    }
+    stack
+        .last()
+        .map(|(menu, _, _)| *menu)
+        .filter(|menu| demo::is_card_menu(menu))
+        .map(|menu| menu.title)
 }
 
 /// Which card the panel is showing, if any.
@@ -1153,6 +1172,35 @@ fn stash_front(
 #[cfg(feature = "slint")]
 fn snapshot_of(frame: &[flipper_ui::pixel::Gray8]) -> flipper_ui::switcher::Snapshot {
     std::sync::Arc::new(frame.iter().map(|p| p.0).collect())
+}
+
+/// An app's canvas as an image, or None when it sent the wrong number of bytes.
+///
+/// One byte per pixel in, three out: the panel is greyscale but Slint's software
+/// renderer takes RGB, and expanding here is what keeps the app's side of the
+/// protocol one byte per pixel.
+#[cfg(feature = "slint")]
+fn canvas_image(grey: &[u8]) -> Option<slint::Image> {
+    use flipper_ui::theme::{PANEL_H, PANEL_W};
+    let expected = usize::from(PANEL_W) * usize::from(PANEL_H);
+    if grey.len() != expected {
+        // Said once, not per frame: an app that gets this wrong gets it wrong
+        // every frame.
+        static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            eprintln!(
+                "app            canvas is {} bytes, expected {expected}",
+                grey.len()
+            );
+        }
+        return None;
+    }
+    let mut buffer =
+        slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(u32::from(PANEL_W), u32::from(PANEL_H));
+    for (px, v) in buffer.make_mut_slice().iter_mut().zip(grey.iter()) {
+        *px = slint::Rgb8Pixel { r: *v, g: *v, b: *v };
+    }
+    Some(slint::Image::from_rgb8(buffer))
 }
 
 /// A placed card, ready for Slint, with its thumbnail as an image.
@@ -1294,7 +1342,7 @@ fn apply_text_input(
     screen.set_kb_tab_label(input.layout.tab_label().into());
     screen.set_kb_tab_focus(input.tab_focus());
     screen.set_kb_tab_pressed(input.tab_pressed());
-    screen.set_kb_hints(demo::labels(&["Cancel", "", "", "", "Done"]));
+    screen.set_kb_buttons(demo::labels(&["Cancel", "", "", "", "Done"]));
     screen.set_kb_discard(input.discard.map_or(-1, |at| at as i32));
 }
 
@@ -1508,12 +1556,16 @@ fn apply_app_list(
         })
         .collect();
     screen.set_app_total(items.len() as i32);
-    screen.set_app_bar_total(if bar.0 > 0 { bar.0 } else { items.len() as i32 });
-    screen.set_app_bar_offset(bar.1);
+    // A caller that windows its own rows sends the real extent and where the window
+    // sits; one that sends everything and scrolls here has to hand the scroll over
+    // as the bar's offset, or the thumb sits at the top while the rows move.
+    let owns_window = bar.0 > 0;
+    screen.set_app_bar_total(if owns_window { bar.0 } else { items.len() as i32 });
+    screen.set_app_bar_offset(if owns_window { bar.1 } else { scroll });
     screen.set_app_scroll(scroll);
     screen.set_app_selected(selected);
     screen.set_app_items(slint::ModelRc::new(slint::VecModel::from(items)));
-    screen.set_app_hints(slint::ModelRc::new(slint::VecModel::from(
+    screen.set_app_buttons(slint::ModelRc::new(slint::VecModel::from(
         buttons
             .iter()
             .map(|h| slint::SharedString::from(h.as_str()))
@@ -1632,7 +1684,7 @@ fn png(
             let rows = open.rows(&applying);
             screen.set_detail_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
             screen.set_detail_offset(select.unwrap_or(0));
-            screen.set_detail_hints(demo::labels(&open.buttons(&applying)));
+            screen.set_detail_buttons(demo::labels(&open.buttons(&applying)));
             // Routing info and 5G Modem live under Network, the rest under
             // Settings, which is what the real breadcrumb derives from the stack.
             let parent = match want {
@@ -1800,11 +1852,7 @@ fn panel(
     // animation asks for the same four images thirty times a second, and building
     // them each time would allocate a megabyte a frame for nothing.
     let mut card_images: Vec<(usize, slint::Image)> = Vec::new();
-    // Which of our own screens is in the stack right now, by name. Settings and
-    // Network go in it the way the prototype's marked-as-app submenus do: from the
-    // switcher they are things the user was doing, and going back to one is a
-    // navigation rather than a process taking focus.
-    let mut screen_card: Option<&'static str> = None;
+
     // Whether the switcher's cards need handing over again. Slint compares a
     // scalar but not a model, so a fresh model every pass marks the whole window
     // dirty every pass: opening the switcher pinned the panel at its frame cap
@@ -2168,7 +2216,6 @@ fn panel(
                             &mut focused_app,
                             &mut recents,
                             &mut stack,
-                            &mut screen_card,
                             &name,
                             kind,
                             &net_now,
@@ -2182,9 +2229,6 @@ fn panel(
                             // Nothing to stop: a screen leaves the stack and that
                             // is the whole of it.
                             recents.close(&name);
-                            if screen_card == Some(name.as_str()) {
-                                screen_card = None;
-                            }
                         }
                     }
                     None => {}
@@ -2244,12 +2288,17 @@ fn panel(
                 // because the user looked at something else first.
                 let inside_app = matches!(
                     screen.get_screen(),
-                    Screen::AppForm | Screen::AppDetail | Screen::AppLog
+                    Screen::AppForm | Screen::AppDetail | Screen::AppLog | Screen::AppCanvas
                 );
                 // What the user is looking at is the top card when it is a focused
                 // app or one of our tracked screens, and either way that is what
                 // the panel is showing right now.
-                let front = front_card(pending_app!(), &apps_live, focused_app, screen_card);
+                let front = front_card(
+                        pending_app!(),
+                        &apps_live,
+                        focused_app,
+                        open_screen(screen.get_screen(), &stack),
+                    );
                 // Something of ours in front means the focus starts one below it,
                 // which is what makes Tab twice a switch to the previous app. An
                 // app waiting on a question counts: it is what the user is looking
@@ -2277,13 +2326,23 @@ fn panel(
             // While an app is running it owns the keys, except Back, which is
             // the way out of an app that has stopped responding.
             if let Some(app) = focused_app.and_then(|i| apps_live.get_mut(i)).map(|(_, a)| a) {
-                if matches!(screen.get_screen(), Screen::AppForm | Screen::AppDetail)
-                    && event.key == FlipperKey::Back
+                // Every screen an app can be showing, the log included: leaving
+                // it was forwarded to the app there, and an app that does not treat
+                // Back as "put me away" then looked stuck.
+                if matches!(
+                    screen.get_screen(),
+                    Screen::AppForm | Screen::AppDetail | Screen::AppLog | Screen::AppCanvas
+                ) && event.key == FlipperKey::Back
                 {
                     // Back leaves the app running and puts the user back in the
                     // list. Stopping it belongs to Kill in the switcher, which is
                     // the only thing that claims to end an app.
-                    let front = front_card(pending_app!(), &apps_live, focused_app, screen_card);
+                    let front = front_card(
+                        pending_app!(),
+                        &apps_live,
+                        focused_app,
+                        open_screen(screen.get_screen(), &stack),
+                    );
                     stash_front(&mut recents, front, &frame);
                     focused_app = None;
                     let rows: Vec<flipper_ui::app::Row> = apps
@@ -2717,9 +2776,6 @@ fn panel(
                 // systemctl stop, or --frames, ends it instead.
                 (true, FlipperKey::Back) | (true, FlipperKey::Escape) => {
                     if stack.len() > 1 {
-                        if let Some(name) = screen_card.take() {
-                            recents.close(name);
-                        }
                         stack.pop();
                         let (menu, sel, scr) = *stack.last().unwrap();
                         selected = sel;
@@ -2873,7 +2929,12 @@ fn panel(
                             .ok();
                         app_detail_offset = 0;
                         let front =
-                            front_card(pending_app!(), &apps_live, focused_app, screen_card);
+                            front_card(
+                        pending_app!(),
+                        &apps_live,
+                        focused_app,
+                        open_screen(screen.get_screen(), &stack),
+                    );
                         stash_front(&mut recents, front, &frame);
                         // In the stack from the moment it is started, not from the
                         // moment it succeeds: an app waiting to be built is
@@ -2891,11 +2952,12 @@ fn panel(
                     let row = &stack.last().unwrap().0.rows[selected as usize];
                     match &row.act {
                         demo::Act::Sub(next) => {
-                            // A submenu the switcher tracks. The snapshot is the
-                            // menu as it stands, taken before the screen changes.
+                            // A submenu the switcher tracks joins the stack, and
+                            // stays there: leaving it is not closing it, any more
+                            // than backing out of an app stops the app. Kill in the
+                            // switcher is what removes one.
                             if demo::is_card_menu(next) {
                                 recents.open(next.title, flipper_ui::switcher::Kind::Screen);
-                                screen_card = Some(next.title);
                             }
                             stack.last_mut().unwrap().1 = selected;
                             stack.last_mut().unwrap().2 = scroll;
@@ -3006,7 +3068,12 @@ fn panel(
         // something in front worth photographing.
         if switcher.is_none() && card_stash.elapsed() >= Duration::from_secs(1) {
             card_stash = Instant::now();
-            let front = front_card(pending_app!(), &apps_live, focused_app, screen_card);
+            let front = front_card(
+                        pending_app!(),
+                        &apps_live,
+                        focused_app,
+                        open_screen(screen.get_screen(), &stack),
+                    );
             stash_front(&mut recents, front, &frame);
         }
 
@@ -3023,7 +3090,6 @@ fn panel(
                         &mut focused_app,
                         &mut recents,
                         &mut stack,
-                        &mut screen_card,
                         &name,
                         kind,
                         &net_now,
@@ -3043,9 +3109,6 @@ fn panel(
                         kill_app(&mut apps_live, &mut focused_app, &mut recents, &name);
                     } else {
                         recents.close(&name);
-                        if screen_card == Some(name.as_str()) {
-                            screen_card = None;
-                        }
                     }
                 }
                 None => {}
@@ -3396,7 +3459,7 @@ fn panel(
                 screen.set_boot_scroll(boot_scroll);
                 screen.set_boot_countdown(percent);
                 screen.set_boot_remaining(remaining);
-                screen.set_boot_hints(demo::labels(&["", "Info", "", "Edit", ""]));
+                screen.set_boot_buttons(demo::labels(&["", "Info", "", "Edit", ""]));
             }
         }
 
@@ -3521,7 +3584,7 @@ fn panel(
             screen.set_app_lines(slint::ModelRc::new(slint::VecModel::from(window)));
             screen.set_app_log_total(total);
             screen.set_app_log_offset(deps_offset);
-            screen.set_app_hints(demo::labels(&if done {
+            screen.set_app_buttons(demo::labels(&if done {
                 ["Back", "", "", "", "Run"]
             } else {
                 ["Back", "", "", "", ""]
@@ -3558,7 +3621,7 @@ fn panel(
                 detail_offset = detail_offset.clamp(0, max);
                 screen.set_detail_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
                 screen.set_detail_offset(detail_offset);
-                screen.set_detail_hints(demo::labels(&open.buttons(&applying)));
+                screen.set_detail_buttons(demo::labels(&open.buttons(&applying)));
             }
             if let Some(rx) = apply_rx.as_ref() {
                 match rx.try_recv() {
@@ -3616,6 +3679,46 @@ fn panel(
                 let _ = app.poll();
             }
         }
+        // Reap whatever has ended, in front or not. An app that exits or crashes
+        // leaves nothing behind: not a card that leads to a dead process, and not
+        // its last screen sitting there while every press only flashes a button.
+        let mut gone: Vec<String> = Vec::new();
+        for (name, app) in apps_live.iter_mut() {
+            if app.finished() {
+                gone.push(name.clone());
+            }
+        }
+        for name in &gone {
+            eprintln!("app            {name} ended");
+            if let Some(at) = apps_live.iter().position(|(n, _)| n == name) {
+                apps_live.remove(at);
+                if focused_app == Some(at) {
+                    focused_app = None;
+                    let rows: Vec<flipper_ui::app::Row> = apps
+                        .iter()
+                        .map(|a| flipper_ui::app::Row::pair(&a.name, ""))
+                        .collect();
+                    apply_app_list(&screen, &rows, app_selected, &EMPTY_BUTTONS, (0, 0), app_scroll);
+                    screen.set_screen(Screen::Apps);
+                } else if focused_app.is_some_and(|f| f > at) {
+                    // The list shifted under the focus.
+                    focused_app = focused_app.map(|f| f - 1);
+                }
+            }
+            recents.close(name);
+            // A card on screen for something that has just ended is worse than one
+            // vanishing: the stack closes up around it.
+            if let Some(sw) = switcher.as_mut() {
+                if sw.drop_card(name) {
+                    switch_dirty = true;
+                    if sw.is_empty() {
+                        switcher = None;
+                        screen.set_screen(Screen::Menu);
+                    }
+                }
+            }
+        }
+
         if let Some(app) = focused_app.and_then(|i| apps_live.get_mut(i)).map(|(_, a)| a) {
             let fresh = app.poll().is_some();
             if fresh || std::mem::take(&mut redraw_app) {
@@ -3630,7 +3733,7 @@ fn panel(
                                 .map(|row| slint::SharedString::from(row.label.as_str()))
                                 .collect::<Vec<_>>(),
                         )));
-                        screen.set_app_hints(slint::ModelRc::new(slint::VecModel::from(
+                        screen.set_app_buttons(slint::ModelRc::new(slint::VecModel::from(
                             scene
                                 .buttons
                                 .iter()
@@ -3651,6 +3754,34 @@ fn panel(
                             0,
                         );
                         screen.set_screen(Screen::AppForm);
+                    }
+                    // The app painted it: hand the bitmap over as an image and
+                    // let it have the whole panel.
+                    flipper_ui::SceneKind::Canvas => {
+                        if let Some(image) = canvas_image(&scene.canvas) {
+                            screen.set_app_bitmap(image);
+                        }
+                        let texts: Vec<flipper_ui::ui::CanvasText> = scene
+                            .texts
+                            .iter()
+                            .map(|t| flipper_ui::ui::CanvasText {
+                                x: t.x as f32,
+                                y: t.y as f32,
+                                text: t.text.as_str().into(),
+                                font: t.font,
+                                align: t.align,
+                                white: t.white,
+                            })
+                            .collect();
+                        screen.set_app_texts(slint::ModelRc::new(slint::VecModel::from(texts)));
+                        screen.set_app_buttons(slint::ModelRc::new(slint::VecModel::from(
+                            scene
+                                .buttons
+                                .iter()
+                                .map(|b| slint::SharedString::from(b.as_str()))
+                                .collect::<Vec<_>>(),
+                        )));
+                        screen.set_screen(Screen::AppCanvas);
                     }
                     // Rows that can be a gauge, a divider or a line of text, drawn
                     // by the same body the Settings screens use. An app reporting
@@ -3676,7 +3807,7 @@ fn panel(
                         app_detail_offset =
                             app_detail_offset.clamp(0, (app_detail_rows - visible).max(0));
                         screen.set_detail_offset(app_detail_offset);
-                        screen.set_detail_hints(slint::ModelRc::new(slint::VecModel::from(
+                        screen.set_detail_buttons(slint::ModelRc::new(slint::VecModel::from(
                             scene
                                 .buttons
                                 .iter()
