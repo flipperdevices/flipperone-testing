@@ -1,0 +1,11 @@
+# A second Qt app, so there is something to switch between.
+#
+# Deliberately unlike the first: that one is a static menu that presents when a key
+# changes something, this one animates, which is what shows that a backgrounded app
+# keeps running rather than being frozen. Same arrangement otherwise, drawn offscreen
+# and presented a whole frame at a time into /dev/fb0.
+name = "Qt Clock"
+console = "python3 app.py"
+apt = ["python3-pyqt6"]
+env = ["QT_QPA_PLATFORM=offscreen"]
+draws = "pixels"

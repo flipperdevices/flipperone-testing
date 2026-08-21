@@ -1,0 +1,11 @@
+# The device's own UI, drawn in a terminal.
+#
+# A console app cannot use flipctl's components: it has a character grid and a
+# terminal, not a panel. What it can do is keep the layout, which is what this is
+# for, and what it shows is how far that gets you: a status bar, a list with a
+# selector and its chevrons, and the five soft keys in their slots.
+name = "TUI Demo"
+console = "python3 app.py"
+# 36x10 characters, the chunkiest cell that still fits ten rows: closest in spirit
+# to a UI drawn at 16px on a 256x144 panel.
+font = "7x14"
