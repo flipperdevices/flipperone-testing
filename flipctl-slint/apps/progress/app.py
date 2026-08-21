@@ -23,6 +23,7 @@ bars visibly disagree, and a job that finishes. What matters is the shape, which
 is what a real long-running app would send.
 """
 import json
+import os
 import selectors
 import sys
 import time
@@ -134,7 +135,7 @@ class App:
         # edit, run. Empty draws no button, which is how a screen uses only some
         # of them.
         start_label = "Start" if not self.running else "Pause"
-        buttons = ["Back", "", "Reset", "", start_label]
+        buttons = ["Close", "", "Reset", "", start_label]
         return {
             "screen": {
                 "type": "detail",
@@ -143,6 +144,37 @@ class App:
                 "buttons": buttons,
             }
         }
+
+
+class Keys:
+    """Key events, read without a text buffer in the way.
+
+    select(2) reports the descriptor, not Python's buffer. A readline that pulled
+    two events out of one read left the second sitting in the buffer with nothing
+    to wake the app, so it ran an event behind: a press was acted on by the next
+    press. Reading the descriptor and splitting on newlines keeps the two in step.
+    """
+
+    def __init__(self, fd=0):
+        self.fd = fd
+        self.rest = b""
+
+    def read(self):
+        """Every event that has arrived, or None once flipctl closes the pipe."""
+        chunk = os.read(self.fd, 65536)
+        if not chunk:
+            return None
+        self.rest += chunk
+        events = []
+        while b"\n" in self.rest:
+            line, self.rest = self.rest.split(b"\n", 1)
+            if not line.strip():
+                continue
+            try:
+                events.append(json.loads(line))
+            except ValueError:
+                continue
+        return events
 
 
 def send(app):
@@ -154,8 +186,9 @@ def main():
     app = App()
     send(app)
 
+    keys = Keys()
     sel = selectors.DefaultSelector()
-    sel.register(sys.stdin, selectors.EVENT_READ)
+    sel.register(keys.fd, selectors.EVENT_READ)
     next_tick = time.monotonic() + TICK_S
 
     while True:
@@ -163,25 +196,23 @@ def main():
         # app costs nothing and a running one still advances on time.
         timeout = max(0.0, next_tick - time.monotonic())
         dirty = False
-        for _ in sel.select(timeout=timeout):
-            line = sys.stdin.readline()
-            if not line:
+        if sel.select(timeout=timeout):
+            events = keys.read()
+            if events is None:
                 return
-            try:
-                event = json.loads(line)
-            except ValueError:
-                continue
-            # Releases are reported too; acting on both would do everything twice.
-            if not event.get("down"):
-                continue
-            key = event.get("key")
-            if key in ("run", "ok"):
-                app.pause() if app.running else app.start()
-            elif key == "power":
-                app.reset()
-            elif key in ("esc", "back"):
-                return
-            dirty = True
+            for event in events:
+                # Releases are reported too; acting on both would do everything
+                # twice.
+                if not event.get("down"):
+                    continue
+                key = event.get("key")
+                if key in ("run", "ok"):
+                    app.pause() if app.running else app.start()
+                elif key == "power":
+                    app.reset()
+                elif key in ("esc", "back"):
+                    return
+                dirty = True
 
         if time.monotonic() >= next_tick:
             next_tick += TICK_S

@@ -145,23 +145,42 @@ function flipperWireInput(selector) {
     el.addEventListener('keydown', e => { if (e.key === ' ') { e.preventDefault(); press(true); } });
     el.addEventListener('keyup', e => { if (e.key === ' ') { e.preventDefault(); press(false); } });
   }
+  // Keys currently down, so a key held while the page loses focus can be let go
+  // of. Without it, alt-tabbing away mid-press leaves the device holding a button
+  // nobody is pressing.
+  const down = new Set();
+  const send = (k, isDown) => {
+    if (isDown) down.add(k); else down.delete(k);
+    const el = held(k);
+    if (el) el.classList.toggle('down', isDown);
+    flipperSend(k, isDown);
+  };
+  // A modifier means the shortcut belongs to the browser or the window manager,
+  // not to the device: alt-tab is the window switcher, and forwarding its Tab
+  // opened the app switcher on the panel every time the user changed windows.
+  const ours = e => !e.altKey && !e.ctrlKey && !e.metaKey
+    && e.target.tagName !== 'BUTTON' && e.target.tagName !== 'SELECT';
+
   addEventListener('keydown', e => {
-    if (e.target.tagName === 'BUTTON' || e.target.tagName === 'SELECT') return;
+    if (!ours(e)) return;
     const k = FLIPPER_KEYS[e.key];
     if (k && !e.repeat) {
       e.preventDefault();
-      const el = held(k); if (el) el.classList.add('down');
-      flipperSend(k, true);
+      send(k, true);
     }
   });
   addEventListener('keyup', e => {
-    if (e.target.tagName === 'BUTTON' || e.target.tagName === 'SELECT') return;
+    if (!ours(e)) return;
     const k = FLIPPER_KEYS[e.key];
     if (k) {
       e.preventDefault();
-      const el = held(k); if (el) el.classList.remove('down');
-      flipperSend(k, false);
+      send(k, false);
     }
+  });
+  // Leaving the page releases whatever was held. The keyup lands in the other
+  // window, so it would never arrive here.
+  addEventListener('blur', () => {
+    for (const k of [...down]) send(k, false);
   });
 }
 

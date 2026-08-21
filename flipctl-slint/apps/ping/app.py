@@ -124,7 +124,7 @@ class App:
             ],
             "selected": self.selected,
             # One entry per physical soft key: esc, view, power, edit, run.
-            "buttons": ["Back", "", "", "", "Start"],
+            "buttons": ["Close", "", "", "", "Start"],
         })
 
     def log(self):
@@ -137,7 +137,7 @@ class App:
             "lines": self.lines[self.offset:self.offset + WINDOW],
             "total": len(self.lines),
             "offset": self.offset,
-            "buttons": ["Back", "", "", "", "Stop" if self.running() else "Again"],
+            "buttons": ["Close", "", "", "", "Stop" if self.running() else "Again"],
         })
 
     def scroll(self, delta):
@@ -287,68 +287,97 @@ def rtt_summary(line):
     )
 
 
+class Keys:
+    """Key events, read without a text buffer in the way.
+
+    select(2) reports the descriptor, not Python's buffer. A readline that pulled
+    two events out of one read left the second sitting in the buffer with nothing
+    to wake the app, so it ran an event behind: a press was acted on by the next
+    press. Reading the descriptor and splitting on newlines keeps the two in step.
+    """
+
+    def __init__(self, fd=0):
+        self.fd = fd
+        self.rest = b""
+
+    def read(self):
+        """Every event that has arrived, or None once flipctl closes the pipe."""
+        chunk = os.read(self.fd, 65536)
+        if not chunk:
+            return None
+        self.rest += chunk
+        events = []
+        while b"\n" in self.rest:
+            line, self.rest = self.rest.split(b"\n", 1)
+            if not line.strip():
+                continue
+            try:
+                events.append(json.loads(line))
+            except ValueError:
+                continue
+        return events
+
+
 def main():
     app = App()
     app.form()
     on_log = False
 
     sel = selectors.DefaultSelector()
-    sel.register(sys.stdin, selectors.EVENT_READ)
+    keys = Keys()
+    sel.register(keys.fd, selectors.EVENT_READ)
 
     while True:
-        for _ in sel.select(timeout=None):
-            raw = sys.stdin.readline()
-            if not raw:
+        if sel.select(timeout=None):
+            events = keys.read()
+            if events is None:
                 app.stop()
                 return
-            try:
-                msg = json.loads(raw)
-            except ValueError:
-                continue
-            if not msg.get("down"):
-                continue
-            key = msg.get("key")
+            for msg in events:
+                if not msg.get("down"):
+                    continue
+                key = msg.get("key")
 
-            if on_log:
-                if key == "down":
-                    app.scroll(+1)
-                elif key == "up":
-                    app.scroll(-1)
-                elif key == "right":
-                    app.scroll(+WINDOW)
-                elif key == "left":
-                    app.scroll(-WINDOW)
-                elif key == "esc":
-                    app.stop()
-                    on_log = False
-                    app.form()
-                elif key == "run":
-                    if app.running():
+                if on_log:
+                    if key == "down":
+                        app.scroll(+1)
+                    elif key == "up":
+                        app.scroll(-1)
+                    elif key == "right":
+                        app.scroll(+WINDOW)
+                    elif key == "left":
+                        app.scroll(-WINDOW)
+                    elif key == "esc":
                         app.stop()
-                        app.log()
-                    else:
+                        on_log = False
+                        app.form()
+                    elif key == "run":
+                        if app.running():
+                            app.stop()
+                            app.log()
+                        else:
+                            app.start()
+                    elif key == "back":
+                        app.stop()
+                        return
+                else:
+                    if key == "down":
+                        app.selected = (app.selected + 1) % len(FIELDS)
+                        app.form()
+                    elif key == "up":
+                        app.selected = (app.selected - 1) % len(FIELDS)
+                        app.form()
+                    elif key == "right":
+                        app.adjust(+1)
+                        app.form()
+                    elif key == "left":
+                        app.adjust(-1)
+                        app.form()
+                    elif key in ("run", "ok"):
+                        on_log = True
                         app.start()
-                elif key == "back":
-                    app.stop()
-                    return
-            else:
-                if key == "down":
-                    app.selected = (app.selected + 1) % len(FIELDS)
-                    app.form()
-                elif key == "up":
-                    app.selected = (app.selected - 1) % len(FIELDS)
-                    app.form()
-                elif key == "right":
-                    app.adjust(+1)
-                    app.form()
-                elif key == "left":
-                    app.adjust(-1)
-                    app.form()
-                elif key in ("run", "ok"):
-                    on_log = True
-                    app.start()
-                elif key in ("esc", "back"):
-                    return
+                    elif key in ("esc", "back"):
+                        return
 
 
 if __name__ == "__main__":

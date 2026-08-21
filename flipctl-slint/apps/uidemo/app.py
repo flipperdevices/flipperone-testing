@@ -199,7 +199,7 @@ class App:
             "selected": self.selected - self.offset,
             "total": len(ELEMENTS),
             "offset": self.offset,
-            "buttons": ["Back", "", "", "", "Open"],
+            "buttons": ["Close", "", "", "", "Open"],
         })
 
     def detail_screen(self):
@@ -210,7 +210,7 @@ class App:
             "lines": lines[:LOG_WINDOW],
             "total": len(lines),
             "offset": 0,
-            "buttons": ["Back", "", "", "", ""],
+            "buttons": ["Close", "", "", "", ""],
         })
 
 

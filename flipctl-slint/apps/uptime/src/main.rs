@@ -123,7 +123,7 @@ fn draw(selected: usize) {
         out,
         "{{\"screen\":{{\"type\":\"form\",\"title\":\"Uptime\",\"rows\":[{body}],\
          \"selected\":{},\"total\":{},\"offset\":{off},\
-         \"buttons\":[\"Back\",\"\",\"\",\"\",\"Refresh\"]}}}}",
+         \"buttons\":[\"Close\",\"\",\"\",\"\",\"Refresh\"]}}}}",
         selected - off,
         rows.len()
     );
