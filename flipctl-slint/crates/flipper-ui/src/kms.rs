@@ -38,6 +38,8 @@ impl DrmDevice for Card {}
 impl ControlDevice for Card {}
 
 pub struct KmsSink {
+    /// Whether the panel is somebody else's right now.
+    detached: bool,
     card: Card,
     crtc: crtc::Handle,
     connector: connector::Handle,
@@ -180,6 +182,7 @@ impl KmsSink {
         }
 
         Ok(Self {
+            detached: false,
             card,
             crtc,
             connector,
@@ -332,6 +335,37 @@ impl FrameSink for KmsSink {
 }
 
 impl KmsSink {
+    /// Let go of the panel, so something else can drive it.
+    ///
+    /// One client owns a card at a time. Releasing the lock is what lets the
+    /// kernel's framebuffer console, or a program that speaks KMS itself, paint
+    /// the panel while flipctl waits.
+    pub fn detach(&mut self) -> std::io::Result<()> {
+        self.detached = true;
+        self.card.release_master_lock()
+    }
+
+    /// Whether the panel has been let go of and not taken back.
+    ///
+    /// Asked every iteration by the caller, because the panel having an owner is an
+    /// invariant rather than something to remember at five call sites: forgetting it
+    /// once leaves flipctl rendering frames into a framebuffer nothing is showing,
+    /// with no error anywhere, which is indistinguishable from a frozen device.
+    pub fn is_detached(&self) -> bool {
+        self.detached
+    }
+
+    /// Take it back, and put our own frame up again.
+    ///
+    /// Whoever had the panel in the meantime left something else on it, and the
+    /// panel has no scanout: it shows the last frame that was written until a
+    /// commit writes another. So the modeset is not optional here.
+    pub fn attach(&mut self) -> std::io::Result<()> {
+        self.card.acquire_master_lock()?;
+        self.detached = false;
+        self.set_crtc()
+    }
+
     fn set_crtc(&self) -> std::io::Result<()> {
         self.card.set_crtc(
             self.crtc,

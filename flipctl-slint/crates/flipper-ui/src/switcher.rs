@@ -216,6 +216,18 @@ impl Recents {
         self.apps.retain(|a| a.name != name);
     }
 
+    /// The last frame captured for an app, if there is one.
+    ///
+    /// The card's picture, borrowed for a second purpose: putting an app back on the
+    /// panel when it comes forward again, so what appears is that app's own last
+    /// screen rather than whatever the framebuffer happened to hold.
+    pub fn frame_of(&self, name: &str) -> Option<Snapshot> {
+        self.apps
+            .iter()
+            .find(|a| a.name == name)
+            .and_then(|a| a.snapshot.clone())
+    }
+
     pub fn list(&self) -> &[Entry] {
         &self.apps
     }

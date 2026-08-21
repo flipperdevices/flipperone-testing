@@ -1203,7 +1203,111 @@ fn canvas_image(grey: &[u8]) -> Option<slint::Image> {
     Some(slint::Image::from_rgb8(buffer))
 }
 
-/// A card's icon, loaded from the app's own directory and cached by path.
+/// Start a console app, or bring the one already running forward.
+///
+/// Returns which session is in front now, or None when the entry is not a console
+/// app at all. Not blocking and not modal: the program runs on its own VT and the
+/// main loop keeps turning, which is what lets Tab and Back work while it is in
+/// front.
+#[cfg(all(feature = "device", feature = "slint"))]
+fn start_console(
+    entry: &flipper_ui::app::AppEntry,
+    sink: Option<&mut flipper_ui::kms::KmsSink>,
+    running: &mut Vec<flipper_ui::console::Session>,
+    // Opened here rather than per session, and only once there is a session.
+    keys: &mut Option<flipper_ui::console::Keyboard>,
+    // What is on the panel right now, to hold until the program draws its own.
+    showing: &[flipper_ui::Gray8],
+) -> Option<usize> {
+    if entry.kind != flipper_ui::app::Kind::Console {
+        return None;
+    }
+    let Some(sink) = sink else {
+        // Headless: the panel is somebody else's, and handing over what we do not
+        // hold would take the screen from whoever does.
+        eprintln!("console        {} needs the panel", entry.name);
+        return None;
+    };
+    // The console cannot paint until flipctl lets go of the card. Dropped before
+    // anything else, and taken back by every path out of here that fails.
+    if let Err(e) = sink.detach() {
+        eprintln!("console        {} cannot have the panel: {e}", entry.name);
+        return None;
+    }
+
+    // Already running: opening it again is a switch, not a second copy.
+    if let Some(at) = running.iter().position(|s| s.name == entry.name) {
+        eprintln!("console        front is {} (relaunch)", entry.name);
+        if let Err(e) = running[at].foreground(None) {
+            eprintln!("console        {} cannot be shown: {e}", entry.name);
+            let _ = sink.attach();
+            return None;
+        }
+        return Some(at);
+    }
+
+    let taken: Vec<u16> = running.iter().map(|s| s.vt()).collect();
+    let Some(vt) = flipper_ui::console::VTS.filter(|vt| !taken.contains(vt)).next() else {
+        eprintln!("console        no free VT for {}", entry.name);
+        let _ = sink.attach();
+        return None;
+    };
+    // Whatever was in front is put away: the new session is about to own the panel,
+    // and two programs painting into the same framebuffer flicker through each
+    // other.
+    for other in running.iter_mut() {
+        let _ = other.background();
+    }
+    let handover: Vec<u8> = showing.iter().map(|p| p.0).collect();
+    match flipper_ui::console::Session::start(entry, vt, Some(&handover)) {
+        Ok(session) => {
+            if keys.is_none() {
+                *keys = flipper_ui::console::Keyboard::open()
+                    .inspect_err(|e| eprintln!("console        keys not forwarded: {e}"))
+                    .ok();
+            }
+            running.push(session);
+            eprintln!("console        front is {} (launched)", entry.name);
+            Some(running.len() - 1)
+        }
+        Err(e) => {
+            eprintln!("console        {} failed: {e}", entry.name);
+            let _ = sink.attach();
+            None
+        }
+    }
+}
+
+/// A panel-sized frame saying an app has the screen and we cannot see it.
+///
+/// For the browser view and the switcher's card while a program that takes DRM
+/// master is running: its pixels never reach the framebuffer flipctl reads, and the
+/// last frame that did would otherwise stand in for it and look like the app.
+#[cfg(all(feature = "device", feature = "slint"))]
+fn detached_notice(name: &str) -> Vec<u8> {
+    use flipper_ui::font;
+    use flipper_ui::theme::{PANEL_H, PANEL_W};
+    use flipper_ui::Gray8;
+
+    let mut surface = flipper_ui::Surface::panel();
+    surface.clear(Gray8::WHITE);
+    let lines = [
+        format!("{name} has the panel"),
+        "It draws through KMS, which".to_string(),
+        "cannot be read back from here.".to_string(),
+        "Esc on the device leaves it.".to_string(),
+    ];
+    for (i, line) in lines.iter().enumerate() {
+        let font = if i == 0 { &font::ROW_ACTIVE } else { &font::TITLE };
+        let width = font.text_width(line);
+        let x = (i32::from(PANEL_W) - i32::from(width)) / 2;
+        let y = i32::from(PANEL_H) / 2 - 26 + (i as i32) * 13;
+        surface.text(font, line, x, y, if i == 0 { Gray8::BLACK } else { Gray8(0x99) });
+    }
+    surface.pixels().iter().map(|p| p.0).collect()
+}
+
+/// A card's icon, loaded from the app's own directory and cached by path./// A card's icon, loaded from the app's own directory and cached by path./// A card's icon, loaded from the app's own directory and cached by path.
 ///
 /// Cached because it is the same handful of 14x14 sprites on every frame, and a
 /// scanning app resends its scene several times a second. Loaded as RGBA rather
@@ -1922,6 +2026,39 @@ fn panel(
     // above: those are keyed on the buffer they came from and die with it, these
     // are files that outlive any one frame.
     let mut card_icons: Vec<(std::path::PathBuf, slint::Image)> = Vec::new();
+    // The console apps that are running, each on a VT of its own, and which of them
+    // has the panel. Backgrounded one keeps running, unaware, because an inactive
+    // VT is not drawn and a console cannot paint while flipctl is DRM master. Two
+    // of them therefore swap with a single VT switch and no change of panel owner.
+    let mut consoles: Vec<flipper_ui::console::Session> = Vec::new();
+    let mut console_front: Option<usize> = None;
+    // One virtual keyboard for all of them, opened with the first session and
+    // dropped with the last. Per session it would be several, and every app that
+    // reads evdev would see all of them, which is every app that draws its own
+    // pixels: an offscreen toolkit has no platform to read a keyboard from.
+    let mut console_keys: Option<flipper_ui::console::Keyboard> = None;
+    // The screen the deck was opened over, to go back to when it is dismissed.
+    // Leaving always landed on the menu, which is a level above the Apps list and so
+    // not where the user was: dismissing a deck should undo opening it and nothing
+    // else.
+    // The screen an app was started from, which is where Back goes: from an app, or
+    // from the deck opened over it. Never the deck itself, which is not a place the
+    // user was.
+    let mut before_switcher = Screen::Menu;
+    let mut launched_from = Screen::Apps;
+    // When this turn of the loop began, for the watchdog below.
+    let mut turn = Instant::now();
+    // A key whose release belongs to nobody: the one that opened the deck.
+    //
+    // The deck acts on releases, so the release of the very press that opened it
+    // was arriving as "choose the focused card", and one Tab both opened the deck
+    // and relaunched what was already in front. Every complaint today about the
+    // switcher hanging or landing in the wrong place came from that.
+    let mut swallow_release: Option<FlipperKey> = None;
+    // When its picture was last read back, for the browser view and its card, and
+    // whether the standing notice has been sent for one that cannot be read.
+    let mut console_mirror = Instant::now();
+    let mut console_notice = false;
     // Where a cards page's window sits. Kept here rather than in the app for the
     // reason the detail body's offset is: the app does not know how much fits.
     let mut app_cards_scroll = 0i32;
@@ -2263,29 +2400,224 @@ fn panel(
             }
         }
 
+        // A console app in front takes the keys first, and takes most of them: the
+        // pad and its centre go to the program, and three of ours stay ours. Esc
+        // ends it, Back leaves it running and goes back to the list, and Tab does
+        // the same and opens the deck. Nothing here waits on a button being held.
+        // A console app in front takes the keys first, and takes most of them: the
+        // pad and its centre go to the program, and three of ours stay ours. Esc
+        // ends it, Back leaves it running and goes back to the list, and Tab does
+        // the same and opens the deck. Nothing here waits on a button being held.
+        if let Some(at) = console_front {
+            let mut end = false;
+            let mut leave = None;
+            for event in pending_input.drain(..) {
+                // Physical presses arrive on their own: the kernel's keyboard
+                // handler is attached to the MCU's device and delivers to whichever
+                // VT is in front. This is for the ones flipctl was handed rather
+                // than read, above all the browser view's.
+                let forwarded = console_keys
+                    .as_mut()
+                    .is_some_and(|k| k.forward(event).unwrap_or(false));
+                if forwarded {
+                    continue;
+                }
+                if !event.down {
+                    continue;
+                }
+                match event.key {
+                    FlipperKey::Escape => end = true,
+                    FlipperKey::Back => leave = Some(false),
+                    FlipperKey::AppSwitch => leave = Some(true),
+                    _ => {}
+                }
+            }
+
+            // Its picture, for the browser view and for the card it leaves behind.
+            // Ten a second, which is the view's own cap.
+            if console_mirror.elapsed() >= Duration::from_millis(100) {
+                console_mirror = Instant::now();
+                let grey = if consoles[at].mirrored() {
+                    consoles[at].frame().map(|f| f.to_vec())
+                } else {
+                    // Nothing to read: this one draws through KMS, where flipctl
+                    // cannot see. Say that, once, rather than leaving whatever
+                    // frame was last in the framebuffer to be mistaken for it.
+                    (!console_notice).then(|| {
+                        console_notice = true;
+                        detached_notice(&consoles[at].name)
+                    })
+                };
+                if let Some(grey) = grey {
+                    let grey = grey.as_slice();
+                    let snapshot = std::sync::Arc::new(grey.to_vec());
+
+                    #[cfg(feature = "remote")]
+                    {
+                        let pixels: Vec<flipper_ui::Gray8> =
+                            grey.iter().map(|v| flipper_ui::Gray8(*v)).collect();
+                        if let Some(view) = web.as_mut() {
+                            view.commit(
+                                Frame::new(&pixels, PANEL_W, PANEL_H),
+                                flipper_ui::Rect::new(0, 0, PANEL_W, PANEL_H),
+                            )?;
+                        }
+                    }
+                    let name = consoles[at].name.clone();
+                    recents.snapshot(&name, snapshot);
+                }
+            }
+
+            // Ended by itself, or ended by Esc: either way the card goes with it.
+            let over = consoles[at].finished().is_some();
+            if end || over {
+                let mut session = consoles.remove(at);
+                if !over {
+                    session.stop();
+                }
+                let name = session.name.clone();
+                eprintln!("console        {name} ended");
+                // Dropped before the panel is taken back, and the order matters:
+                // dropping a session switches VT, and a VT switch makes the console
+                // claim the display. Done afterwards it would take the panel
+                // straight back off us, leaving flipctl drawing into a framebuffer
+                // nothing is showing and the app's last frame on the screen.
+                drop(session);
+                recents.close(&name);
+                if let Some(sw) = switcher.as_mut() {
+                    sw.drop_card(&name);
+                }
+                eprintln!("console        front is nobody (ended)");
+                console_front = None;
+                console_notice = false;
+                if consoles.is_empty() {
+                    console_keys = None;
+                }
+                redraw_app = true;
+            } else if let Some(deck) = leave {
+                // Put away rather than ended: its console stops pointing at the
+                // panel's framebuffer, and if it paints pixels it is frozen, since
+                // nothing else can stop it writing there. Its card brings it back.
+                if let Err(e) = consoles[at].background() {
+                    eprintln!("console        not put away: {e}");
+                }
+                eprintln!(
+                    "console        front is nobody ({})",
+                    if deck { "tab" } else { "back" }
+                );
+                console_front = None;
+                console_notice = false;
+                if deck {
+                    swallow_release = Some(FlipperKey::AppSwitch);
+                    switcher = Some(flipper_ui::switcher::Switcher::open(&recents, true));
+                    switch_dirty = true;
+                    screen.set_screen(Screen::Switcher);
+                } else {
+                    // Back from an app lands where it was started from.
+                    screen.set_screen(launched_from);
+                }
+                redraw_app = true;
+            }
+
+            if console_front.is_some() {
+                // The panel is not ours to draw on, so the rest of the loop has
+                // nothing to do but keep the pipes clear.
+                for (_, app) in apps_live.iter_mut() {
+                    app.poll();
+                }
+                std::thread::sleep(Duration::from_millis(30));
+                continue;
+            }
+        }
+
+        // How long the last turn of the loop took. A frame is a few milliseconds and
+        // a sleep is eight, so anything above a quarter of a second is something
+        // waiting on the world, and knowing whether the loop is slow or stopped is
+        // the difference between a bug in here and a blocking call.
+        if turn.elapsed() > Duration::from_millis(250) {
+            eprintln!("loop           turn took {}ms", turn.elapsed().as_millis());
+        }
+        turn = Instant::now();
+
+        // The panel has an owner, and when no console app is in front that owner is
+        // flipctl. Checked here rather than remembered at every path that puts one
+        // away, because forgetting once is silent: rendering carries on into a
+        // framebuffer nothing is showing, no call fails, and the device looks dead.
+        if console_front.is_none() {
+            if let Some(sink) = sink.as_mut() {
+                if sink.is_detached() {
+                    eprintln!(
+                        "panel          taking it back, {} session(s) running",
+                        consoles.len()
+                    );
+                    if let Err(e) = sink.attach() {
+                        eprintln!("panel          not taken back: {e}");
+                    }
+                    // And redrawn, because Slint reports damage only when something
+                    // it knows about changed. Somebody else drew on the panel while
+                    // it was theirs, so every pixel is stale even though our own
+                    // screen has not moved. Without this the panel keeps the app's
+                    // last frame until a key happens to change something, which is
+                    // exactly "I pressed Back and it still shows mc", and "the first
+                    // Back did nothing, the second worked".
+                    window.request_redraw();
+                }
+            }
+        }
+
         for event in pending_input.drain(..) {
             // The keyboard is the one screen that cares when a key is let go: a
             // held OK on the shift key latches caps lock.
             if !event.down {
+                if swallow_release == Some(event.key) {
+                    swallow_release = None;
+                    continue;
+                }
                 if let Some(sw) = switcher.as_mut() {
                 switch_dirty = true;
                 match sw.key(event.key) {
                     Some(flipper_ui::switcher::Action::Close) => {
+                        eprintln!("switcher       closing back to {:?}", before_switcher);
                         switcher = None;
-                        // Leaving empty-handed lands on the menu, which is where
-                        // something can be started. Nothing is focused and the
-                        // recents order is untouched, so every app that was running
-                        // still is, one Tab away. A question that was waiting when
-                        // the switcher opened is still waiting, so that comes back
-                        // instead.
+                        // Back to the screen the deck was opened over. Nothing is
+                        // focused and the recents order is untouched, so every app
+                        // that was running still is, one Tab away. A question that
+                        // was waiting when the deck opened is still waiting, so that
+                        // comes back instead, wherever it was asked.
                         screen.set_screen(if deps.is_some() || dialog.is_some() {
                             Screen::Apps
                         } else {
-                            Screen::Menu
+                            before_switcher
                         });
                     }
                     Some(flipper_ui::switcher::Action::Launch(name, kind)) => {
                         switcher = None;
+                        // A console app is still running on its VT: bringing it
+                        // back is a switch, not a launch. The panel only changes
+                        // hands when it was not already a console app in front.
+                        if let Some(at) = consoles.iter().position(|s| s.name == name) {
+                            if console_front.is_none() {
+                                if let Some(sink) = sink.as_mut() {
+                                    let _ = sink.detach();
+                                }
+                            }
+                            for (i, other) in consoles.iter_mut().enumerate() {
+                                if i != at {
+                                    let _ = other.background();
+                                }
+                            }
+                            let last = recents.frame_of(&name);
+                            if let Err(e) =
+                                consoles[at].foreground(last.as_ref().map(|f| f.as_slice()))
+                            {
+                                eprintln!("console        {name} cannot be shown: {e}");
+                            }
+                            console_front = Some(at);
+                            focused_app = None;
+                            recents.open(&name, kind);
+                            eprintln!("console        front is {name} (card)");
+                            continue;
+                        }
                         launch_card(
                             &screen,
                             &mut apps_live,
@@ -2299,7 +2631,17 @@ fn panel(
                         redraw_app = focused_app.is_some();
                     }
                     Some(flipper_ui::switcher::Action::Kill(name, kind)) => {
-                        if kind == flipper_ui::switcher::Kind::App {
+                        // A console app is a process too, just not one of ours to
+                        // draw for.
+                        if let Some(at) = consoles.iter().position(|s| s.name == name) {
+                            let was_front = console_front == Some(at);
+                            let mut session = consoles.remove(at);
+                            session.stop();
+                            drop(session);
+                            console_front = None;
+                            let _ = was_front;
+                            recents.close(&name);
+                        } else if kind == flipper_ui::switcher::Kind::App {
                             kill_app(&mut apps_live, &mut focused_app, &mut recents, &name);
                         } else {
                             // Nothing to stop: a screen leaves the stack and that
@@ -2321,6 +2663,17 @@ fn panel(
                 }
                 continue;
             }
+            // With the deck open, nothing underneath sees a press.
+            //
+            // The switcher acts on releases, so a press went straight past it to
+            // whatever it was drawn over: Back closed the deck on its release and
+            // popped a menu level on its press, landing a level above where the
+            // user had been. Everything the deck does with a key it does on the way
+            // up, so a press has nowhere else to go.
+            if switcher.is_some() {
+                continue;
+            }
+
             key_at = Some(Instant::now());
             // Report which on-screen slot a soft key sits under, so the log
             // proves the labels line up with the hardware instead of us
@@ -2337,6 +2690,15 @@ fn panel(
                 ),
                 None => eprintln!("key {}", event.key.name()),
             }
+            eprintln!(
+                "  handled on   screen={:?} switcher={} console_front={} stack={}",
+                screen.get_screen(),
+                if switcher.is_some() { "open" } else { "closed" },
+                console_front
+                    .and_then(|at| consoles.get(at))
+                    .map_or("none".to_string(), |s| s.name.clone()),
+                stack.len()
+            );
 
             // A labelled soft key must do something, or the label is a lie.
             let on_menu_now = screen.get_screen() == Screen::Menu;
@@ -2395,6 +2757,15 @@ fn panel(
                     recents.open(name, kind);
                 }
                 stash_front(&mut recents, front, &frame);
+                before_switcher = screen.get_screen();
+                if before_switcher == Screen::Switcher {
+                    // Opened over a console app, whose screen flipctl never draws:
+                    // the recorded screen is still whatever was there before, and
+                    // the deck is not somewhere to go back to.
+                    before_switcher = launched_from;
+                }
+                eprintln!("switcher       opened over {:?}", before_switcher);
+                swallow_release = Some(FlipperKey::AppSwitch);
                 switcher = Some(flipper_ui::switcher::Switcher::open(&recents, on_top));
                 switch_dirty = true;
                 focused_app = None;
@@ -2434,6 +2805,13 @@ fn panel(
                         .map(|a| flipper_ui::app::Row::pair(&a.name, ""))
                         .collect();
                     apply_app_list(&screen, &rows, app_selected, &EMPTY_BUTTONS, (0, 0), app_scroll);
+                    // The detail body has its own labels, and an app that drew
+                    // through it leaves them set: Resources' soft keys outlived it
+                    // on the screen it was left for. Cleared with the rest of the
+                    // app's state rather than left for the next screen to overwrite.
+                    screen.set_detail_buttons(slint::ModelRc::new(slint::VecModel::from(
+                        Vec::<slint::SharedString>::new(),
+                    )));
                     screen.set_screen(Screen::Apps);
                 } else if screen.get_screen() == Screen::AppDetail
                     && matches!(event.key, FlipperKey::Up | FlipperKey::Down)
@@ -2506,6 +2884,27 @@ fn panel(
                             FlipperKey::Ok | FlipperKey::Run if ok => {
                                 deps = None;
                                 if let Some(entry) = apps.get(idx as usize) {
+                                    // A console app takes the panel rather than
+                                    // becoming a child we draw for, so it never
+                                    // reaches the registry.
+                                    if entry.kind == flipper_ui::app::Kind::Console {
+                                        launched_from = Screen::Apps;
+                                        console_front = start_console(
+                                            entry,
+                                            sink.as_mut(),
+                                            &mut consoles,
+                                            &mut console_keys,
+                                            &frame,
+                                        );
+                                        if console_front.is_some() {
+                                            recents.open(
+                                                &entry.name,
+                                                flipper_ui::switcher::Kind::App,
+                                            );
+                                            focused_app = None;
+                                        }
+                                        continue;
+                                    }
                                     match flipper_ui::RunningApp::spawn(entry) {
                                         Ok(app) => {
                                             eprintln!("app            started {}", entry.name);
@@ -3168,6 +3567,29 @@ fn panel(
             match sw.tick() {
                 Some(flipper_ui::switcher::Action::Launch(name, kind)) => {
                     switcher = None;
+                    if let Some(at) = consoles.iter().position(|s| s.name == name) {
+                        if console_front.is_none() {
+                            if let Some(sink) = sink.as_mut() {
+                                let _ = sink.detach();
+                            }
+                        }
+                        for (i, other) in consoles.iter_mut().enumerate() {
+                            if i != at {
+                                let _ = other.background();
+                            }
+                        }
+                        let last = recents.frame_of(&name);
+                        if let Err(e) =
+                            consoles[at].foreground(last.as_ref().map(|f| f.as_slice()))
+                        {
+                            eprintln!("console        {name} cannot be shown: {e}");
+                        }
+                        console_front = Some(at);
+                        focused_app = None;
+                        recents.open(&name, kind);
+                        eprintln!("console        front is {name} (card, tick)");
+                        continue;
+                    }
                     launch_card(
                         &screen,
                         &mut apps_live,
@@ -3181,15 +3603,24 @@ fn panel(
                     redraw_app = focused_app.is_some();
                 }
                 Some(flipper_ui::switcher::Action::Close) => {
+                    eprintln!("switcher       closing back to {:?} (tick)", before_switcher);
                     switcher = None;
                     screen.set_screen(if deps.is_some() || dialog.is_some() {
                         Screen::Apps
                     } else {
-                        Screen::Menu
+                        before_switcher
                     });
                 }
                 Some(flipper_ui::switcher::Action::Kill(name, kind)) => {
-                    if kind == flipper_ui::switcher::Kind::App {
+                    if let Some(at) = consoles.iter().position(|s| s.name == name) {
+                        let was_front = console_front == Some(at);
+                        let mut session = consoles.remove(at);
+                        session.stop();
+                        drop(session);
+                        console_front = None;
+                        let _ = was_front;
+                        recents.close(&name);
+                    } else if kind == flipper_ui::switcher::Kind::App {
                         kill_app(&mut apps_live, &mut focused_app, &mut recents, &name);
                     } else {
                         recents.close(&name);
@@ -3554,6 +3985,21 @@ fn panel(
                 Ok(m) if m.is_empty() => {
                     // Nothing missing: start it, no questions.
                     if let Some(entry) = apps.get(idx as usize) {
+                        if entry.kind == flipper_ui::app::Kind::Console {
+                            launched_from = Screen::Apps;
+                            console_front = start_console(
+                                entry,
+                                sink.as_mut(),
+                                &mut consoles,
+                                &mut console_keys,
+                                &frame,
+                            );
+                            if console_front.is_some() {
+                                recents.open(&entry.name, flipper_ui::switcher::Kind::App);
+                                focused_app = None;
+                            }
+                            continue;
+                        }
                         match flipper_ui::RunningApp::spawn(entry) {
                             Ok(app) => {
                                 eprintln!("app            started {}", entry.name);
@@ -3772,6 +4218,35 @@ fn panel(
                 gone.push(name.clone());
             }
         }
+        // A backgrounded console app can end on its own too: nothing is watching
+        // its VT, so the check belongs beside the one for scene apps.
+        {
+            let mut at = 0;
+            while at < consoles.len() {
+                if console_front == Some(at) || consoles[at].finished().is_none() {
+                    at += 1;
+                    continue;
+                }
+                let session = consoles.remove(at);
+                let name = session.name.clone();
+                drop(session);
+                eprintln!("console        {name} ended in the background");
+                recents.close(&name);
+                if let Some(sw) = switcher.as_mut() {
+                    if sw.drop_card(&name) {
+                        switch_dirty = true;
+                    }
+                }
+                // The one in front is indexed too, and removing from under it
+                // would point it at the wrong app.
+                if let Some(front) = console_front.as_mut() {
+                    if *front > at {
+                        *front -= 1;
+                    }
+                }
+            }
+        }
+
         for name in &gone {
             eprintln!("app            {name} ended");
             if let Some(at) = apps_live.iter().position(|(n, _)| n == name) {

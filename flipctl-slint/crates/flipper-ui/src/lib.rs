@@ -22,6 +22,8 @@ pub mod paint;
 pub mod evdev;
 #[cfg(feature = "device")]
 pub mod kms;
+#[cfg(feature = "device")]
+pub mod console;
 #[cfg(feature = "remote")]
 pub mod remote;
 #[cfg(feature = "slint")]

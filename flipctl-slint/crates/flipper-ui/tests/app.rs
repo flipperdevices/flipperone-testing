@@ -134,10 +134,12 @@ fn discovered_paths_are_absolute() {
         );
         // What must exist depends on the kind. A Python app's entry is its
         // source; a Rust app's is a binary that may not be built yet, so the
-        // manifest is what proves the directory is an app.
+        // manifest is what proves the directory is an app; a console app has
+        // nothing but its manifest, since the program it runs is the system's.
         let proof = match entry.kind {
             app::Kind::Python => entry.entry(),
             app::Kind::Rust => entry.dir.join("Cargo.toml"),
+            app::Kind::Console => entry.dir.join(app::MANIFEST),
         };
         assert!(
             proof.is_file(),
@@ -456,4 +458,85 @@ fn a_cards_scene_without_a_percentage_reads_as_minus_one() {
         "cards": [{"label": "host", "percent": 40}]}}"#;
     let scene = app::parse_line(line).expect("a scene");
     assert_eq!(scene.percent, -1, "absent, not the card's 40");
+}
+
+/// A console app is a manifest and nothing else.
+///
+/// htop is the case the whole console kind exists for: a program that draws into a
+/// terminal, which this repo does not ship, wrap or build. What it declares is the
+/// command line, and what flipctl does with it is hand over the panel.
+#[test]
+fn the_htop_app_is_a_manifest() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../apps")
+        .canonicalize()
+        .expect("apps dir");
+    let apps = app::discover(&root);
+    let htop = apps.iter().find(|a| a.name == "htop").expect("the htop app");
+
+    assert_eq!(htop.kind, app::Kind::Console);
+    assert_eq!(htop.console, "htop");
+    assert_eq!(htop.apt, ["htop"], "declared, so it can be installed on demand");
+    assert!(htop.pip.is_empty());
+    assert!(!htop.dir.join("app.py").exists(), "no code of ours");
+
+    // Run through a shell, because the manifest names a command line: the day one
+    // of these says "journalctl -f" it has to stay one command, not two.
+    let (program, args) = htop.command();
+    assert_eq!(program, std::path::Path::new("/bin/sh"));
+    assert_eq!(args, [std::path::Path::new("-c"), std::path::Path::new("htop")]);
+}
+
+/// Everything a console app's manifest can say, read back off disk.
+///
+/// Built here rather than asserted against a shipped app, because which app wants
+/// which font is a decision that changes: what has to keep working is that the
+/// manifest is read at all, since none of these have any other way to be set.
+#[test]
+fn a_console_manifest_carries_its_settings() {
+    let dir = std::env::temp_dir().join(format!("flipctl-manifest-{}", std::process::id()));
+    let app = dir.join("thing");
+    std::fs::create_dir_all(&app).expect("temp app dir");
+    std::fs::write(
+        app.join(app::MANIFEST),
+        concat!(
+            "# a comment, and a key that looks like one of ours: console = \"no\"\n",
+            "name = \"Thing\"\n",
+            "console = \"htop -d 10\"\n",
+            "apt = [\"htop\", \"procps\"]\n",
+            "font = \"7x14\"\n",
+            "draws = \"pixels\"\n",
+            "mirror = false\n",
+            "env = [\"QT_QPA_PLATFORM=offscreen\", \"TERM=dumb\"]\n",
+        ),
+    )
+    .expect("write manifest");
+
+    let found = app::discover(&dir);
+    let entry = found.iter().find(|a| a.name == "Thing").expect("the app");
+    assert_eq!(entry.kind, app::Kind::Console);
+    assert_eq!(entry.console, "htop -d 10");
+    assert_eq!(entry.apt, ["htop", "procps"]);
+    assert_eq!(entry.font, "7x14");
+    assert!(entry.graphics, "draws = pixels");
+    assert!(!entry.mirror, "mirror = false");
+    assert_eq!(entry.env, ["QT_QPA_PLATFORM=offscreen", "TERM=dumb"]);
+
+    // A command line stays one command: the day one says "journalctl -f" it has to
+    // reach a shell whole.
+    let (program, args) = entry.command();
+    assert_eq!(program, std::path::Path::new("/bin/sh"));
+    assert_eq!(args.last().unwrap(), std::path::Path::new("htop -d 10"));
+
+    // And the defaults, for a manifest that says only what it must.
+    std::fs::write(app.join(app::MANIFEST), "console = \"mc\"\n").expect("write");
+    let found = app::discover(&dir);
+    let bare = found.first().expect("the app");
+    assert_eq!(bare.name, "thing", "the directory names it");
+    assert_eq!(bare.font, "", "the default cell");
+    assert!(!bare.graphics, "text unless it says otherwise");
+    assert!(bare.mirror, "readable unless it says otherwise");
+    assert!(bare.env.is_empty());
+
+    std::fs::remove_dir_all(&dir).ok();
 }

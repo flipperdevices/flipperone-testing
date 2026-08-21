@@ -40,13 +40,20 @@ use crate::KeyEvent;
 /// The file a Python app is started from.
 pub const ENTRY: &str = "app.py";
 
-/// What language an app is written in, which decides how it starts and what
-/// "install its dependencies" means.
+/// The manifest an app with no code of its own is declared in.
+pub const MANIFEST: &str = "app.toml";
+
+/// How an app starts, what "install its dependencies" means, and who draws.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum Kind {
     #[default]
     Python,
     Rust,
+    /// A program that draws into a terminal rather than sending scenes: htop,
+    /// nmtui, less, a shell. flipctl lets go of the panel, the kernel's own VT
+    /// paints it, and the program runs there. It needs no code of ours, so the
+    /// app is a manifest naming a command.
+    Console,
 }
 
 /// The per-app virtualenv, inside the app's own directory.
@@ -67,6 +74,35 @@ pub struct AppEntry {
     pub pip: Vec<String>,
     /// The binary cargo produces, from the crate's name. Rust apps only.
     pub bin: String,
+    /// The command line to run on a VT. Console apps only.
+    pub console: String,
+    /// Which console font to run it in, by cell: "4x6", "5x8", "6x12", "7x14",
+    /// "8x16". Empty for the default. Console apps only, since it decides how many
+    /// rows and columns the program gets and nothing else in the system has any.
+    pub font: String,
+    /// Whether the program draws pixels rather than text.
+    ///
+    /// A terminal program wants the console alive: fbcon draws it. One that paints
+    /// its own pixels wants it quiet, or the console goes on repainting its screen
+    /// underneath, whenever the cursor blinks or anything writes to it, and the
+    /// panel alternates between the program's frame and whatever text the VT still
+    /// holds. `draws = "pixels"` in the manifest says which.
+    pub graphics: bool,
+    /// Whether the panel can be read back while it runs.
+    ///
+    /// True for a program that draws into the framebuffer, which is where flipctl
+    /// reads the browser view's frames and the switcher's card from. False for one
+    /// that takes DRM master and the GPU itself: its pixels never reach the fbdev
+    /// shadow, so reading it back returns whatever was last written there, which is
+    /// worse than nothing because it looks like the app.
+    pub mirror: bool,
+    /// Environment for the command, each entry `NAME=value`.
+    ///
+    /// What turns the console kind into something more general: the arrangement it
+    /// sets up is a VT with the panel handed over, and a program that draws into
+    /// the framebuffer rather than into the terminal wants the same thing plus a
+    /// variable or two. `QT_QPA_PLATFORM=linuxfb` is the case it was added for.
+    pub env: Vec<String>,
 }
 
 impl AppEntry {
@@ -79,6 +115,12 @@ impl AppEntry {
         match self.kind {
             Kind::Python => (self.python(), vec![self.entry()]),
             Kind::Rust => (self.binary(), Vec::new()),
+            // Through a shell, because the manifest names a command line rather
+            // than a program: "journalctl -f" is one field, not two.
+            Kind::Console => (
+                PathBuf::from("/bin/sh"),
+                vec![PathBuf::from("-c"), PathBuf::from(&self.console)],
+            ),
         }
     }
 
@@ -148,6 +190,24 @@ fn py_string(src: &str, key: &str) -> Option<String> {
             let rest = &v[1..];
             let end = rest.find(quote)?;
             Some(rest[..end].to_string())
+        })
+}
+
+/// A module-level flag, e.g. `mirror = false`. None when the key is absent, so a
+/// caller can tell "said no" from "said nothing".
+fn py_bool(src: &str, key: &str) -> Option<bool> {
+    src.lines()
+        .filter(|l| !l.starts_with(char::is_whitespace))
+        .find_map(|line| {
+            let (k, v) = line.split_once('=')?;
+            if k.trim() != key {
+                return None;
+            }
+            match v.trim().trim_end_matches(|c: char| c == ',').to_ascii_lowercase().as_str() {
+                "true" | "yes" | "1" => Some(true),
+                "false" | "no" | "0" => Some(false),
+                _ => None,
+            }
         })
 }
 
@@ -323,7 +383,30 @@ pub fn discover(dir: &Path) -> Vec<AppEntry> {
             let dir = entry.path();
             let fallback = dir.file_name()?.to_string_lossy().to_string();
 
-            // Python first: a directory with both is a Python app that happens to
+            // A manifest first: it is the only thing a console app has, and an
+            // app that carries one has said what it is.
+            if let Ok(src) = std::fs::read_to_string(dir.join(MANIFEST)) {
+                let console = py_string(&src, "console").unwrap_or_default();
+                if !console.is_empty() {
+                    return Some(AppEntry {
+                        name: py_string(&src, "name").unwrap_or(fallback),
+                        kind: Kind::Console,
+                        icon: py_string(&src, "icon").unwrap_or_default(),
+                        apt: py_list(&src, "apt"),
+                        pip: Vec::new(),
+                        bin: String::new(),
+                        console,
+                        font: py_string(&src, "font").unwrap_or_default(),
+                        graphics: py_string(&src, "draws")
+                            .is_some_and(|d| d.eq_ignore_ascii_case("pixels")),
+                        mirror: py_bool(&src, "mirror").unwrap_or(true),
+                        env: py_list(&src, "env"),
+                        dir: dir.canonicalize().unwrap_or(dir),
+                    });
+                }
+            }
+
+            // Python next: a directory with both is a Python app that happens to
             // vendor a crate.
             if let Ok(src) = std::fs::read_to_string(dir.join(ENTRY)) {
                 return Some(AppEntry {
@@ -333,6 +416,11 @@ pub fn discover(dir: &Path) -> Vec<AppEntry> {
                     apt: py_list(&src, "APP_APT"),
                     pip: py_list(&src, "APP_PIP"),
                     bin: String::new(),
+                    console: String::new(),
+                    font: String::new(),
+                    graphics: false,
+                    mirror: true,
+                    env: Vec::new(),
                     dir: dir.canonicalize().unwrap_or(dir),
                 });
             }
@@ -351,6 +439,11 @@ pub fn discover(dir: &Path) -> Vec<AppEntry> {
                 apt: py_list(meta, "apt"),
                 pip: Vec::new(),
                 bin,
+                console: String::new(),
+                font: String::new(),
+                graphics: false,
+                mirror: true,
+                env: Vec::new(),
                 // Absolute, because spawn sets the child's working directory to
                 // this and a relative program path would then be resolved against
                 // the new directory rather than ours: apps/ping plus
