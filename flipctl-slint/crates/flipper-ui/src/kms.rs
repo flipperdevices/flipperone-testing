@@ -361,9 +361,21 @@ impl KmsSink {
     /// panel has no scanout: it shows the last frame that was written until a
     /// commit writes another. So the modeset is not optional here.
     pub fn attach(&mut self) -> std::io::Result<()> {
+        let began = std::time::Instant::now();
         self.card.acquire_master_lock()?;
+        let acquired = began.elapsed();
         self.detached = false;
-        self.set_crtc()
+        let result = self.set_crtc();
+        // Timed because taking the panel back is on the critical path of every
+        // switch, and a modeset on this panel is not obviously cheap: the driver
+        // re-runs whatever the controller needs on enable.
+        eprintln!(
+            "panel          reclaimed in {}ms (master {}, modeset {})",
+            began.elapsed().as_millis(),
+            acquired.as_millis(),
+            (began.elapsed() - acquired).as_millis()
+        );
+        result
     }
 
     fn set_crtc(&self) -> std::io::Result<()> {

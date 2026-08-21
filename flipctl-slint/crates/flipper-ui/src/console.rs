@@ -933,8 +933,13 @@ impl Session {
     /// master, whatever VT is in front. Which also means two console apps swap with
     /// a single switch, without the panel changing hands.
     pub fn foreground(&mut self, showing: Option<&[u8]>) -> io::Result<()> {
+        // Timed step by step: a switch was costing up to a second and a half, which
+        // reads as an unresponsive device and earns a second keypress. Cheap to
+        // measure and the only way to know which call is the expensive one.
+        let began = std::time::Instant::now();
         // Pointed at the panel again first: only the app in front writes there.
         self.console.attach_fb()?;
+        let mapped = began.elapsed();
         // The switch itself is what puts a terminal program back on the screen:
         // fbcon repaints the whole console from the characters the VT holds, which is
         // complete and immediate and needs nothing from the program. So a terminal
@@ -942,6 +947,7 @@ impl Session {
         // come back in pieces with black where it had not reached yet, because the
         // program was then made to draw a screen fbcon had already drawn correctly.
         self.console.foreground()?;
+        let switched = began.elapsed();
         // Re-asserted on every return: another program may have run on this VT in
         // the meantime and turned the keyboard off behind itself.
         if let Err(e) = self.console.keyboard(!self.graphics) {
@@ -959,6 +965,13 @@ impl Session {
                 }
             }
         }
+        eprintln!(
+            "console        {} forward in {}ms (map {}, switch {})",
+            self.name,
+            began.elapsed().as_millis(),
+            mapped.as_millis(),
+            (switched - mapped).as_millis()
+        );
         Ok(())
     }
 

@@ -2757,13 +2757,20 @@ fn panel(
                     recents.open(name, kind);
                 }
                 stash_front(&mut recents, front, &frame);
-                before_switcher = screen.get_screen();
-                if before_switcher == Screen::Switcher {
-                    // Opened over a console app, whose screen flipctl never draws:
-                    // the recorded screen is still whatever was there before, and
-                    // the deck is not somewhere to go back to.
-                    before_switcher = launched_from;
-                }
+                // Where dismissing the deck lands: the last screen of ours the user
+                // was on, which is never an app and never the deck itself. Recording
+                // the screen as it stands sent Back into the app the deck had been
+                // opened over, which is the one thing Back from the deck must not do:
+                // it is the way out, and the app stays running either way.
+                before_switcher = match screen.get_screen() {
+                    Screen::AppForm
+                    | Screen::AppLog
+                    | Screen::AppDetail
+                    | Screen::AppCanvas
+                    | Screen::AppCards
+                    | Screen::Switcher => launched_from,
+                    other => other,
+                };
                 eprintln!("switcher       opened over {:?}", before_switcher);
                 swallow_release = Some(FlipperKey::AppSwitch);
                 switcher = Some(flipper_ui::switcher::Switcher::open(&recents, on_top));
