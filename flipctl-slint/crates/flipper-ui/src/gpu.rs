@@ -40,6 +40,13 @@ pub struct Plane {
     pub stride: u32,
 }
 
+/// One buffer of the pair, and what it takes to sample it.
+struct Buffer {
+    bo: *mut c_void,
+    image: egl::Image,
+    size: (u32, u32),
+}
+
 /// The buffer the compositor is asked to copy into, described so Wayland can wrap it.
 pub struct Target {
     pub planes: Vec<Plane>,
@@ -187,8 +194,7 @@ pub struct Converter {
     frame_uniform: i32,
     flip_uniform: i32,
     gbm: Gbm,
-    /// The texture the compositor's copy is sampled through, the image behind it, and
-    /// the buffer object that owns the memory.
+    /// The texture a copy is sampled through, one at a time.
     capture: u32,
     /// Kept because they must outlive every GL object here, not because they are read
     /// again: the context every call runs in, and the texture the framebuffer draws to.
@@ -196,9 +202,12 @@ pub struct Converter {
     context: egl::Context,
     #[allow(dead_code)]
     target: u32,
-    imported: Option<egl::Image>,
-    bo: Option<*mut c_void>,
-    size: (u32, u32),
+    /// Two buffers, so the compositor can be copying into one while the other is being
+    /// converted and committed. With a single buffer the request could only be made
+    /// after the commit, which missed the compositor's cadence every time: the copy
+    /// phase measured 15 to 33 ms of pure waiting and a game ran at 35 fps instead of
+    /// 60.
+    buffers: [Option<Buffer>; 2],
     fbo: u32,
     dw: u32,
     dh: u32,
@@ -346,9 +355,7 @@ impl Converter {
             capture,
             context,
             target,
-            imported: None,
-            bo: None,
-            size: (0, 0),
+            buffers: [None, None],
             fbo,
             dw,
             dh,
@@ -359,8 +366,8 @@ impl Converter {
     ///
     /// Imported once here rather than per frame: the buffer outlives any one frame, and
     /// the compositor copies into it again and again.
-    pub fn allocate(&mut self, fourcc: u32, w: u32, h: u32) -> io::Result<Target> {
-        self.release();
+    pub fn allocate(&mut self, slot: usize, fourcc: u32, w: u32, h: u32) -> io::Result<Target> {
+        self.release(slot);
 
         let g = &self.gbm;
         let bo = unsafe { (g.create)(g.device, w, h, fourcc, GBM_BO_USE_RENDERING) };
@@ -385,9 +392,7 @@ impl Converter {
         let fd = unsafe { OwnedFd::from_raw_fd(fd) };
 
         let image = self.import(&fd, fourcc, modifier, offset, stride, w, h)?;
-        self.imported = Some(image);
-        self.bo = Some(bo);
-        self.size = (w, h);
+        self.buffers[slot.min(1)] = Some(Buffer { bo, image, size: (w, h) });
 
         Ok(Target {
             planes: vec![Plane { fd, offset, stride }],
@@ -398,15 +403,17 @@ impl Converter {
         })
     }
 
-    /// Let go of the buffer and its image, if there is one.
-    fn release(&mut self) {
-        if let Some(image) = self.imported.take() {
-            let _ = self.egl.destroy_image(self.display, image);
+    /// Let go of one buffer and its image, if there is one.
+    fn release(&mut self, slot: usize) {
+        if let Some(buffer) = self.buffers[slot.min(1)].take() {
+            let _ = self.egl.destroy_image(self.display, buffer.image);
+            unsafe { (self.gbm.bo_destroy)(buffer.bo) };
         }
-        if let Some(bo) = self.bo.take() {
-            unsafe { (self.gbm.bo_destroy)(bo) };
-        }
-        self.size = (0, 0);
+    }
+
+    /// The size a slot was allocated for, if it holds a buffer.
+    pub fn size_of(&self, slot: usize) -> Option<(u32, u32)> {
+        self.buffers[slot.min(1)].as_ref().map(|b| b.size)
     }
 
     /// Scale and grey whatever the compositor last copied in, and write the panel's
@@ -415,21 +422,21 @@ impl Converter {
     /// The image is created and destroyed per frame, which is what the export protocol
     /// hands us: a buffer, not a promise about a buffer. Nothing is copied on the way
     /// in, and the only bytes that cross to the CPU are the 36KB written into `out`.
-    pub fn convert_into(&mut self, y_invert: bool, out: &mut [u8]) -> io::Result<()> {
+    pub fn convert_into(&mut self, slot: usize, y_invert: bool, out: &mut [u8]) -> io::Result<()> {
         if out.len() < (self.dw * self.dh) as usize {
             return Err(io::Error::other("the frame does not fit the panel"));
         }
-        let image = self
-            .imported
+        let buffer = self.buffers[slot.min(1)]
             .as_ref()
-            .ok_or_else(|| io::Error::other("no buffer imported"))?
-            .as_ptr();
+            .ok_or_else(|| io::Error::other("no buffer imported"))?;
+        let (sw, sh) = buffer.size;
+        let image = buffer.image.as_ptr();
         let g = &self.gles;
 
         // The largest whole-pixel box that keeps the frame's shape, centred: the
         // sampler does the scaling, so the fit is only a viewport.
         let (dw, dh) = (self.dw, self.dh);
-        let (sw, sh) = (self.size.0.max(1), self.size.1.max(1));
+        let (sw, sh) = (sw.max(1), sh.max(1));
         let (w, h) = if sw * dh > dw * sh {
             (dw, (sh * dw / sw).max(1))
         } else {

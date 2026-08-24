@@ -184,9 +184,11 @@ struct Grab {
     /// What the panel takes.
     dw: u32,
     dh: u32,
-    /// The buffer screencopy copies into, when frames go through the GPU.
+    /// The two buffers screencopy copies into, and the request outstanding on each.
     #[cfg(feature = "gpu")]
-    buffer: Option<Copied>,
+    buffers: [Option<Copied>; 2],
+    #[cfg(feature = "gpu")]
+    pending: [Option<ZwlrScreencopyFrameV1>; 2],
 }
 
 /// A `wl_buffer` over the dmabuf we allocated, and the size it was made for.
@@ -238,7 +240,9 @@ struct State {
     shm: Option<wl_shm::WlShm>,
     screencopy: Option<ZwlrScreencopyManagerV1>,
     keyboards: Option<ZwpVirtualKeyboardManagerV1>,
-    capture: Capture,
+    /// One per buffer, because a request is outstanding on each: a single set of flags
+    /// would have the two frames answering for each other.
+    capture: [Capture; 2],
     /// The factory for wrapping our dmabuf as a `wl_buffer`.
     #[cfg(feature = "gpu")]
     dmabuf: Option<ZwpLinuxDmabufV1>,
@@ -300,22 +304,16 @@ impl Grab {
         self.capture(timeout, false, out)
     }
 
-    /// Have the compositor copy a frame into our own buffer, and let the GPU turn it
-    /// into a panel frame.
+    /// Ask the compositor to copy the next frame into the buffer in `slot`.
     ///
-    /// `zwlr_screencopy` rather than the deprecated `zwlr_export_dmabuf`: the export
-    /// protocol hands over the compositor's front buffer, which it goes on drawing
-    /// into, so a converted frame can be from another moment. A copy into a buffer we
-    /// allocated costs one GPU blit inside the compositor and is finished when `ready`
-    /// arrives. Either way the only bytes that reach the CPU are the 36KB the panel
-    /// takes.
+    /// Returns without waiting: the point of two buffers is that the copy runs while
+    /// the other frame is being converted and put on the panel.
     #[cfg(feature = "gpu")]
-    fn capture_copied(
+    fn request_copy(
         &mut self,
         converter: &mut crate::gpu::Converter,
+        slot: usize,
         timeout: Duration,
-        on_change: bool,
-        out: &mut [u8],
     ) -> io::Result<bool> {
         let manager = self.state.screencopy.clone().unwrap();
         let output = self.state.output.clone().unwrap();
@@ -324,14 +322,14 @@ impl Grab {
         };
         let qh = self.queue.handle();
 
-        self.state.capture = Capture::default();
+        self.state.capture[slot] = Capture::default();
         self.state.offered = None;
-        let frame = manager.capture_output(0, &output, &qh, ());
+        let frame = manager.capture_output(0, &output, &qh, slot);
 
         // The compositor says what a dmabuf copy needs before anything is allocated.
         let deadline = Instant::now() + timeout;
-        while !self.state.capture.described {
-            if !self.pump(deadline)? || self.state.capture.failed {
+        while !self.state.capture[slot].described {
+            if !self.pump(deadline)? || self.state.capture[slot].failed {
                 frame.destroy();
                 return Ok(false);
             }
@@ -341,12 +339,12 @@ impl Grab {
             return Err(io::Error::other("screencopy offered no dmabuf"));
         };
 
-        // One buffer for as long as the size holds: allocating is an export and a round
-        // trip, and the size changes only when the app's output does.
-        if self.buffer.as_ref().is_none_or(|b| b.size != (w, h)) {
+        // One buffer per slot for as long as the size holds: allocating is an export
+        // and a round trip, and the size changes only when the app's output does.
+        if self.buffers[slot].as_ref().is_none_or(|b| b.size != (w, h)) {
             // In the format screencopy named, because a buffer the compositor will not
             // take is a fatal protocol error rather than a refusal.
-            let target = converter.allocate(fourcc, w, h)?;
+            let target = converter.allocate(slot, fourcc, w, h)?;
             let params = dmabuf.create_params(&qh, ());
             for (index, plane) in target.planes.iter().enumerate() {
                 params.add(
@@ -367,24 +365,47 @@ impl Grab {
                 (),
             );
             params.destroy();
-            self.buffer = Some(Copied { buffer, size: (w, h) });
+            self.buffers[slot] = Some(Copied { buffer, size: (w, h) });
         }
-        let buffer = self.buffer.as_ref().unwrap().buffer.clone();
+        let buffer = self.buffers[slot].as_ref().unwrap().buffer.clone();
 
-        if on_change {
-            frame.copy_with_damage(&buffer);
-        } else {
-            frame.copy(&buffer);
-        }
-        while !self.state.capture.ready {
-            if !self.pump(deadline)? || self.state.capture.failed {
+        // Plain `copy`, always. `copy_with_damage` waits for damage *after* the request
+        // and copies on the repaint after that, so two of the compositor's frames go by
+        // for each of ours: it measured 30ms a frame where a plain copy needs one
+        // repaint. A still app then produces identical frames, which is answered by not
+        // publishing a frame that has not changed.
+        frame.copy(&buffer);
+        self.pending[slot] = Some(frame);
+        Ok(true)
+    }
+
+    /// Wait for the copy in `slot`, then convert it into `out`.
+    ///
+    /// `zwlr_screencopy` rather than the deprecated `zwlr_export_dmabuf`: the export
+    /// protocol hands over the compositor's front buffer, which it goes on drawing
+    /// into, so a converted frame can be from another moment. A copy into a buffer we
+    /// own is finished when `ready` arrives. It costs a wait for the compositor's next
+    /// repaint, which is what the second buffer is for.
+    #[cfg(feature = "gpu")]
+    fn collect_copy(
+        &mut self,
+        converter: &mut crate::gpu::Converter,
+        slot: usize,
+        timeout: Duration,
+        out: &mut [u8],
+    ) -> io::Result<bool> {
+        let Some(frame) = self.pending[slot].take() else {
+            return Ok(false);
+        };
+        let deadline = Instant::now() + timeout;
+        while !self.state.capture[slot].ready {
+            if !self.pump(deadline)? || self.state.capture[slot].failed {
                 frame.destroy();
                 return Ok(false);
             }
         }
         frame.destroy();
-
-        converter.convert_into(false, out)?;
+        converter.convert_into(slot, false, out)?;
         Ok(true)
     }
 
@@ -398,30 +419,30 @@ impl Grab {
         let output = self.state.output.clone().unwrap();
         let qh = self.queue.handle();
 
-        self.state.capture = Capture::default();
-        let frame = manager.capture_output(0, &output, &qh, ());
+        self.state.capture[0] = Capture::default();
+        let frame = manager.capture_output(0, &output, &qh, 0usize);
 
         let deadline = Instant::now() + timeout;
-        while !self.state.capture.described {
-            if !self.pump(deadline)? || self.state.capture.failed {
+        while !self.state.capture[0].described {
+            if !self.pump(deadline)? || self.state.capture[0].failed {
                 frame.destroy();
                 return Ok(false);
             }
         }
-        if !self.state.capture.described {
+        if !self.state.capture[0].described {
             frame.destroy();
             return Ok(false);
         }
 
-        let format = match self.state.capture.format {
+        let format = match self.state.capture[0].format {
             Some(f) => f,
             None => {
                 frame.destroy();
                 return Err(io::Error::other("screencopy named no format"));
             }
         };
-        let stride = self.state.capture.stride;
-        let height = self.state.capture.height;
+        let stride = self.state.capture[0].stride;
+        let height = self.state.capture[0].height;
         let stale = self
             .shm
             .as_ref()
@@ -436,8 +457,8 @@ impl Grab {
         } else {
             frame.copy(&buffer);
         }
-        while !self.state.capture.ready {
-            if !self.pump(deadline)? || self.state.capture.failed {
+        while !self.state.capture[0].ready {
+            if !self.pump(deadline)? || self.state.capture[0].failed {
                 frame.destroy();
                 return Ok(false);
             }
@@ -612,7 +633,7 @@ impl Session {
             shm: None,
             screencopy: None,
             keyboards: None,
-            capture: Capture::default(),
+            capture: [Capture::default(), Capture::default()],
             #[cfg(feature = "gpu")]
             dmabuf: None,
             #[cfg(feature = "gpu")]
@@ -670,7 +691,9 @@ impl Session {
             dw: u32::from(crate::PANEL_W),
             dh: u32::from(crate::PANEL_H),
             #[cfg(feature = "gpu")]
-            buffer: None,
+            buffers: [None, None],
+            #[cfg(feature = "gpu")]
+            pending: [None, None],
         };
 
         let frames = Arc::new(Frames {
@@ -823,6 +846,9 @@ impl RawFdCompat for OwnedFd {
 /// not drawing costs nothing and one that is costs a readback.
 fn read_frames(mut grab: Grab, frames: Arc<Frames>) {
     let mut generation = 0u64;
+    // Which of the two buffers the outstanding request belongs to.
+    #[cfg(feature = "gpu")]
+    let mut slot = 0usize;
     // Built here rather than handed over: an EGL context is current on the thread that
     // created it, and this is the thread that will use it.
     // FLIPCTL_NO_GPU takes the CPU pass instead, which is how "is it the GPU path or
@@ -846,6 +872,16 @@ fn read_frames(mut grab: Grab, frames: Arc<Frames>) {
             }
         }
     };
+    // One request in flight before the first collection, or there would be nothing to
+    // collect and every frame would pay the compositor's wait in full.
+    #[cfg(feature = "gpu")]
+    if let Some(converter) = gpu.as_mut() {
+        if let Err(e) = grab.request_copy(converter, slot, Duration::from_millis(120)) {
+            eprintln!("wl: GPU capture unusable ({e}), reading on the CPU");
+            gpu = None;
+        }
+    }
+
     loop {
         if frames.stop.load(Ordering::Acquire) {
             return;
@@ -876,21 +912,37 @@ fn read_frames(mut grab: Grab, frames: Arc<Frames>) {
         let mut next = vec![0u8; usize::from(crate::PANEL_W) * usize::from(crate::PANEL_H)];
         #[cfg(feature = "gpu")]
         let taken = match gpu.as_mut() {
-            Some(converter) => match grab.capture_copied(
-                converter,
-                Duration::from_millis(120),
-                streaming || !once,
-                &mut next,
-            ) {
-                Ok(frame) => Ok(frame),
-                Err(e) => {
-                    // Said once: an export that cannot work will not start working, and
-                    // the CPU path shows the app meanwhile.
-                    eprintln!("wl: GPU capture unusable ({e}), reading on the CPU");
-                    gpu = None;
-                    grab.frame(Duration::from_millis(120), &mut next)
+            Some(converter) => {
+                // Collect the copy that was asked for last time round, then ask for the
+                // next one straight away, so the compositor's copy overlaps the
+                // conversion and the panel commit rather than following them.
+                let ready = grab.collect_copy(
+                    converter,
+                    slot,
+                    Duration::from_millis(120),
+                    &mut next,
+                );
+                let outcome = match ready {
+                    Ok(got) => {
+                        slot = 1 - slot;
+                        match grab.request_copy(converter, slot, Duration::from_millis(120)) {
+                            Ok(_) => Ok(got),
+                            Err(e) => Err(e),
+                        }
+                    }
+                    Err(e) => Err(e),
+                };
+                match outcome {
+                    Ok(got) => Ok(got),
+                    Err(e) => {
+                        // Said once: a capture that cannot work will not start working,
+                        // and the CPU path shows the app meanwhile.
+                        eprintln!("wl: GPU capture unusable ({e}), reading on the CPU");
+                        gpu = None;
+                        grab.frame(Duration::from_millis(120), &mut next)
+                    }
                 }
-            },
+            }
             None => {
                 if once && !streaming {
                     grab.frame_now(Duration::from_millis(120), &mut next)
@@ -988,12 +1040,12 @@ fn wait_for(path: &Path, wait: Duration) -> bool {
     false
 }
 
-impl Dispatch<ZwlrScreencopyFrameV1, ()> for State {
+impl Dispatch<ZwlrScreencopyFrameV1, usize> for State {
     fn event(
         state: &mut Self,
         _: &ZwlrScreencopyFrameV1,
         event: zwlr_screencopy_frame_v1::Event,
-        _: &(),
+        slot: &usize,
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -1004,18 +1056,18 @@ impl Dispatch<ZwlrScreencopyFrameV1, ()> for State {
                 height,
                 stride,
             } => {
-                state.capture.format = format.into_result().ok();
-                state.capture.width = width;
-                state.capture.height = height;
-                state.capture.stride = stride;
+                state.capture[(*slot).min(1)].format = format.into_result().ok();
+                state.capture[(*slot).min(1)].width = width;
+                state.capture[(*slot).min(1)].height = height;
+                state.capture[(*slot).min(1)].stride = stride;
             }
             #[cfg(feature = "gpu")]
             zwlr_screencopy_frame_v1::Event::LinuxDmabuf { format, width, height } => {
                 state.offered = Some((format, width, height));
             }
-            zwlr_screencopy_frame_v1::Event::BufferDone => state.capture.described = true,
-            zwlr_screencopy_frame_v1::Event::Ready { .. } => state.capture.ready = true,
-            zwlr_screencopy_frame_v1::Event::Failed => state.capture.failed = true,
+            zwlr_screencopy_frame_v1::Event::BufferDone => state.capture[(*slot).min(1)].described = true,
+            zwlr_screencopy_frame_v1::Event::Ready { .. } => state.capture[(*slot).min(1)].ready = true,
+            zwlr_screencopy_frame_v1::Event::Failed => state.capture[(*slot).min(1)].failed = true,
             _ => {}
         }
     }
