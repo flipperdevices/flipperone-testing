@@ -23,7 +23,6 @@ use std::os::fd::AsRawFd;
 const VT_SETMODE: libc::c_ulong = 0x5602;
 const VT_GETSTATE: libc::c_ulong = 0x5603;
 const VT_ACTIVATE: libc::c_ulong = 0x5606;
-const VT_WAITACTIVE: libc::c_ulong = 0x5607;
 // linux/fb.h
 const FBIOGET_VSCREENINFO: libc::c_ulong = 0x4600;
 const FBIOPUT_VSCREENINFO: libc::c_ulong = 0x4601;

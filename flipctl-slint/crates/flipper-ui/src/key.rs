@@ -51,6 +51,29 @@ mod code {
 }
 
 impl FlipperKey {
+    /// The code the input driver sends for this key.
+    ///
+    /// The inverse of `from_evdev`, for putting a key back on the wire: a press
+    /// simulated in the browser has to reach a hosted app the same way a real one
+    /// does, through the compositor, which speaks evdev codes.
+    pub const fn to_evdev(self) -> u16 {
+        match self {
+            Self::Up => code::KEY_UP,
+            Self::Down => code::KEY_DOWN,
+            Self::Left => code::KEY_LEFT,
+            Self::Right => code::KEY_RIGHT,
+            Self::Ok => code::KEY_ENTER,
+            Self::Back => code::KEY_BACKSPACE,
+            Self::AppSwitch => code::KEY_TAB,
+            Self::Ptt => code::KEY_A,
+            Self::Escape => code::KEY_Z,
+            Self::View => code::KEY_X,
+            Self::Power => code::KEY_C,
+            Self::Edit => code::KEY_V,
+            Self::Run => code::KEY_B,
+        }
+    }
+
     /// Map a raw `EV_KEY` code. `None` for anything the panel UI does not own,
     /// which includes the headset keys on the third input device.
     pub fn from_evdev(keycode: u16) -> Option<Self> {

@@ -88,7 +88,7 @@ echo "== building on the device =="
 # binary size.
 run "cd ~/$DEST && export PATH=\$HOME/.cargo/bin:\$PATH \
         CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 && \
-     cargo build --release -p flipper-ui-demo --features device,slint,remote 2>&1 | tail -3"
+     cargo build --release -p flipper-ui-demo --features device,slint,remote,wayland 2>&1 | tail -3"
 
 if [ "$RUN" = no ]; then
     echo "== built, nothing restarted =="

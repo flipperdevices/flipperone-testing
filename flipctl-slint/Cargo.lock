@@ -1110,6 +1110,8 @@ dependencies = [
  "i-slint-common",
  "libc",
  "png 0.17.16",
+ "serde",
+ "serde_json",
  "slint",
  "slint-build",
  "toml 0.8.23",

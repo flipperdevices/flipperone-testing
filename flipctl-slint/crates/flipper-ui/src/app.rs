@@ -54,6 +54,14 @@ pub enum Kind {
     /// paints it, and the program runs there. It needs no code of ours, so the
     /// app is a manifest naming a command.
     Console,
+    /// A program that draws for itself as a Wayland client: a Qt or GTK app, a
+    /// terminal emulator with something running in it, anything with a Wayland
+    /// backend. It joins the compositor that owns the panel, on a workspace of its
+    /// own, and needs no devices at all: a socket is the whole of its world.
+    ///
+    /// Supersedes `Console`, which had to hand over the VT, the framebuffer and
+    /// DRM master, and could only ever run one program at a time.
+    Wayland,
 }
 
 /// The per-app virtualenv, inside the app's own directory.
@@ -76,6 +84,16 @@ pub struct AppEntry {
     pub bin: String,
     /// The command line to run on a VT. Console apps only.
     pub console: String,
+    /// The command line to run as a Wayland client. Wayland apps only.
+    pub wayland: String,
+    /// The size the program insists on drawing, when it is not the panel's.
+    ///
+    /// Doom is the case this exists for: it renders 320x200 and will not accept a
+    /// smaller window, so tiling it into a 256x144 output shows a corner of the
+    /// frame rather than the frame. Declaring the size lets flipctl scale the
+    /// output while that app is in front, so the compositor fits the whole picture
+    /// onto the panel instead.
+    pub size: Option<(u32, u32)>,
     /// Which console font to run it in, by cell: "4x6", "5x8", "6x12", "7x14",
     /// "8x16". Empty for the default. Console apps only, since it decides how many
     /// rows and columns the program gets and nothing else in the system has any.
@@ -120,6 +138,10 @@ impl AppEntry {
             Kind::Console => (
                 PathBuf::from("/bin/sh"),
                 vec![PathBuf::from("-c"), PathBuf::from(&self.console)],
+            ),
+            Kind::Wayland => (
+                PathBuf::from("/bin/sh"),
+                vec![PathBuf::from("-c"), PathBuf::from(&self.wayland)],
             ),
         }
     }
@@ -386,6 +408,27 @@ pub fn discover(dir: &Path) -> Vec<AppEntry> {
             // A manifest first: it is the only thing a console app has, and an
             // app that carries one has said what it is.
             if let Ok(src) = std::fs::read_to_string(dir.join(MANIFEST)) {
+                // A Wayland command wins over a console one, so an app can carry
+                // both and work either side of the change.
+                let wayland = py_string(&src, "wayland").unwrap_or_default();
+                if !wayland.is_empty() {
+                    return Some(AppEntry {
+                        name: py_string(&src, "name").unwrap_or(fallback),
+                        kind: Kind::Wayland,
+                        icon: py_string(&src, "icon").unwrap_or_default(),
+                        apt: py_list(&src, "apt"),
+                        pip: Vec::new(),
+                        bin: String::new(),
+                        console: String::new(),
+                        wayland,
+                        size: py_size(&src, "size"),
+                        font: String::new(),
+                        graphics: true,
+                        mirror: true,
+                        env: py_list(&src, "env"),
+                        dir: dir.canonicalize().unwrap_or(dir),
+                    });
+                }
                 let console = py_string(&src, "console").unwrap_or_default();
                 if !console.is_empty() {
                     return Some(AppEntry {
@@ -396,6 +439,8 @@ pub fn discover(dir: &Path) -> Vec<AppEntry> {
                         pip: Vec::new(),
                         bin: String::new(),
                         console,
+                        wayland: String::new(),
+                        size: None,
                         font: py_string(&src, "font").unwrap_or_default(),
                         graphics: py_string(&src, "draws")
                             .is_some_and(|d| d.eq_ignore_ascii_case("pixels")),
@@ -417,6 +462,8 @@ pub fn discover(dir: &Path) -> Vec<AppEntry> {
                     pip: py_list(&src, "APP_PIP"),
                     bin: String::new(),
                     console: String::new(),
+                    wayland: String::new(),
+                    size: None,
                     font: String::new(),
                     graphics: false,
                     mirror: true,
@@ -440,6 +487,8 @@ pub fn discover(dir: &Path) -> Vec<AppEntry> {
                 pip: Vec::new(),
                 bin,
                 console: String::new(),
+                wayland: String::new(),
+                size: None,
                 font: String::new(),
                 graphics: false,
                 mirror: true,
@@ -911,6 +960,11 @@ fn missing_apt(packages: &[String]) -> Vec<String> {
         .lines()
         .filter_map(|l| {
             let (name, status) = l.split_once(' ')?;
+            // Without the architecture: dpkg prints `qt6-wayland:arm64` for anything
+            // marked Multi-Arch: same, and a manifest names the package, not the
+            // build of it. Comparing the two verbatim reported every multi-arch
+            // dependency as missing however many times it was installed.
+            let name = name.split(':').next()?;
             (status.trim() == "installed").then_some(name)
         })
         .collect();
@@ -919,6 +973,34 @@ fn missing_apt(packages: &[String]) -> Vec<String> {
         .filter(|p| !installed.contains(&p.as_str()))
         .cloned()
         .collect()
+}
+
+/// Stop a program and everything it started.
+///
+/// The direct child of a launch is `/bin/sh`, and the program is its child, so
+/// killing the child leaves the program running: with a window still on a workspace
+/// flipctl then believes is free, which is how a game ended up tiled beside a file
+/// manager. Launches put the app in its own process group so the whole group can be
+/// signalled here.
+///
+/// TERM first, because a program that has a chance to exit tidily takes its
+/// temporary files with it, then KILL for whatever ignored it.
+pub fn stop_group(pid: u32) {
+    let group = -(pid as i32);
+    unsafe {
+        libc::kill(group, libc::SIGTERM);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    unsafe {
+        libc::kill(group, libc::SIGKILL);
+    }
+}
+
+/// A `size = "320x200"` field, as a pair.
+fn py_size(src: &str, key: &str) -> Option<(u32, u32)> {
+    let raw = py_string(src, key)?;
+    let (w, h) = raw.split_once(['x', 'X'])?;
+    Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
 }
 
 /// The uv binary, if it is installed.

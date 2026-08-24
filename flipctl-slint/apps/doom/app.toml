@@ -1,0 +1,30 @@
+# Doom, as an ordinary Wayland client.
+#
+# Nothing about this app is ours: no code, no wrapper, no protocol. It is the
+# Debian package, launched with an IWAD and told to fill its window, and it works
+# because flipctl hosts clients rather than handing over the hardware. Under the old
+# arrangement an SDL game would have needed the VT, the framebuffer and DRM master,
+# one at a time.
+#
+# freedoom rather than a commercial WAD, so the app is installable from the archive:
+# freedoom1.wad is the Ultimate Doom equivalent.
+#
+# Keys as they arrive: the D-pad moves, Enter works menus. Fire and use are Ctrl and
+# Space in Doom's defaults, which the panel has no buttons for, so a key mapping in
+# crispy-doom.cfg is the next step once it is running.
+name = "Doom"
+# What it insists on drawing. Doom renders 320x200 and will not take a smaller
+# window, so without this sway tiles it into a 256x144 output and shows a corner of
+# the frame. Declared, flipctl scales the output while Doom is in front: 0.720 makes
+# the output 355x200 logical, the window fits, and the whole picture reaches the
+# panel at 230x144, which is Doom's aspect rather than ours.
+size = "320x200"
+# By absolute path: Debian puts games in /usr/games, which is not on the PATH the
+# compositor's unit gives its children, so the bare name is not found.
+# -1 means "do not scale up the screen", which is what keeps the surface at 320x200
+# and implies -window. Without it Crispy renders 640x400 and a 320x200 window shows
+# the top-left quarter of the picture, which is what "a quarter of the Doom screen"
+# was. -fullscreen is wrong here too: it asks for a screen mode, and a compositor
+# answers with a surface of its own choosing.
+wayland = "/usr/games/crispy-doom -iwad /usr/share/games/doom/freedoom1.wad -1 -config default.cfg -extraconfig crispy-doom.cfg"
+apt = ["crispy-doom", "freedoom"]

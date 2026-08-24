@@ -1,8 +1,10 @@
-# An app with no code of its own.
+# htop in a terminal emulator that is itself a Wayland client.
 #
-# htop draws into a terminal, so flipctl lets go of the panel and lets the
-# kernel's VT paint it. Nothing here is ours except the declaration: the command,
-# what it needs installed, and the name the Apps list shows.
+# The kernel's VT used to be the terminal, which meant handing over the console,
+# the framebuffer and DRM master, and only one such program could run at a time.
+# `foot` is a terminal that draws as a client, so htop becomes an app like any
+# other: several can run at once, the font is not limited to what KDFONTOP takes,
+# and nothing touches the panel but flipctl.
 name = "htop"
-console = "htop"
-apt = ["htop"]
+wayland = "foot --font=monospace:size=6 -e htop"
+apt = ["foot", "htop"]

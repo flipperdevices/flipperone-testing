@@ -21,6 +21,10 @@ use wayland_client::protocol::{
 };
 use wayland_client::{delegate_noop, Connection, Dispatch, EventQueue, QueueHandle, WEnum};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
+use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
+    zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1,
+    zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
+};
 
 use crate::pixel::{Gray8, Rect};
 use crate::platform::{Frame, FrameSink, InputSource};
@@ -37,6 +41,15 @@ pub struct WlSink {
     surface: wl_surface::WlSurface,
     buffers: Vec<Buffer>,
     next: usize,
+    /// For putting a simulated press back on the wire.
+    ///
+    /// A key pressed in the browser view has to reach a hosted app the same way a
+    /// real one does. flipctl cannot forward it to the app itself: the app is
+    /// another client of the compositor and has the keyboard, not us. So we hand it
+    /// to the compositor as a virtual keyboard on the same seat, and it goes
+    /// wherever a real press would have gone.
+    keyboard: Option<ZwpVirtualKeyboardV1>,
+    started: std::time::Instant,
     w: u16,
     h: u16,
 }
@@ -53,6 +66,7 @@ struct State {
     shm: Option<wl_shm::WlShm>,
     wm_base: Option<xdg_wm_base::XdgWmBase>,
     seat: Option<wl_seat::WlSeat>,
+    virtual_keyboards: Option<ZwpVirtualKeyboardManagerV1>,
     configured: bool,
     closed: bool,
     // One keyboard, however many times the seat announces its capabilities. sway
@@ -70,7 +84,7 @@ impl WlSink {
     /// surface of `w` by `h`.
     pub fn new(w: u16, h: u16) -> io::Result<Self> {
         let conn = Connection::connect_to_env().map_err(io::Error::other)?;
-        let (globals, mut queue) =
+        let (globals, queue) =
             wayland_client::globals::registry_queue_init::<State>(&conn).map_err(io::Error::other)?;
         let qh = queue.handle();
 
@@ -86,6 +100,10 @@ impl WlSink {
                 }
                 "wl_seat" => {
                     state.seat = Some(globals.registry().bind(g.name, 5.min(g.version), &qh, ()))
+                }
+                "zwp_virtual_keyboard_manager_v1" => {
+                    state.virtual_keyboards =
+                        Some(globals.registry().bind(g.name, 1.min(g.version), &qh, ()))
                 }
                 _ => {}
             }
@@ -114,6 +132,32 @@ impl WlSink {
             buffers.push(Buffer::new(&shm, &qh, w, h, i)?);
         }
 
+        // Optional on purpose: without it the browser view cannot drive a hosted
+        // app, which is a missing convenience rather than a reason not to start.
+        let keyboard = match (
+            sink_state_keyboard(&state),
+            state.seat.clone(),
+        ) {
+            (Some(manager), Some(seat)) => {
+                let keyboard = manager.create_virtual_keyboard(&seat, &qh, ());
+                match crate::wl::memfd("flipctl-sink-keymap", crate::wl::KEYMAP.as_bytes()) {
+                    Ok(fd) => {
+                        keyboard.keymap(1, fd.as_fd(), crate::wl::KEYMAP.len() as u32);
+                        eprintln!("keys           simulated presses go to the compositor");
+                        Some(keyboard)
+                    }
+                    Err(e) => {
+                        eprintln!("wl: no keymap for the virtual keyboard: {e}");
+                        None
+                    }
+                }
+            }
+            _ => {
+                eprintln!("wl: compositor has no virtual keyboard; simulated keys stay ours");
+                None
+            }
+        };
+
         let mut sink = Self {
             conn,
             queue,
@@ -121,6 +165,8 @@ impl WlSink {
             surface,
             buffers,
             next: 0,
+            keyboard,
+            started: std::time::Instant::now(),
             w,
             h,
         };
@@ -156,6 +202,20 @@ impl WlSink {
         Ok(())
     }
 
+    /// Hand a press to the compositor, as a real keyboard would.
+    ///
+    /// Returns false when the compositor offered no virtual keyboard, so the caller
+    /// can say so rather than silently dropping the key.
+    pub fn inject(&mut self, code: u16, down: bool) -> bool {
+        let Some(keyboard) = self.keyboard.as_ref() else {
+            return false;
+        };
+        let ms = self.started.elapsed().as_millis() as u32;
+        keyboard.key(ms, u32::from(code), u32::from(down));
+        let _ = self.conn.flush();
+        true
+    }
+
     /// True once the compositor or the user has asked us to go away.
     pub fn closed(&self) -> bool {
         self.state.closed
@@ -164,6 +224,14 @@ impl WlSink {
 
 impl FrameSink for WlSink {
     fn commit(&mut self, frame: Frame<'_>, damage: Rect) -> io::Result<()> {
+        // The buffer was sized once, at connect: a frame of another size would be
+        // written past its end or leave a band of the last one showing.
+        if (frame.w, frame.h) != (self.w, self.h) {
+            return Err(io::Error::other(format!(
+                "frame is {}x{}, surface is {}x{}",
+                frame.w, frame.h, self.w, self.h
+            )));
+        }
         self.pump()?;
         // Whichever buffer the compositor is not holding. Both busy means it has
         // not caught up, and the frame is dropped rather than queued: the panel
@@ -395,3 +463,11 @@ delegate_noop!(State: ignore wl_compositor::WlCompositor);
 delegate_noop!(State: ignore wl_shm::WlShm);
 delegate_noop!(State: ignore wl_shm_pool::WlShmPool);
 delegate_noop!(State: ignore wl_surface::WlSurface);
+
+/// The manager, if the compositor offered one.
+fn sink_state_keyboard(state: &State) -> Option<ZwpVirtualKeyboardManagerV1> {
+    state.virtual_keyboards.clone()
+}
+
+delegate_noop!(State: ignore ZwpVirtualKeyboardManagerV1);
+delegate_noop!(State: ignore ZwpVirtualKeyboardV1);

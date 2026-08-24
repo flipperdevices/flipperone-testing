@@ -28,6 +28,9 @@ Environment=XDG_SESSION_TYPE=wayland
 Environment=WLR_BACKENDS=drm,libinput
 # By path, never by number: card numbers move between kernels.
 Environment=WLR_DRM_DEVICES=/dev/dri/by-path/platform-2acf0000.spi-cs-0-card
+# /usr/games too, because that is where Debian puts them and a hosted app is
+# whatever the archive ships.
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/usr/games
 
 DevicePolicy=closed
 DeviceAllow=/dev/dri/by-path/platform-2acf0000.spi-cs-0-card rw
@@ -39,6 +42,16 @@ WorkingDirectory=/home/user/flipctl-slint
 StandardOutput=journal
 StandardError=journal
 ExecStart=/usr/bin/sway -c /etc/flipctl/sway.conf
+
+# Stopping the unit does not stop what it started. PAMName=login puts these
+# processes in a logind session scope rather than the service's own cgroup, so
+# systemd kills nothing on restart: every restart used to leave the previous flipctl
+# alive, still holding port 9999, so the new one came up without the endpoint that
+# carries Back and the app switcher, and the panel or the browser view looked broken
+# for reasons minutes in the past.
+ExecStopPost=-/usr/bin/pkill -x flipper-ui-demo
+ExecStopPost=-/usr/bin/pkill -x crispy-doom
+ExecStopPost=-/usr/bin/pkill -x foot
 Restart=on-failure
 RestartSec=2
 

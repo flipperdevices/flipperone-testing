@@ -41,7 +41,7 @@ use wayland_protocols_wlr::screencopy::v1::client::{
 /// has ten keys, not a hundred. Keycodes are evdev codes plus 8, which is what XKB
 /// counts in; the protocol carries the evdev code and the compositor adds the
 /// offset. One level, no modifiers: there is no shift key to hold.
-const KEYMAP: &str = r#"xkb_keymap {
+pub(crate) const KEYMAP: &str = r#"xkb_keymap {
 xkb_keycodes "flipctl" {
     minimum = 8;
     maximum = 255;
@@ -54,6 +54,12 @@ xkb_keycodes "flipctl" {
     <FK03> =  69;
     <FK04> =  70;
     <FK05> =  71;
+    <AC01> =  38;
+    <AB01> =  56;
+    <AB02> =  54;
+    <AB03> =  52;
+    <AB04> =  53;
+    <AB05> =  55;
     <UP>   = 111;
     <LEFT> = 113;
     <RGHT> = 114;
@@ -82,6 +88,12 @@ xkb_symbols "flipctl" {
     key <FK03> { [ F3 ] };
     key <FK04> { [ F4 ] };
     key <FK05> { [ F5 ] };
+    key <AC01> { [ a ] };
+    key <AB01> { [ b ] };
+    key <AB02> { [ c ] };
+    key <AB03> { [ z ] };
+    key <AB04> { [ x ] };
+    key <AB05> { [ v ] };
 };
 };
 "#;
@@ -89,17 +101,37 @@ xkb_symbols "flipctl" {
 /// An app running in its own compositor.
 pub struct Session {
     cage: Child,
+    keyboard: ZwpVirtualKeyboardV1,
+    started: Instant,
+    dir: PathBuf,
+    grab: Grab,
+}
+
+/// One connection, and what it takes to read frames over it.
+///
+/// Shared by two callers with the same need and different reasons: an app in its
+/// own cage, and the compositor that owns the panel, whose output is whatever is in
+/// front. Both want "give me the current frame as grey8", and neither wants to know
+/// how screencopy negotiates a buffer.
+struct Grab {
     conn: Connection,
     queue: EventQueue<State>,
     state: State,
-    keyboard: ZwpVirtualKeyboardV1,
     shm_global: wl_shm::WlShm,
     shm: Option<Shm>,
     grey: Vec<u8>,
-    started: Instant,
-    dir: PathBuf,
     w: u32,
     h: u32,
+}
+
+/// The panel, as the compositor sees it.
+///
+/// Reads whatever is on the output: flipctl's own surface when nothing is in front,
+/// and the app's when one is. That is what the browser view and the switcher's cards
+/// want, and it is the thing the old arrangement could not do at all for an app that
+/// took DRM master, because its pixels never reached anything we could read.
+pub struct Mirror {
+    grab: Grab,
 }
 
 /// Shared memory the compositor copies a frame into.
@@ -142,7 +174,7 @@ struct State {
     capture: Capture,
 }
 
-impl Session {
+impl Grab {
     /// Read whatever the compositor has to say, waiting at most until `deadline`.
     ///
     /// Returns false when the wait ran out. `blocking_dispatch` cannot do this: it
@@ -179,6 +211,179 @@ impl Session {
         Ok(true)
     }
 
+
+    /// Capture as soon as the app draws something new, or give up at `timeout`.
+    ///
+    /// This is a frame callback rather than a poll: the compositor holds the copy
+    /// until the output actually changes, so an idle app costs nothing, a busy one
+    /// is read once per frame we ask for, and a starting one is waited for rather
+    /// than captured blank.
+    pub fn frame(&mut self, timeout: Duration) -> io::Result<Option<&[u8]>> {
+        self.capture(timeout, true)
+    }
+
+    /// Capture whatever is on the output now, changed or not.
+    pub fn frame_now(&mut self, timeout: Duration) -> io::Result<Option<&[u8]>> {
+        self.capture(timeout, false)
+    }
+
+    fn capture(&mut self, timeout: Duration, on_change: bool) -> io::Result<Option<&[u8]>> {
+        let manager = self.state.screencopy.clone().unwrap();
+        let output = self.state.output.clone().unwrap();
+        let qh = self.queue.handle();
+
+        self.state.capture = Capture::default();
+        let frame = manager.capture_output(0, &output, &qh, ());
+
+        let deadline = Instant::now() + timeout;
+        while !self.state.capture.described {
+            if !self.pump(deadline)? || self.state.capture.failed {
+                frame.destroy();
+                return Ok(None);
+            }
+        }
+        if !self.state.capture.described {
+            frame.destroy();
+            return Ok(None);
+        }
+
+        let format = match self.state.capture.format {
+            Some(f) => f,
+            None => {
+                frame.destroy();
+                return Err(io::Error::other("screencopy named no format"));
+            }
+        };
+        let stride = self.state.capture.stride;
+        let height = self.state.capture.height;
+        let stale = self
+            .shm
+            .as_ref()
+            .is_none_or(|s| s.format != format || s.stride != stride);
+        if stale {
+            self.shm = Some(Shm::new(&self.shm_global, &qh, format, stride, height)?);
+        }
+        let buffer = self.shm.as_ref().unwrap().buffer.clone();
+
+        if on_change {
+            frame.copy_with_damage(&buffer);
+        } else {
+            frame.copy(&buffer);
+        }
+        while !self.state.capture.ready {
+            if !self.pump(deadline)? || self.state.capture.failed {
+                frame.destroy();
+                return Ok(None);
+            }
+        }
+        frame.destroy();
+
+        self.to_grey();
+        Ok(Some(&self.grey))
+    }
+
+    /// The panel's own luma, so a captured frame greys exactly as the driver would
+    /// have greyed it: 299/587/114 over the transmit buffer.
+    fn to_grey(&mut self) {
+        let Some(shm) = self.shm.as_ref() else { return };
+        let stride = shm.stride as usize;
+        let bgr = matches!(
+            shm.format,
+            wl_shm::Format::Xrgb8888 | wl_shm::Format::Argb8888
+        );
+        let src = unsafe { std::slice::from_raw_parts(shm.map, shm.len) };
+        for y in 0..self.h as usize {
+            let row = y * stride;
+            for x in 0..self.w as usize {
+                let p = row + x * 4;
+                if p + 3 > src.len() {
+                    break;
+                }
+                let (a, b) = (u32::from(src[p]), u32::from(src[p + 2]));
+                let (r, g, bl) = if bgr {
+                    (b, u32::from(src[p + 1]), a)
+                } else {
+                    (a, u32::from(src[p + 1]), b)
+                };
+                self.grey[y * self.w as usize + x] =
+                    ((r * 299 + g * 587 + bl * 114) / 1000).min(255) as u8;
+            }
+        }
+    }
+}
+
+impl Grab {
+    /// Attach to the compositor named by the environment.
+    ///
+    /// For the panel's own compositor, which flipctl is already a client of: there
+    /// is nothing to spawn and nothing to configure, only an output to read.
+    fn attach(w: u32, h: u32) -> io::Result<Self> {
+        let conn = Connection::connect_to_env().map_err(io::Error::other)?;
+        let (globals, mut queue) = wayland_client::globals::registry_queue_init::<State>(&conn)
+            .map_err(io::Error::other)?;
+        let qh = queue.handle();
+
+        let mut state = State {
+            output: None,
+            seat: None,
+            shm: None,
+            screencopy: None,
+            keyboards: None,
+            capture: Capture::default(),
+        };
+        for g in globals.contents().clone_list() {
+            match g.interface.as_str() {
+                "wl_output" => {
+                    state.output = Some(globals.registry().bind(g.name, 1.min(g.version), &qh, ()))
+                }
+                "wl_shm" => {
+                    state.shm = Some(globals.registry().bind(g.name, 1.min(g.version), &qh, ()))
+                }
+                "zwlr_screencopy_manager_v1" => {
+                    state.screencopy =
+                        Some(globals.registry().bind(g.name, 3.min(g.version), &qh, ()))
+                }
+                _ => {}
+            }
+        }
+        let missing = |what: &str| io::Error::other(format!("compositor has no {what}"));
+        let shm_global = state.shm.clone().ok_or_else(|| missing("wl_shm"))?;
+        state.screencopy.clone().ok_or_else(|| missing("screencopy"))?;
+        state.output.clone().ok_or_else(|| missing("wl_output"))?;
+        queue.roundtrip(&mut state).map_err(io::Error::other)?;
+
+        Ok(Self {
+            conn,
+            queue,
+            state,
+            shm_global,
+            shm: None,
+            grey: vec![0; (w * h) as usize],
+            w,
+            h,
+        })
+    }
+}
+
+impl Mirror {
+    /// Read the panel's own compositor.
+    pub fn attach(w: u32, h: u32) -> io::Result<Self> {
+        Ok(Self {
+            grab: Grab::attach(w, h)?,
+        })
+    }
+
+    /// Whatever is on the output right now: our own surface, or an app's.
+    ///
+    /// Immediate rather than damage-driven, because the caller decides the rate: the
+    /// browser view asks about ten times a second and the switcher once, and neither
+    /// wants to be blocked until something moves.
+    pub fn frame(&mut self, timeout: Duration) -> io::Result<Option<&[u8]>> {
+        self.grab.frame_now(timeout)
+    }
+}
+
+impl Session {
     /// Launch `command` inside its own compositor, sized `w` by `h`.
     ///
     /// The command runs under `cage`, which hosts exactly one app and exits with
@@ -292,17 +497,19 @@ impl Session {
 
         Ok(Self {
             cage,
-            conn,
-            queue,
-            state,
             keyboard,
-            shm_global,
-            shm: None,
-            grey: vec![0; (w * h) as usize],
             started: Instant::now(),
             dir,
-            w,
-            h,
+            grab: Grab {
+                conn,
+                queue,
+                state,
+                shm_global,
+                shm: None,
+                grey: vec![0; (w * h) as usize],
+                w,
+                h,
+            },
         })
     }
 
@@ -312,110 +519,22 @@ impl Session {
     }
 
     /// Capture as soon as the app draws something new, or give up at `timeout`.
-    ///
-    /// This is a frame callback rather than a poll: the compositor holds the copy
-    /// until the output actually changes, so an idle app costs nothing, a busy one
-    /// is read once per frame we ask for, and a starting one is waited for rather
-    /// than captured blank.
     pub fn frame(&mut self, timeout: Duration) -> io::Result<Option<&[u8]>> {
-        self.capture(timeout, true)
+        self.grab.frame(timeout)
     }
 
     /// Capture whatever is on the output now, changed or not.
     pub fn frame_now(&mut self, timeout: Duration) -> io::Result<Option<&[u8]>> {
-        self.capture(timeout, false)
-    }
-
-    fn capture(&mut self, timeout: Duration, on_change: bool) -> io::Result<Option<&[u8]>> {
-        let manager = self.state.screencopy.clone().unwrap();
-        let output = self.state.output.clone().unwrap();
-        let qh = self.queue.handle();
-
-        self.state.capture = Capture::default();
-        let frame = manager.capture_output(0, &output, &qh, ());
-
-        let deadline = Instant::now() + timeout;
-        while !self.state.capture.described {
-            if !self.pump(deadline)? || self.state.capture.failed {
-                frame.destroy();
-                return Ok(None);
-            }
-        }
-        if !self.state.capture.described {
-            frame.destroy();
-            return Ok(None);
-        }
-
-        let format = match self.state.capture.format {
-            Some(f) => f,
-            None => {
-                frame.destroy();
-                return Err(io::Error::other("screencopy named no format"));
-            }
-        };
-        let stride = self.state.capture.stride;
-        let height = self.state.capture.height;
-        let stale = self
-            .shm
-            .as_ref()
-            .is_none_or(|s| s.format != format || s.stride != stride);
-        if stale {
-            self.shm = Some(Shm::new(&self.shm_global, &qh, format, stride, height)?);
-        }
-        let buffer = self.shm.as_ref().unwrap().buffer.clone();
-
-        if on_change {
-            frame.copy_with_damage(&buffer);
-        } else {
-            frame.copy(&buffer);
-        }
-        while !self.state.capture.ready {
-            if !self.pump(deadline)? || self.state.capture.failed {
-                frame.destroy();
-                return Ok(None);
-            }
-        }
-        frame.destroy();
-
-        self.to_grey();
-        Ok(Some(&self.grey))
+        self.grab.frame_now(timeout)
     }
 
     /// Press or release one key, by evdev code.
     pub fn key(&mut self, code: u32, down: bool) {
         let ms = self.started.elapsed().as_millis() as u32;
         self.keyboard.key(ms, code, u32::from(down));
-        let _ = self.conn.flush();
+        let _ = self.grab.conn.flush();
     }
 
-    /// The panel's own luma, so a captured frame greys exactly as the driver would
-    /// have greyed it: 299/587/114 over the transmit buffer.
-    fn to_grey(&mut self) {
-        let Some(shm) = self.shm.as_ref() else { return };
-        let stride = shm.stride as usize;
-        let bgr = matches!(
-            shm.format,
-            wl_shm::Format::Xrgb8888 | wl_shm::Format::Argb8888
-        );
-        let src = unsafe { std::slice::from_raw_parts(shm.map, shm.len) };
-        for y in 0..self.h as usize {
-            let row = y * stride;
-            for x in 0..self.w as usize {
-                let p = row + x * 4;
-                if p + 3 > src.len() {
-                    break;
-                }
-                let (a, b) = (u32::from(src[p]), u32::from(src[p + 2]));
-                let (r, g, bl) = if bgr {
-                    (b, u32::from(src[p + 1]), a)
-                } else {
-                    (a, u32::from(src[p + 1]), b)
-                };
-                self.grey[y * self.w as usize + x] =
-                    ((r * 299 + g * 587 + bl * 114) / 1000).min(255) as u8;
-            }
-        }
-    }
 }
 
 impl Drop for Session {
@@ -475,7 +594,7 @@ impl RawFdCompat for OwnedFd {
 }
 
 /// A sealed anonymous file holding `bytes`, for handing to the compositor.
-fn memfd(name: &str, bytes: &[u8]) -> io::Result<OwnedFd> {
+pub(crate) fn memfd(name: &str, bytes: &[u8]) -> io::Result<OwnedFd> {
     let cname = CString::new(name).map_err(io::Error::other)?;
     let raw = unsafe { libc::memfd_create(cname.as_ptr(), 0) };
     if raw < 0 {

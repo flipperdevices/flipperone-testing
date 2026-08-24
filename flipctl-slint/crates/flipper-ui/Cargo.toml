@@ -22,6 +22,8 @@ slint = ["dep:slint", "dep:slint-build", "dep:i-slint-common"]
 # boot menu and recovery draw their own UI and never host anything, so they must
 # not pull wlroots in. Layer 2 of the two the plan describes.
 wayland = [
+    "dep:serde",
+    "dep:serde_json",
     "dep:wayland-client",
     "dep:wayland-protocols",
     "dep:wayland-protocols-wlr",
@@ -33,6 +35,11 @@ wayland = [
 # but has no IPv4 equivalent, and a UI process should not be shelling out to `ip`.
 libc = "0.2"
 drm = { version = "0.14", optional = true }
+# For sway's IPC replies. Hand-parsing them cost three bugs: a `num` field on every
+# node in the tree, a workspace bounded by "the next num", and finally pretty-printed
+# JSON that no substring search matched. A parser is smaller than those mistakes.
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
 wayland-client = { version = "0.31", optional = true }
 wayland-protocols = { version = "0.32", features = ["client"], optional = true }
 wayland-protocols-wlr = { version = "0.3", features = ["client"], optional = true }

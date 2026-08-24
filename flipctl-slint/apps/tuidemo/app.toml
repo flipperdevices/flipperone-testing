@@ -1,11 +1,9 @@
 # The device's own UI, drawn in a terminal.
 #
-# A console app cannot use flipctl's components: it has a character grid and a
-# terminal, not a panel. What it can do is keep the layout, which is what this is
-# for, and what it shows is how far that gets you: a status bar, a list with a
-# selector and its chevrons, and the five soft keys in their slots.
+# What it is for is showing how far the layout gets with a character grid instead
+# of a panel: a status bar, a list with a selector, and the five soft keys in their
+# slots. It used to need the kernel's VT and a 7x14 console font; now it is a
+# program in a terminal, and the terminal is a client like any other.
 name = "TUI Demo"
-console = "python3 app.py"
-# 36x10 characters, the chunkiest cell that still fits ten rows: closest in spirit
-# to a UI drawn at 16px on a 256x144 panel.
-font = "7x14"
+wayland = "foot --font=monospace:size=7 -e python3 app.py"
+apt = ["foot"]

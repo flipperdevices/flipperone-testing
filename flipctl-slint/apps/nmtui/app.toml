@@ -1,9 +1,7 @@
-# Network Manager's own text interface, on the panel.
+# NetworkManager's text UI, in its own terminal.
 #
-# Nothing of ours: flipctl hands the panel to the kernel's VT and nmtui runs
-# there. Worth having as an app because it is the one tool that can join a wifi
-# network, edit a connection or bring an interface up without a keyboard and a
-# shell, and it comes with the network-manager the device already runs on.
+# nmtui draws dialogs centred in whatever it is given, so it wants the roomiest
+# cell that still leaves it twelve rows: the same size mc gets.
 name = "nmtui"
-console = "nmtui"
-apt = ["network-manager"]
+wayland = "foot --font=monospace:size=6 -e nmtui"
+apt = ["foot", "network-manager"]

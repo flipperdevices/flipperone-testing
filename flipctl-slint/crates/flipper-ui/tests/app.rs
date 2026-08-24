@@ -134,12 +134,12 @@ fn discovered_paths_are_absolute() {
         );
         // What must exist depends on the kind. A Python app's entry is its
         // source; a Rust app's is a binary that may not be built yet, so the
-        // manifest is what proves the directory is an app; a console app has
-        // nothing but its manifest, since the program it runs is the system's.
+        // manifest is what proves the directory is an app; a console or Wayland app
+        // has nothing but its manifest, since the program it runs is the system's.
         let proof = match entry.kind {
             app::Kind::Python => entry.entry(),
             app::Kind::Rust => entry.dir.join("Cargo.toml"),
-            app::Kind::Console => entry.dir.join(app::MANIFEST),
+            app::Kind::Console | app::Kind::Wayland => entry.dir.join(app::MANIFEST),
         };
         assert!(
             proof.is_file(),
@@ -460,11 +460,13 @@ fn a_cards_scene_without_a_percentage_reads_as_minus_one() {
     assert_eq!(scene.percent, -1, "absent, not the card's 40");
 }
 
-/// A console app is a manifest and nothing else.
+/// A hosted app is a manifest and nothing else.
 ///
-/// htop is the case the whole console kind exists for: a program that draws into a
-/// terminal, which this repo does not ship, wrap or build. What it declares is the
-/// command line, and what flipctl does with it is hand over the panel.
+/// htop is the case this exists for: a program that draws into a terminal, which
+/// this repo does not ship, wrap or build. It used to be handed the kernel's VT and
+/// the panel with it; now it runs in a terminal emulator that is itself a Wayland
+/// client, so several can run at once and nothing but flipctl touches the panel.
+/// What the manifest declares either way is a command line.
 #[test]
 fn the_htop_app_is_a_manifest() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -474,9 +476,18 @@ fn the_htop_app_is_a_manifest() {
     let apps = app::discover(&root);
     let htop = apps.iter().find(|a| a.name == "htop").expect("the htop app");
 
-    assert_eq!(htop.kind, app::Kind::Console);
-    assert_eq!(htop.console, "htop");
-    assert_eq!(htop.apt, ["htop"], "declared, so it can be installed on demand");
+    assert_eq!(htop.kind, app::Kind::Wayland);
+    assert!(htop.wayland.contains("htop"), "the command runs htop");
+    assert!(
+        htop.wayland.starts_with("foot"),
+        "in a terminal of its own, not on a VT: {}",
+        htop.wayland
+    );
+    assert_eq!(
+        htop.apt,
+        ["foot", "htop"],
+        "both declared, so they can be installed on demand"
+    );
     assert!(htop.pip.is_empty());
     assert!(!htop.dir.join("app.py").exists(), "no code of ours");
 
@@ -484,7 +495,13 @@ fn the_htop_app_is_a_manifest() {
     // of these says "journalctl -f" it has to stay one command, not two.
     let (program, args) = htop.command();
     assert_eq!(program, std::path::Path::new("/bin/sh"));
-    assert_eq!(args, [std::path::Path::new("-c"), std::path::Path::new("htop")]);
+    assert_eq!(
+        args,
+        [
+            std::path::Path::new("-c"),
+            std::path::Path::new(htop.wayland.as_str())
+        ]
+    );
 }
 
 /// Everything a console app's manifest can say, read back off disk.

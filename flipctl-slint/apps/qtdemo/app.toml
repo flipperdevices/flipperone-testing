@@ -1,20 +1,4 @@
-# flipctl's look, drawn by Qt into the framebuffer.
-#
-# No compositor and no GPU: Qt rasterises in software and the app writes the result
-# to /dev/fb0, which reaches the panel now that the driver flushes fbdev writes. The
-# GPU is left alone for whatever else is using it.
-#
-# Offscreen rather than Qt's own linuxfb platform, because linuxfb paints straight
-# into the framebuffer while fbdev flushes what it finds there every 50ms: a flush
-# landing mid-paint puts half of two frames on the panel. Rendering offscreen and
-# writing one whole frame per repaint cannot tear, and it costs one memcpy.
-#
-# Run through the console kind, because the arrangement is the same one: flipctl
-# lets go of the panel and parks a VT, and the program draws. What it draws with is
-# the program's business.
+# flipctl's look, drawn by Qt as an ordinary Wayland client.
 name = "Qt Demo"
-console = "python3 app.py"
-apt = ["python3-pyqt6"]
-env = ["QT_QPA_PLATFORM=offscreen"]
-# It paints its own pixels, so the console is told to stop drawing on the VT. 
-draws = "pixels"
+wayland = "python3 app.py"
+apt = ["python3-pyqt6", "qt6-wayland"]

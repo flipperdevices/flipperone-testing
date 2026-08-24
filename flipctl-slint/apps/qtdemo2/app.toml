@@ -1,11 +1,10 @@
-# A second Qt app, so there is something to switch between.
+# A clock, drawn by Qt as an ordinary Wayland client.
 #
-# Deliberately unlike the first: that one is a static menu that presents when a key
-# changes something, this one animates, which is what shows that a backgrounded app
-# keeps running rather than being frozen. Same arrangement otherwise, drawn offscreen
-# and presented a whole frame at a time into /dev/fb0.
+# Nothing here hands over a device. The app joins the compositor that owns the
+# panel on a workspace of its own, and Qt's own Wayland backend does the drawing:
+# no offscreen rendering, no writing to /dev/fb0, no checking whether it is
+# visible, and no VT. flipctl sets QT_QPA_PLATFORM, so the manifest names a
+# command and nothing else.
 name = "Qt Clock"
-console = "python3 app.py"
-apt = ["python3-pyqt6"]
-env = ["QT_QPA_PLATFORM=offscreen"]
-draws = "pixels"
+wayland = "python3 app.py"
+apt = ["python3-pyqt6", "qt6-wayland"]
