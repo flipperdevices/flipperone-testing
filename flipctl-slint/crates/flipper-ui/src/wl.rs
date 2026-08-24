@@ -43,19 +43,24 @@ use wayland_protocols_wlr::screencopy::v1::client::{
 
 /// How often a hosted app's own output refreshes, in Hz.
 ///
-/// This is the app's pace, not the panel's, and it sets the floor under a frame's
-/// latency: the reader waits for the app to draw, so at 60 Hz up to 16.6 ms of every
-/// frame is spent waiting. Measured with Doom at 60 Hz: a frame arrived every 28.6 ms,
-/// 16.6 of it the wait and 12 the conversion. Raising it shortens only the wait, and
-/// costs the app whatever it spends drawing more often.
+/// Just above the panel's own rate, deliberately. The panel commits in 15.9 ms, which
+/// is 62.9 fps, so an app drawing at 60 was the limiter by a hair: measured with Doom,
+/// 59.6 fps at 60 Hz against 62.0 at 63, where the panel becomes the limiter instead
+/// and never waits for a frame. The cost is that the app draws about 5% more often and
+/// a few of those frames are never shown, since each commit takes the newest one.
 ///
-/// `FLIPCTL_APP_HZ` overrides it, which is how the numbers above were taken.
+/// It is the app's pace rather than the panel's, so it also sets the floor under a
+/// frame's age: at 63 Hz a frame can be 15.9 ms old when it reaches the panel, and
+/// raising it further trades the app's work and ours for that latency rather than for
+/// throughput.
+///
+/// `FLIPCTL_APP_HZ` overrides it, which is how those numbers were taken.
 pub fn app_refresh() -> u32 {
     std::env::var("FLIPCTL_APP_HZ")
         .ok()
         .and_then(|v| v.parse().ok())
         .filter(|hz| (1..=240).contains(hz))
-        .unwrap_or(60)
+        .unwrap_or(63)
 }
 
 /// The keymap handed to the virtual keyboard, and so to the app.
