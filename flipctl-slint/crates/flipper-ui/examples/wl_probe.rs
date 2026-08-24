@@ -1,9 +1,10 @@
-//! Host one app in its own compositor, capture it, and press keys at it.
+//! Host one app in its own compositor and capture it, without flipctl in the way.
 //!
 //! Usage: wl_probe "<command>" [frames]
 //!
-//! Writes each captured frame's mean grey and a PGM of the last one, so the proof
-//! is a picture rather than a claim.
+//! Writes each real frame's mean grey and a PGM of the last one, so the proof is a
+//! picture rather than a claim. `FLIPCTL_CAPWAIT_MS` waits before each conversion,
+//! which is how "the copy is not finished when it says it is" gets tested.
 
 use std::time::{Duration, Instant};
 
@@ -21,6 +22,9 @@ fn main() -> std::io::Result<()> {
     let began = Instant::now();
     let mut app = flipper_ui::wl::Session::launch(&command, w, h)?;
     println!("up in {}ms", began.elapsed().as_millis());
+    // Frames are read by the session's own thread, so ask for a stream and take
+    // whatever has arrived.
+    app.stream(true);
 
     let mut got = 0;
     let loop_began = Instant::now();
@@ -29,21 +33,26 @@ fn main() -> std::io::Result<()> {
             app.key(106, true);
             app.key(106, false);
         }
-        let began = Instant::now();
-        match app.frame(Duration::from_millis(4000))? {
+        let waited = Instant::now();
+        let mut frame = None;
+        while waited.elapsed() < Duration::from_millis(4000) {
+            frame = app.fresh();
+            if frame.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        match frame {
             Some(grey) => {
                 got += 1;
-                // Every real frame, not just the last: the last one is often an
-                // idle wait that captured nothing, and then the file on disk is
-                // whatever some earlier run left there.
                 let mut pgm = format!("P5\n{w} {h}\n255\n").into_bytes();
-                pgm.extend_from_slice(grey);
+                pgm.extend_from_slice(&grey);
                 std::fs::write("/tmp/wl_probe.pgm", pgm)?;
                 let mean: u32 = grey.iter().map(|&p| u32::from(p)).sum::<u32>() / grey.len() as u32;
                 let ink = grey.iter().filter(|&&p| p > 40).count();
                 println!(
                     "frame {i}: mean {mean}, {ink} pixels above 40, waited {}ms",
-                    began.elapsed().as_millis()
+                    waited.elapsed().as_millis()
                 );
             }
             None => println!("frame {i}: nothing (idle or failed)"),

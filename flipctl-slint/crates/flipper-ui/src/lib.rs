@@ -26,8 +26,9 @@ pub mod kms;
 pub mod console;
 #[cfg(feature = "remote")]
 pub mod remote;
-#[cfg(feature = "wayland")]
-pub mod sway;
+pub mod scale;
+#[cfg(feature = "gpu")]
+pub mod gpu;
 #[cfg(feature = "wayland")]
 pub mod wl;
 #[cfg(feature = "wayland")]

@@ -1,0 +1,53 @@
+[Unit]
+Description=flipctl on the Flipper One panel
+After=systemd-logind.service
+Wants=systemd-logind.service
+# Claim the panel before any display manager wakes up and starts looking at cards.
+Before=display-manager.service
+Before=sddm.service
+Conflicts=cog-seat1.service
+
+[Service]
+Type=simple
+User=user
+Group=user
+SupplementaryGroups=input video render
+
+# A real login session, so logind gives this process seat1's devices: the SPI panel
+# and the Flipper's buttons, both tagged ID_SEAT=seat1 by 72-seat-cog.rules.
+PAMName=login
+Environment=XDG_SEAT=seat1
+Environment=XDG_SESSION_CLASS=user
+Environment=XDG_SESSION_TYPE=tty
+# /usr/games too, because that is where Debian puts them and a hosted app is
+# whatever the archive ships.
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/usr/games
+
+DevicePolicy=closed
+# The panel, by path rather than by number: card numbers move between kernels. The
+# render node is for the apps' compositors, which draw with the GPU inside their own
+# cage and hand us the result.
+DeviceAllow=/dev/dri/by-path/platform-2acf0000.spi-cs-0-card rw
+DeviceAllow=/dev/dri/by-path/platform-27800000.gpu-render rw
+DeviceAllow=char-input rw
+DeviceAllow=/dev/tty0 rw
+
+WorkingDirectory=/home/user/flipctl-slint
+StandardOutput=journal
+StandardError=journal
+ExecStart=/home/user/flipctl-slint/target/release/flipper-ui-demo --panel \
+    --remote 0.0.0.0:9999 --assets crates/flipper-ui/assets/remote
+
+# Stopping the unit does not stop what it started: PAMName=login puts these
+# processes in a logind session scope rather than the service's own cgroup, so a
+# restart used to leave the previous flipctl alive, still holding port 9999, and the
+# new one came up with no endpoint for Back or the app switcher.
+ExecStopPost=-/usr/bin/pkill -x flipper-ui-demo
+ExecStopPost=-/usr/bin/pkill -x cage
+ExecStopPost=-/usr/bin/pkill -x crispy-doom
+ExecStopPost=-/usr/bin/pkill -x foot
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

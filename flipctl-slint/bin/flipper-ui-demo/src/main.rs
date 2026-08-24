@@ -1237,18 +1237,6 @@ impl PanelOut {
         }
     }
 
-    /// Put a simulated press on the compositor's wire, for the app that has focus.
-    ///
-    /// Only the Wayland sink can: with the KMS path flipctl *is* the only thing on
-    /// the panel, so a simulated press has nowhere else to go and is handled by the
-    /// UI directly.
-    fn inject(&mut self, code: u16, down: bool) -> bool {
-        match self {
-            Self::Kms(_) => false,
-            #[cfg(feature = "wayland")]
-            Self::Wl(s) => s.inject(code, down),
-        }
-    }
 
     /// Keys, for the sink that also carries them. The KMS path reads evdev itself.
     fn poll_key(&mut self) -> Option<flipper_ui::KeyEvent> {
@@ -1317,126 +1305,44 @@ impl PanelOut {
 /// the same compositor on a workspace of its own, and showing it is making that
 /// workspace visible. It gets no DRM device, no framebuffer, no VT and no input
 /// device, which is stronger isolation than the console kind could offer even with
-/// a device cgroup, because there is nothing to deny.
-#[cfg(all(feature = "device", feature = "slint", feature = "wayland"))]
+/// An app hosted in a compositor of its own.
+///
+/// One cage per app, headless, sized to whatever the app draws at. flipctl reads its
+/// frames, fits them to the panel and commits them itself, so the panel never changes
+/// hands: there is no output to share, no workspace to allocate, no window to place
+/// and nothing to hand back when the app exits.
 struct WlApp {
     name: String,
-    child: std::process::Child,
-    workspace: u32,
-    /// The size it insists on, and whether its window has been given it yet. The
-    /// window does not exist at launch, so this cannot be done there.
-    size: Option<(u32, u32)>,
-    shaped: bool,
+    session: flipper_ui::wl::Session,
 }
 
-/// Launch a Wayland app, or show it again if it is already running.
-///
-/// The workspace is made visible *before* spawning: sway puts a new client on
-/// whichever workspace is visible, so switching first is what keeps the app off
-/// flipctl's own workspace, with no window-management race to lose.
+/// Launch a Wayland app in its own compositor, or name the one already running.
 #[cfg(all(feature = "device", feature = "slint", feature = "wayland"))]
-fn start_wayland(
-    entry: &flipper_ui::app::AppEntry,
-    sway: &mut Option<flipper_ui::sway::Sway>,
-    running: &mut Vec<WlApp>,
-) -> Option<u32> {
+fn start_cage(entry: &flipper_ui::app::AppEntry, running: &mut Vec<WlApp>) -> Option<String> {
     if entry.kind != flipper_ui::app::Kind::Wayland {
         return None;
     }
-    let Some(sway) = sway.as_mut() else {
-        eprintln!("app            {} needs a compositor; run with --wayland", entry.name);
-        return None;
-    };
-
-    // Only ever one copy. Without this a lost bookkeeping entry means the next
-    // launch starts a second instance, both land on the same workspace, and the
-    // compositor tiles them: two half windows, each redrawing, which looks exactly
-    // like a broken app rather than two of them.
-    if let Some(at) = running.iter().position(|a| a.name == entry.name) {
-        let ws = running[at].workspace;
-        match sway.show(ws) {
-            Ok(true) => {
-                eprintln!("app            front is {} (workspace {ws})", entry.name);
-                return Some(ws);
-            }
-            other => {
-                eprintln!("app            {} could not be shown: {other:?}", entry.name);
-                return None;
-            }
-        }
+    // Only ever one copy. A second instance would draw into a second compositor that
+    // nothing reads, so the app would look started and stay invisible.
+    if running.iter().any(|a| a.name == entry.name) {
+        eprintln!("app            front is {} (already running)", entry.name);
+        return Some(entry.name.clone());
     }
 
-    // Free according to the compositor as well as to us. Trusting only our own list
-    // put a second app on a workspace that still had a window on it, and sway tiled
-    // the two side by side: half a game next to half a file manager.
-    let mut taken: Vec<u32> = running.iter().map(|a| a.workspace).collect();
-    taken.extend(sway.workspaces().unwrap_or_default());
-    let workspace = (flipper_ui::sway::HOME + 1..=32)
-        .find(|w| !taken.contains(w))
-        .unwrap_or(flipper_ui::sway::HOME + 1);
-    if !matches!(sway.show(workspace), Ok(true)) {
-        eprintln!("app            no workspace {workspace} for {}", entry.name);
-        return None;
-    }
-
-    let (program, args) = entry.command();
-    let mut cmd = std::process::Command::new(program);
-    cmd.args(args).current_dir(&entry.dir);
-    // Its own process group, so stopping it stops the program rather than the shell
-    // that started it. `sh -c` is the parent here, and killing that left Doom running
-    // with a window on a workspace flipctl believed to be free.
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
-    for pair in &entry.env {
-        if let Some((name, value)) = pair.split_once('=') {
-            cmd.env(name, value);
-        }
-    }
-    // Toolkits that need telling. Set here rather than in every manifest, since
-    // the answer is the same for all of them and getting it wrong means an app
-    // silently trying to open a DRM device it cannot see.
-    cmd.env("QT_QPA_PLATFORM", "wayland");
-    cmd.env("SDL_VIDEODRIVER", "wayland");
-    cmd.env("GDK_BACKEND", "wayland");
-    // The compositor's socket is the app's whole world, and the IPC socket is not
-    // part of it: an app that could talk to sway could switch workspaces and read
-    // the panel behind our back.
-    cmd.env_remove("SWAYSOCK");
-
-    match cmd.spawn() {
-        Ok(child) => {
-            eprintln!(
-                "app            {} started on workspace {workspace}",
-                entry.name
-            );
-            if let Some((w, h)) = entry.size {
-                // Scaled to fit the whole of what it draws, not to match one axis:
-                // the smaller of the two ratios keeps the aspect and letterboxes the
-                // spare.
-                let fit = (f32::from(flipper_ui::PANEL_W) / w as f32)
-                    .min(f32::from(flipper_ui::PANEL_H) / h as f32);
-                match sway.scale(fit) {
-                    Ok(true) => eprintln!(
-                        "app            {} wants {w}x{h}, output scaled to {fit:.3}",
-                        entry.name
-                    ),
-                    other => eprintln!("app            output would not scale: {other:?}"),
-                }
-            }
-            running.push(WlApp {
-                name: entry.name.clone(),
-                child,
-                workspace,
-                size: entry.size,
-                shaped: false,
-            });
-            Some(workspace)
+    // Its own size if it insists on one, the panel's otherwise. Doom renders 320x200
+    // and cannot be told otherwise, so the fitting is ours to do on the way out.
+    let (w, h) = entry.size.unwrap_or((
+        u32::from(flipper_ui::PANEL_W),
+        u32::from(flipper_ui::PANEL_H),
+    ));
+    match flipper_ui::wl::Session::launch_in(&entry.wayland, &entry.dir, w, h, &entry.env) {
+        Ok(session) => {
+            eprintln!("app            {} started in its own cage at {w}x{h}", entry.name);
+            running.push(WlApp { name: entry.name.clone(), session });
+            Some(entry.name.clone())
         }
         Err(e) => {
             eprintln!("app            {} did not start: {e}", entry.name);
-            let _ = sway.show(flipper_ui::sway::HOME);
             None
         }
     }
@@ -1616,17 +1522,28 @@ fn load_rgba(path: &std::path::Path) -> Option<slint::Image> {
 /// the same handful thirty times a second, and expanding greyscale to RGB each
 /// time would allocate about a megabyte a frame to draw the same pixels.
 #[cfg(feature = "slint")]
+/// One card, with its picture converted once and kept.
+///
+/// The cache holds the snapshot itself rather than its address. It used to key on
+/// `Arc::as_ptr`, which is a bug with a memorable signature: when a snapshot is
+/// dropped the allocator hands the same 36KB block to the next one, so a brand new
+/// frame matched the entry holding the *previous* picture. A clock's seconds jumped
+/// about and a game's card looped through a handful of old frames, for as long as the
+/// addresses kept being recycled, which at ten cards a second is always. Holding the
+/// `Arc` keeps the address alive, so identity means what it says.
 fn card_of(
     p: &flipper_ui::switcher::Placed,
-    cache: &mut Vec<(usize, slint::Image)>,
+    cache: &mut Vec<(flipper_ui::switcher::Snapshot, slint::Image)>,
 ) -> flipper_ui::ui::SwitchCard {
     use flipper_ui::switcher::Edge;
     use flipper_ui::theme::{PANEL_H, PANEL_W};
 
     let image = match p.snapshot.as_ref() {
         Some(grey) => {
-            let key = std::sync::Arc::as_ptr(grey) as usize;
-            if let Some((_, image)) = cache.iter().find(|(k, _)| *k == key) {
+            if let Some((_, image)) = cache
+                .iter()
+                .find(|(held, _)| std::sync::Arc::ptr_eq(held, grey))
+            {
                 image.clone()
             } else {
                 let mut buffer = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(
@@ -1642,7 +1559,7 @@ fn card_of(
                 if cache.len() >= 8 {
                     cache.remove(0);
                 }
-                cache.push((key, image.clone()));
+                cache.push((grey.clone(), image.clone()));
                 image
             }
         }
@@ -2290,7 +2207,7 @@ fn panel(
     // Snapshots turned into images, keyed by the buffer they came from: an
     // animation asks for the same four images thirty times a second, and building
     // them each time would allocate a megabyte a frame for nothing.
-    let mut card_images: Vec<(usize, slint::Image)> = Vec::new();
+    let mut card_images: Vec<(flipper_ui::switcher::Snapshot, slint::Image)> = Vec::new();
     // A cards scene's icons, by path. Separate from the switcher's thumbnails
     // above: those are keyed on the buffer they came from and die with it, these
     // are files that outlive any one frame.
@@ -2631,7 +2548,7 @@ fn panel(
     #[cfg(feature = "wayland")]
     let mut wl_apps: Vec<WlApp> = Vec::new();
     #[cfg(feature = "wayland")]
-    let mut wl_front: Option<u32> = None;
+    let mut wl_front: Option<String> = None;
     // When the front app was launched, so an app that never manages to put a window
     // on its workspace gives the panel back rather than holding it dark.
     #[cfg(feature = "wayland")]
@@ -2639,32 +2556,58 @@ fn panel(
     // The panel as the compositor sees it, which is our own surface when nothing is
     // in front and the app's when one is. Attached lazily, because reading the output
     // is only worth doing while a browser view or the deck is watching.
-    #[cfg(feature = "wayland")]
-    let mut mirror: Option<flipper_ui::wl::Mirror> = None;
-    #[cfg(feature = "wayland")]
-    let mut mirrored = Instant::now();
     // When the front app's card was last refreshed. Once a second while it is in
     // front, so the deck shows what it looked like a moment ago rather than
     // whenever it was last left.
     #[cfg(feature = "wayland")]
     let mut carded = Instant::now();
+    // How often every running app's card is photographed while the deck is open, which
+    // is the only time it happens. Measured, with three apps running: a refresh costs
+    // about 10ms per app, so 10Hz is 30% of a core and, because the captures are
+    // serial in this loop, it took Doom from 21.9 fps to 14.8. Nothing is in front
+    // while the deck is open, so that cost falls on nothing at all.
+    #[cfg(feature = "wayland")]
+    let card_watched = std::env::var("FLIPCTL_CARD_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(Duration::from_millis(100));
+
+    // What the cards have cost since the last report: how many, and how long in
+    // capture and in fitting.
+    #[cfg(feature = "wayland")]
+    let mut card_count: u32 = 0;
+    #[cfg(feature = "wayland")]
+    let mut card_time = Duration::ZERO;
+    #[cfg(feature = "wayland")]
+    let mut card_reported = Instant::now();
+    // When the front app's own frame was last kept as its card.
+    #[cfg(feature = "wayland")]
+    let mut front_carded = Instant::now();
     #[cfg(feature = "remote")]
     let mut rebind = Instant::now();
+    // What it costs to put a hosted app's frame on the panel. No buffer of our own any
+    // more: the reader hands over a panel-sized greyscale frame and the sink takes it.
     #[cfg(feature = "wayland")]
-    let mut sway = if wayland {
-        match flipper_ui::sway::Sway::connect() {
-            Ok(s) => {
-                eprintln!("compositor     talking to sway");
-                Some(s)
-            }
-            Err(e) => {
-                eprintln!("compositor     no IPC ({e}); apps cannot be hosted");
-                None
-            }
-        }
-    } else {
-        None
-    };
+    let mut app_frames: u32 = 0;
+    #[cfg(feature = "wayland")]
+    let mut app_capture = Duration::ZERO;
+    #[cfg(feature = "wayland")]
+    let mut app_commit = Duration::ZERO;
+    #[cfg(feature = "wayland")]
+    let mut app_counted = Instant::now();
+    // Whether the app in front has ever drawn. An app that starts and shows nothing
+    // must not keep the panel, and "nothing yet" is not the same as "never".
+    #[cfg(feature = "wayland")]
+    let mut wl_drawn = false;
+    // Whether an app had the panel on the previous turn, so the turn it stops having
+    // it can be committed in full.
+    let mut was_app_panel = false;
+    // Set when an app comes to the front, cleared by its first frame. A static app
+    // produces no damage, so waiting for some leaves whatever was on the panel: the
+    // deck, complete with its Kill button, until the app was touched.
+    #[cfg(feature = "wayland")]
+    let mut wl_fresh = false;
 
     let report = |frames: u64,
                   started: &Instant,
@@ -2892,133 +2835,118 @@ fn panel(
             }
         }
 
-        // An app hosted by the compositor has the keyboard while it is in front, so
-        // the only presses that arrive here are the two sway is configured to keep
-        // for us. That is the whole of the forwarding policy now: no allowlist, no
-        // held-key rules, no deciding whether the kernel already delivered a press.
+        // An app in its own cage has no input device of its own: flipctl holds the
+        // buttons, so every press is forwarded, physical and simulated alike. That is
+        // the whole of the forwarding policy now, with no allowlist, no held-key rule
+        // and nothing to decide about what the kernel may already have delivered.
         #[cfg(feature = "wayland")]
-        if let Some(ws) = wl_front {
+        if let Some(front) = wl_front.clone() {
             let mut leave = None;
-            // A physical press reaches the app through the compositor without us:
-            // it has the keyboard, we do not. A simulated one arrives here instead,
-            // so it has to be put back on the wire as a virtual keyboard on the same
-            // seat, or the browser view can drive our own screens and nothing else.
-            let simulated: Vec<flipper_ui::KeyEvent> = pending_remote.clone();
-            for event in &simulated {
-                if matches!(event.key, FlipperKey::Back | FlipperKey::AppSwitch) {
-                    continue;
-                }
-                let sent = sink
-                    .as_mut()
-                    .is_some_and(|s| s.inject(event.key.to_evdev(), event.down));
-                if keylog {
-                    eprintln!(
-                        "key            {:?} down={} injected={sent}",
-                        event.key, event.down
-                    );
-                }
-            }
             for event in pending_input.drain(..).chain(pending_remote.drain(..)) {
                 if keylog {
                     eprintln!(
-                        "key            {:?} down={} taken by the app in front (ws {ws})",
+                        "key            {:?} down={} to {front}",
                         event.key, event.down
                     );
                 }
-                if !event.down {
-                    continue;
-                }
                 match event.key {
-                    FlipperKey::Back => leave = Some(false),
-                    FlipperKey::AppSwitch => leave = Some(true),
-                    _ => {}
-                }
-            }
-
-            // A window that wants its own size gets it once it exists. Tried on every
-            // turn until it takes, because at launch there is no window to shape and
-            // the app decides when there is.
-            if let Some((want_w, want_h)) = wl_apps
-                .iter()
-                .find(|a| a.workspace == ws && !a.shaped && a.size.is_some())
-                .and_then(|a| a.size)
-            {
-                let ready = sway
-                    .as_mut()
-                    .and_then(|s| s.occupied(ws).ok())
-                    .unwrap_or(false);
-                if ready {
-                    let done = sway
-                        .as_mut()
-                        .and_then(|s| s.shape(ws, want_w, want_h).ok())
-                        .unwrap_or(false);
-                    if done {
-                        eprintln!("app            window on workspace {ws} held at {want_w}x{want_h}");
-                        if let Some(app) = wl_apps.iter_mut().find(|a| a.workspace == ws) {
-                            app.shaped = true;
+                    FlipperKey::Back | FlipperKey::AppSwitch => {
+                        if event.down {
+                            leave = Some(event.key == FlipperKey::AppSwitch);
+                        }
+                    }
+                    key => {
+                        if let Some(app) = wl_apps.iter_mut().find(|a| a.name == front) {
+                            app.session.key(u32::from(key.to_evdev()), event.down);
                         }
                     }
                 }
             }
 
-            // The card, kept current while the app is the thing on the output. It
-            // cannot be done from the deck: screencopy captures an output, not a
-            // window, and there is one output, so while the deck is showing the
-            // output *is* the deck. A second old is as fresh as this can honestly
-            // be.
-            #[cfg(feature = "remote")]
-            if carded.elapsed() >= Duration::from_secs(1) {
-                carded = Instant::now();
-                if let Some(name) = wl_apps
-                    .iter()
-                    .find(|a| a.workspace == ws)
-                    .map(|a| a.name.clone())
-                {
-                    if mirror.is_none() {
-                        mirror = flipper_ui::wl::Mirror::attach(
-                            u32::from(PANEL_W),
-                            u32::from(PANEL_H),
-                        )
-                        .ok();
+            // Read, fit, commit. The app draws into its own compositor, we take the
+            // frame, scale it to the panel and put it there ourselves, which is what
+            // makes chrome over an app, a transition between two of them and a live
+            // card for one in the background all possible at all.
+            for app in wl_apps.iter_mut() {
+                let on = app.name == front;
+                app.session.stream(on);
+            }
+
+            if let Some(app) = wl_apps.iter_mut().find(|a| a.name == front) {
+                let read = Instant::now();
+                // Read on the app's own thread, so the next frame is being fetched
+                // while this one goes out over SPI. The first frame after coming to
+                // the front is taken as it is: an app that is not changing is still
+                // what should be on the panel.
+                let taken = if wl_fresh { app.session.latest() } else { app.session.fresh() };
+                if let Some(bytes) = taken {
+                    let captured = read.elapsed();
+                    wl_fresh = false;
+                    // Nothing to convert and nothing to scale: the reader hands over a
+                    // panel-sized greyscale frame, which is exactly what the sink takes.
+                    let ready = flipper_ui::pixel::from_bytes(&bytes);
+                    let put = Instant::now();
+                    let all = flipper_ui::pixel::Rect::new(0, 0, PANEL_W, PANEL_H);
+                    if let Some(sink) = sink.as_mut() {
+                        if let Err(e) =
+                            sink.commit(flipper_ui::Frame::new(ready, PANEL_W, PANEL_H), all)
+                        {
+                            eprintln!("app            frame not shown: {e}");
+                        }
                     }
-                    if let Some(seen) = mirror
-                        .as_mut()
-                        .and_then(|m| m.frame(Duration::from_millis(120)).ok().flatten())
-                    {
-                        recents.snapshot(&name, std::sync::Arc::new(seen.to_vec()));
+                    // The browser view shows the panel, so it gets the same frame, and
+                    // only while somebody is looking.
+                    #[cfg(feature = "remote")]
+                    if let Some(view) = web.as_mut() {
+                        if view.viewers() > 0 {
+                            let _ = view
+                                .commit(flipper_ui::Frame::new(ready, PANEL_W, PANEL_H), all);
+                        }
+                    }
+                    app_frames += 1;
+                    app_capture += captured;
+                    app_commit += put.elapsed();
+                    wl_drawn = true;
+                    // Its card is the frame itself, shared rather than copied.
+                    #[cfg(feature = "remote")]
+                    if front_carded.elapsed() >= Duration::from_secs(1) {
+                        front_carded = Instant::now();
+                        recents.snapshot(&front, bytes.clone());
                         switch_dirty = true;
                     }
                 }
             }
 
-            // An app that has exited, or one that never showed a window, must not
-            // keep the panel: the compositor would go on showing an empty workspace
-            // and the only way out would be a key the user has no reason to press.
-            let gone = !wl_apps.iter().any(|a| a.workspace == ws);
-            // Only for an app whose process is still alive but has put nothing on
-            // screen, and only while it is starting: a wrong answer from the
-            // compositor must not be able to take the panel from a running app,
-            // which is exactly what happened when the occupancy check was reading
-            // the tree wrongly. Ten seconds after launch, then never again.
-            let starting = wl_since.elapsed() > Duration::from_secs(10)
-                && wl_since.elapsed() < Duration::from_secs(30);
-            let silent = starting
-                && sway
-                    .as_mut()
-                    .and_then(|s| s.occupied(ws).ok())
-                    .is_some_and(|busy| !busy);
-            if gone || silent {
-                // Both cases used to be silent, which made "the panel came back on
-                // its own" impossible to explain and let a second copy of an app be
-                // started as though the first had never existed.
-                if gone {
-                    eprintln!("app            no app left on workspace {ws}, giving the panel back");
+            // What hosting costs, once a second, because it is the number that decides
+            // whether compositing every app is the right trade.
+            if app_frames > 0 && app_counted.elapsed() >= Duration::from_secs(1) {
+                let secs = app_counted.elapsed().as_secs_f32();
+                eprintln!(
+                    "app            {front} {:.1} fps, capture {:.1} ms, fit and commit {:.1} ms",
+                    app_frames as f32 / secs,
+                    app_capture.as_secs_f32() * 1000.0 / app_frames as f32,
+                    app_commit.as_secs_f32() * 1000.0 / app_frames as f32,
+                );
+                app_frames = 0;
+                app_capture = Duration::ZERO;
+                app_commit = Duration::ZERO;
+                app_counted = Instant::now();
+            }
+
+            // A cage that has gone, or one that has shown nothing at all since it
+            // started, must not keep the panel: flipctl would go on committing the
+            // last frame with no way back.
+            let alive = wl_apps
+                .iter_mut()
+                .find(|a| a.name == front)
+                .is_some_and(|a| a.session.alive());
+            let silent = !wl_drawn && wl_since.elapsed() > Duration::from_secs(10);
+            if !alive || silent {
+                if alive {
+                    eprintln!("app            {front} drew nothing in 10s, giving the panel back");
                 } else {
-                    eprintln!("app            nothing on workspace {ws} after 10s, giving the panel back");
-                }
-                if let Some(sway) = sway.as_mut() {
-                    let _ = sway.scale(1.0);
-                    let _ = sway.show(flipper_ui::sway::HOME);
+                    eprintln!("app            {front} exited, giving the panel back");
+                    wl_apps.retain(|a| a.name != front);
                 }
                 wl_front = None;
                 screen.set_screen(launched_from);
@@ -3026,45 +2954,9 @@ fn panel(
             }
 
             if let Some(deck) = leave {
-                // The card wants the app's last frame, and the app's pixels are the
-                // compositor's to give: our own frame is our UI, which is not what
-                // was on the panel. Grabbed before switching away, while it is still
-                // the thing on the output.
-                #[cfg(feature = "remote")]
-                if let Some(name) = wl_apps
-                    .iter()
-                    .find(|a| a.workspace == ws)
-                    .map(|a| a.name.clone())
-                {
-                    if mirror.is_none() {
-                        mirror = flipper_ui::wl::Mirror::attach(
-                            u32::from(PANEL_W),
-                            u32::from(PANEL_H),
-                        )
-                        .ok();
-                    }
-                    if let Some(seen) = mirror
-                        .as_mut()
-                        .and_then(|m| m.frame(Duration::from_millis(300)).ok().flatten())
-                    {
-                        recents.snapshot(&name, std::sync::Arc::new(seen.to_vec()));
-                    }
-                }
-                if let Some(sway) = sway.as_mut() {
-                    // Our own UI is drawn for this panel and no other, so the scale
-                    // goes back with the app.
-                    let _ = sway.scale(1.0);
-                    let _ = sway.show(flipper_ui::sway::HOME);
-                }
-                // Left running, not stopped: an app in the background is the point
-                // of a switcher, and its workspace holds its window until the card
-                // is killed.
-                let name = wl_apps
-                    .iter()
-                    .find(|a| a.workspace == ws)
-                    .map(|a| a.name.clone())
-                    .unwrap_or_default();
-                eprintln!("app            {name} to the background");
+                // Left running, not stopped: an app in the background is the point of
+                // a switcher, and its cage keeps drawing for its card.
+                eprintln!("app            {front} to the background");
                 wl_front = None;
                 window.request_redraw();
                 if deck {
@@ -3077,29 +2969,37 @@ fn panel(
                     switch_dirty = true;
                     screen.set_screen(Screen::Switcher);
                 } else {
-                    // Back from an app lands where it was started from, the same as
-                    // it does for every other kind.
                     screen.set_screen(launched_from);
                 }
             }
-            // Reap anything that exited on its own, so its workspace can be reused
-            // and its card stops claiming it is running.
-            wl_apps.retain_mut(|a| match a.child.try_wait() {
-                Ok(Some(status)) => {
-                    eprintln!("app            {} exited ({status})", a.name);
+
+            // Anything that exited in the background, so its card stops claiming it
+            // is running and its cage is reaped rather than left as a zombie.
+            wl_apps.retain_mut(|a| {
+                if a.session.alive() {
+                    true
+                } else {
+                    eprintln!("app            {} exited", a.name);
                     false
                 }
-                Err(e) => {
-                    eprintln!("app            {} cannot be waited on: {e}", a.name);
-                    true
-                }
-                Ok(None) => true,
             });
-            // Deliberately no `continue`: our own surface is on another workspace,
-            // so drawing it costs the panel nothing and keeps the status, the clock
-            // and the browser view alive while an app is in front. Skipping the rest
-            // of the loop is how the console kind had to work, and it is why a
-            // failed launch used to freeze the panel with no way back.
+
+            // With an app on the panel, none of flipctl's own screens are visible: not
+            // on the panel, which has the app's frame, and not in the browser view,
+            // which gets the same. So the rest of the loop, some two thousand lines of
+            // deck rebuilds, dialog models, screen pollers and timers, is work nobody
+            // can see, and it measured at about 9ms of every 29ms frame.
+            //
+            // What still has to happen: a scene app's pipe must be drained or it fills
+            // and the app blocks, and keys are already collected further up. Everything
+            // else waits until the panel is ours again, where taking it back forces a
+            // full repaint anyway.
+            if leave.is_none() && wl_front.is_some() && wl_drawn {
+                for (_, app) in apps_live.iter_mut() {
+                    app.poll();
+                }
+                continue;
+            }
         }
 
         // Nothing of ours can tell a simulated press from a real one, and nothing of
@@ -3122,11 +3022,11 @@ fn panel(
                     {
                         #[cfg(feature = "wayland")]
                         {
-                            wl_front
+                            wl_front.as_deref()
                         }
                         #[cfg(not(feature = "wayland"))]
                         {
-                            Option::<u32>::None
+                            Option::<&str>::None
                         }
                     }
                 );
@@ -3196,31 +3096,20 @@ fn panel(
                         redraw_app = focused_app.is_some();
                     }
                     Some(flipper_ui::switcher::Action::Kill(name, kind)) => {
-                    // A hosted app is a process of ours and a window of the
-                        // compositor's, so both have to go: the child, because nothing
-                        // else will reap it, and the workspace, because an empty one
-                        // left visible is a black panel.
+                        // Dropping the session is the whole of it: it signals the
+                        // cage's process group, so the compositor and the program
+                        // inside it go together, and there is no window to close and
+                        // no workspace to give back.
                         #[cfg(feature = "wayland")]
                         if let Some(at) = wl_apps.iter().position(|a| a.name == name) {
-                            let app = wl_apps.remove(at);
-                            let ws = app.workspace;
-                            let mut child = app.child;
-                            let _ = child.kill();
-                            let _ = child.wait();
-                            if let Some(sway) = sway.as_mut() {
-                                let _ = sway.close(ws);
-                                if wl_front == Some(ws) {
-                                    let _ = sway.scale(1.0);
-                                    let _ = sway.show(flipper_ui::sway::HOME);
-                                }
-                            }
-                            if wl_front == Some(ws) {
+                            drop(wl_apps.remove(at));
+                            if wl_front.as_deref() == Some(name.as_str()) {
                                 wl_front = None;
                                 screen.set_screen(launched_from);
                                 window.request_redraw();
                             }
                             recents.close(&name);
-                            eprintln!("app            {name} killed, workspace {ws} freed");
+                            eprintln!("app            {name} killed");
                             continue;
                         }
                         // A console app is a process too, just not one of ours to
@@ -3494,12 +3383,10 @@ fn panel(
                                         launched_from = Screen::Apps;
                                         #[cfg(feature = "wayland")]
                                         {
-                                            wl_front = start_wayland(
-                                                entry,
-                                                &mut sway,
-                                                &mut wl_apps,
-                                            );
+                                            wl_front = start_cage(entry, &mut wl_apps);
                                             wl_since = Instant::now();
+                                            wl_drawn = false;
+                                            wl_fresh = true;
                                         }
                                         console_front = start_console(
                                             entry,
@@ -4168,6 +4055,69 @@ fn panel(
             arrow = None;
         }
 
+        // Every hosted app's card, once a second, in front or not. Kept out of the
+        // front-app block on purpose: it lived there at first, so cards were refreshed
+        // only while an app had the panel, which is never true while the deck is open
+        // and is the one moment they are looked at.
+        #[cfg(all(feature = "wayland", feature = "remote"))]
+        // Nothing is on the panel for us, so nobody reads frames: a backgrounded app
+        // keeps drawing for its own sake and we stop looking.
+        #[cfg(feature = "wayland")]
+        if wl_front.is_none() {
+            for app in wl_apps.iter_mut() {
+                app.session.stream(false);
+            }
+        }
+
+        // Only while the deck is open, and only the card being looked at. A card
+        // nobody can see is not worth a capture,
+        // and the first refresh lands within a tenth of a second of it opening, so
+        // there is nothing to be gained by photographing apps into a drawer.
+        if switcher.is_some() && carded.elapsed() >= card_watched {
+            carded = Instant::now();
+            let looked_at = switcher.as_ref().and_then(|sw| sw.focused_name()).map(str::to_string);
+            if let Some(name) = looked_at {
+                if let Some(app) = wl_apps.iter_mut().find(|a| a.name == name) {
+                    let took = Instant::now();
+                    // Whatever the reader has fetched since last time, then ask for the
+                    // next. The frame is already panel-sized and grey, so a card is the
+                    // frame itself: no fit, no copy, no wait.
+                    if let Some(bytes) = app.session.fresh() {
+                        recents.snapshot(&name, bytes);
+                        switch_dirty = true;
+                        card_count += 1;
+                        card_time += took.elapsed();
+                    }
+                    app.session.snap();
+                }
+            }
+            // A deck that is already open holds its own copy of the cards, so the new
+            // pictures have to be handed to it: updating Recents alone left the deck
+            // showing whatever each app looked like when it was opened.
+            if let Some(sw) = switcher.as_mut() {
+                if sw.refresh_from(&recents) {
+                    switch_dirty = true;
+                }
+            }
+        }
+
+        // What the cards cost, as a share of one core, so the refresh rate is chosen
+        // on a number rather than on a feeling.
+        #[cfg(feature = "wayland")]
+        if card_count > 0 && card_reported.elapsed() >= Duration::from_secs(1) {
+            let secs = card_reported.elapsed().as_secs_f32();
+            eprintln!(
+                "cards          {} in {:.1}s, {:.1} ms each, {:.0}% of a core",
+                card_count,
+                secs,
+                card_time.as_secs_f32() * 1000.0 / card_count as f32,
+                card_time.as_secs_f32() * 100.0 / secs,
+            );
+            card_count = 0;
+            card_time = Duration::ZERO;
+            card_reported = Instant::now();
+        }
+
         // A second's worth of staleness at most, and only a 36KB copy when there is
         // something in front worth photographing.
         if switcher.is_none() && card_stash.elapsed() >= Duration::from_secs(1) {
@@ -4188,42 +4138,28 @@ fn panel(
             match sw.tick() {
                 Some(flipper_ui::switcher::Action::Launch(name, kind)) => {
                     switcher = None;
-                    // An app hosted by the compositor is still on its own
-                    // workspace, so bringing it back is one IPC call: nothing is
-                    // started, restarted or handed over.
+                    // A hosted app has been drawing all along in its own cage, so
+                    // bringing it back is naming it: the next turn of the loop reads
+                    // its frame and puts it on the panel.
                     #[cfg(feature = "wayland")]
-                    if let Some(ws) = wl_apps.iter().find(|a| a.name == name).map(|a| a.workspace) {
-                        if let Some(sway) = sway.as_mut() {
-                            match sway.show(ws) {
-                                Ok(true) => {
-                                    wl_front = Some(ws);
-                                    wl_since = Instant::now();
-                                    focused_app = None;
-                                    if let Some((w, h)) = apps
-                                        .iter()
-                                        .find(|a| a.name == name)
-                                        .and_then(|a| a.size)
-                                    {
-                                        let fit = (f32::from(PANEL_W) / w as f32)
-                                            .min(f32::from(PANEL_H) / h as f32);
-                                        let _ = sway.scale(fit);
-                                    }
-                                    // Back from here goes where the deck was opened
-                                    // over, not where the app happened to be started
-                                    // an hour ago.
-                                    launched_from = before_switcher;
-                                    recents.open(&name, kind);
-                                    eprintln!(
-                                        "app            front is {name} (card, back goes to {:?})",
-                                        launched_from
-                                    );
-                                    continue;
-                                }
-                                other => {
-                                    eprintln!("app            {name} cannot be shown: {other:?}")
-                                }
-                            }
-                        }
+                    if wl_apps.iter().any(|a| a.name == name) {
+                        wl_front = Some(name.clone());
+                        wl_since = Instant::now();
+                        wl_drawn = false;
+                        wl_fresh = true;
+                        focused_app = None;
+                        // Our own UI goes back to the screen behind the deck. Left on
+                        // the deck it would draw a switcher that is no longer open.
+                        screen.set_screen(before_switcher);
+                        // Back from here goes where the deck was opened over, not
+                        // where the app happened to be started an hour ago.
+                        launched_from = before_switcher;
+                        recents.open(&name, kind);
+                        eprintln!(
+                            "app            front is {name} (card, back goes to {:?})",
+                            launched_from
+                        );
+                        continue;
                     }
                     if let Some(at) = consoles.iter().position(|s| s.name == name) {
                         if console_front.is_none() {
@@ -4270,34 +4206,18 @@ fn panel(
                     });
                 }
                 Some(flipper_ui::switcher::Action::Kill(name, kind)) => {
-                    // A hosted app is a process of ours and a window of the
-                    // compositor's, so both have to go: the child, because nothing
-                    // else will reap it, and the workspace, because an empty one
-                    // left visible is a black panel.
+                    // Dropping the session signals the cage's process group, so the
+                    // compositor and the program inside it go together.
                     #[cfg(feature = "wayland")]
                     if let Some(at) = wl_apps.iter().position(|a| a.name == name) {
-                        let app = wl_apps.remove(at);
-                        let ws = app.workspace;
-                        let mut child = app.child;
-                        // The group, not the process: the direct child is the shell,
-                        // and the program is its child.
-                        flipper_ui::app::stop_group(child.id());
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        if let Some(sway) = sway.as_mut() {
-                            let _ = sway.close(ws);
-                            if wl_front == Some(ws) {
-                                let _ = sway.scale(1.0);
-                                let _ = sway.show(flipper_ui::sway::HOME);
-                            }
-                        }
-                        if wl_front == Some(ws) {
+                        drop(wl_apps.remove(at));
+                        if wl_front.as_deref() == Some(name.as_str()) {
                             wl_front = None;
                             screen.set_screen(launched_from);
                             window.request_redraw();
                         }
                         recents.close(&name);
-                        eprintln!("app            {name} killed, workspace {ws} freed");
+                        eprintln!("app            {name} killed");
                         continue;
                     }
                     if let Some(at) = consoles.iter().position(|s| s.name == name) {
@@ -4680,8 +4600,10 @@ fn panel(
                             launched_from = Screen::Apps;
                             #[cfg(feature = "wayland")]
                             {
-                                wl_front = start_wayland(entry, &mut sway, &mut wl_apps);
+                                wl_front = start_cage(entry, &mut wl_apps);
                                 wl_since = Instant::now();
+                                wl_drawn = false;
+                                wl_fresh = true;
                                 if wl_front.is_some() {
                                     recents.open(&entry.name, flipper_ui::switcher::Kind::App);
                                     focused_app = None;
@@ -5254,28 +5176,57 @@ fn panel(
         }
         slint::platform::update_timers_and_animations();
 
+        // Whose picture the panel is showing. An app that has drawn owns it, and our
+        // own UI must not commit over it: the status line ticks once a second, which
+        // is damage, which would put the Apps list on top of a running game for a
+        // frame every second.
+        #[cfg(feature = "wayland")]
+        let app_owns_panel = wl_front.is_some() && wl_drawn;
+        #[cfg(not(feature = "wayland"))]
+        let app_owns_panel = false;
+
+        // Taking the panel back from an app needs the whole panel, not the damage.
+        // An app's frame covers all of it, and ours are committed damage-only, so the
+        // first frame back would repaint a clock over a game's last picture and leave
+        // the rest of it there: the panel reads as blank while the browser view, which
+        // takes whole frames, looks perfectly healthy.
+        let taking_back = was_app_panel && !app_owns_panel;
+        was_app_panel = app_owns_panel;
+        if taking_back {
+            window.request_redraw();
+        }
+
         // Latency instrumentation: how long from a key being handled to the frame
         // that reflects it being handed to the sinks.
         let render_start = Instant::now();
-        let damage = render_into(&window, &mut frame);
+        // Not drawn at all while an app owns the panel. Rendering our own scene took
+        // about 9ms of every frame and went nowhere: the panel had the app's picture
+        // and the browser view had the same. Slint paints the whole buffer whenever it
+        // does render, and taking the panel back forces one, so nothing is lost.
+        let damage = if app_owns_panel {
+            None
+        } else {
+            render_into(&window, &mut frame)
+        };
         render_total += render_start.elapsed();
+        // Slint is told to treat every render as a new buffer, so `frame` is complete
+        // whatever the damage says, and claiming all of it is honest.
+        let damage = match (damage, taking_back) {
+            (_, true) => Some(flipper_ui::Rect::new(0, 0, PANEL_W, PANEL_H)),
+            (other, false) => other,
+        };
 
         if let Some(damage) = damage {
             let commit_start = Instant::now();
             let composed = Frame::new(&frame, PANEL_W, PANEL_H);
             if let Some(sink) = sink.as_mut() {
-                sink.commit(composed, damage)?;
+                if !app_owns_panel {
+                    sink.commit(composed, damage)?;
+                }
             }
             #[cfg(feature = "remote")]
             if let Some(view) = web.as_mut() {
-                // Under a compositor the browser view is fed from the mirror instead,
-                // so it shows whatever is on the panel rather than only what we drew.
-                // Our own frames still go there when there is no compositor to ask.
-                #[cfg(feature = "wayland")]
-                let ours = !wayland;
-                #[cfg(not(feature = "wayland"))]
-                let ours = true;
-                if ours {
+                if !app_owns_panel {
                     view.commit(composed, damage)?;
                 }
             }
@@ -5311,54 +5262,6 @@ fn panel(
                 report(frames, &started, render_total, commit_total, commit_worst);
                 return Ok(());
             }
-        }
-
-        // What the panel actually shows, for anything watching it. Ten times a
-        // second is what the browser view asks of the old path, and the cost is one
-        // screencopy of 147KB plus a grey conversion, against the panel's own 16ms
-        // for a commit.
-        #[cfg(all(feature = "wayland", feature = "remote"))]
-        if wayland && mirrored.elapsed() >= Duration::from_millis(100) {
-            let watching = web.as_ref().is_some_and(|v| v.viewers() > 0);
-            if watching {
-                if mirror.is_none() {
-                    match flipper_ui::wl::Mirror::attach(
-                        u32::from(PANEL_W),
-                        u32::from(PANEL_H),
-                    ) {
-                        Ok(m) => {
-                            eprintln!("mirror         reading the panel through the compositor");
-                            mirror = Some(m);
-                        }
-                        Err(e) => eprintln!("mirror         unavailable: {e}"),
-                    }
-                }
-                if let Some(m) = mirror.as_mut() {
-                    match m.frame(Duration::from_millis(200)) {
-                        Ok(Some(grey)) => {
-                            let seen: Vec<flipper_ui::Gray8> =
-                                grey.iter().map(|&v| flipper_ui::Gray8(v)).collect();
-                            if let Some(view) = web.as_mut() {
-                                view.commit(
-                                    Frame::new(&seen, PANEL_W, PANEL_H),
-                                    flipper_ui::Rect::new(0, 0, PANEL_W, PANEL_H),
-                                )?;
-                            }
-                        }
-                        Ok(None) => {}
-                        Err(e) => {
-                            eprintln!("mirror         dropped: {e}");
-                            mirror = None;
-                        }
-                    }
-                }
-            } else if mirror.is_some() {
-                // Nobody is looking: stop reading the output rather than paying for
-                // frames no one collects.
-                eprintln!("mirror         released, nothing watching");
-                mirror = None;
-            }
-            mirrored = Instant::now();
         }
 
         // A port that was taken at startup will not stay taken: the usual cause is

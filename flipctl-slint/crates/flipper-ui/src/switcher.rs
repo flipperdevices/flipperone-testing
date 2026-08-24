@@ -306,6 +306,37 @@ pub struct Switcher {
 }
 
 impl Switcher {
+    /// The card the deck is showing, which is the only one worth photographing.
+    pub fn focused_name(&self) -> Option<&str> {
+        self.cards.get(self.focused).map(|c| c.name.as_str())
+    }
+
+    /// Copy the newest pictures onto the cards of a deck that is already open.
+    ///
+    /// `open` takes a snapshot of the snapshots, which is right for the animation and
+    /// wrong for a running app: its picture goes on changing while the deck is being
+    /// looked at, so a card would keep the frame it had when the deck opened.
+    pub fn refresh_from(&mut self, recents: &Recents) -> bool {
+        let mut changed = false;
+        for card in self.cards.iter_mut() {
+            let Some(entry) = recents.list().iter().find(|a| a.name == card.name) else {
+                continue;
+            };
+            // Identity, not contents: `!=` on two `Arc<Vec<u8>>` compares 36KB a card
+            // a tick to answer a question a pointer answers.
+            let moved = match (card.snapshot.as_ref(), entry.snapshot.as_ref()) {
+                (_, None) => false,
+                (None, Some(_)) => true,
+                (Some(shown), Some(newest)) => !Arc::ptr_eq(shown, newest),
+            };
+            if moved {
+                card.snapshot = entry.snapshot.clone();
+                changed = true;
+            }
+        }
+        changed
+    }
+
     /// Open over `recents`.
     ///
     /// `on_top_card` says whether what the user is looking at right now is itself

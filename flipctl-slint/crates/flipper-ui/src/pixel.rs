@@ -14,6 +14,28 @@
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Default, Hash)]
 pub struct Gray8(pub u8);
 
+/// Read bytes as greyscale samples, without copying them.
+///
+/// `Gray8` is `repr(transparent)` over `u8`, so this is a view. Needed wherever a
+/// frame arrives from something that speaks bytes rather than pixels, which is what
+/// a compositor's shared-memory buffer is.
+pub fn from_bytes(bytes: &[u8]) -> &[Gray8] {
+    // Safety: repr(transparent) over u8, same size and alignment, and every bit
+    // pattern is a valid Gray8.
+    unsafe { std::slice::from_raw_parts(bytes.as_ptr().cast(), bytes.len()) }
+}
+
+/// Greyscale samples as the bytes they are, without copying them.
+pub fn as_bytes(pixels: &[Gray8]) -> &[u8] {
+    // Safety: repr(transparent) over u8, so the layouts are identical.
+    unsafe { std::slice::from_raw_parts(pixels.as_ptr().cast(), pixels.len()) }
+}
+
+/// The same, for a buffer being written into.
+pub fn from_bytes_mut(bytes: &mut [u8]) -> &mut [Gray8] {
+    unsafe { std::slice::from_raw_parts_mut(bytes.as_mut_ptr().cast(), bytes.len()) }
+}
+
 impl Gray8 {
     pub const BLACK: Self = Self(0);
     pub const WHITE: Self = Self(255);
@@ -78,5 +100,19 @@ impl Rect {
         let r = (self.x + self.w).max(other.x + other.w);
         let b = (self.y + self.h).max(other.y + other.h);
         Rect::new(x, y, r - x, b - y)
+    }
+}
+
+#[cfg(test)]
+mod byte_view {
+    use super::{from_bytes, from_bytes_mut, Gray8};
+
+    #[test]
+    fn bytes_are_samples_in_place() {
+        let bytes = [0u8, 128, 255];
+        assert_eq!(from_bytes(&bytes), &[Gray8(0), Gray8(128), Gray8(255)]);
+        let mut more = [1u8, 2];
+        from_bytes_mut(&mut more)[1] = Gray8(9);
+        assert_eq!(more, [1, 9]);
     }
 }

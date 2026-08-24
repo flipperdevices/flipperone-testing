@@ -135,17 +135,18 @@ impl KmsSink {
         // knowing that a 60fps frame allows 16.67ms, which XRGB8888 does not fit
         // and R8 does.
         //
-        // XRGB8888 is nonetheless what ships: it is the format every other client
-        // on the device uses and it works on any kernel, R8 or not.
-        // `FLIPPER_FB_FORMAT=r8` opts in, which is how the numbers above were taken
-        // and how they can be taken again after a driver change.
+        // R8 is what ships now, because with hosted apps the panel is committed from a
+        // greyscale frame on every turn and the expansion is pure waste: 147KB written
+        // for the driver to reduce again. A kernel without R8 fails the ADDFB2 below
+        // and falls back to XRGB8888, so nothing breaks where it is unsupported, and
+        // `FLIPPER_FB_FORMAT=xrgb` forces the old path for comparison.
         //
         // R8 has to go through ADDFB2 with an explicit fourcc. Legacy ADDFB carries
         // only depth and bpp, and the kernel maps 8/8 to C8, a palette format the
         // driver does not advertise, so the attempt would fail for the wrong reason
         // and silently never be used.
-        let want_r8 = std::env::var("FLIPPER_FB_FORMAT")
-            .is_ok_and(|v| v.eq_ignore_ascii_case("r8"));
+        let want_r8 = !std::env::var("FLIPPER_FB_FORMAT")
+            .is_ok_and(|v| v.eq_ignore_ascii_case("xrgb"));
 
         let (mut buffer, fb, greyscale) = match card
             .create_dumb_buffer((u32::from(w), u32::from(h)), DrmFourcc::R8, 8)
@@ -153,7 +154,7 @@ impl KmsSink {
                 if want_r8 {
                     Ok(b)
                 } else {
-                    Err(std::io::Error::other("XRGB8888 by default"))
+                    Err(std::io::Error::other("XRGB8888 asked for"))
                 }
             })
             .and_then(|b| {
@@ -287,11 +288,12 @@ impl FrameSink for KmsSink {
 
             for (row, pixels) in (damage.y..damage.y + damage.h).zip(frame.rows(damage)) {
                 if self.greyscale {
-                    // One byte per pixel, so the row is a straight transfer.
+                    // One byte per pixel, so the row *is* the row: `Gray8` is
+                    // `repr(transparent)` over `u8`, so this is a memcpy rather than
+                    // the 36864 single-byte writes it used to be.
                     let start = usize::from(row) * pitch + usize::from(damage.x);
-                    for (out, px) in dst[start..start + pixels.len()].iter_mut().zip(pixels) {
-                        *out = px.0;
-                    }
+                    let bytes = crate::pixel::as_bytes(pixels);
+                    dst[start..start + bytes.len()].copy_from_slice(bytes);
                 } else {
                     let start = usize::from(row) * pitch + usize::from(damage.x) * 4;
                     let words = &mut dst[start..start + pixels.len() * 4];

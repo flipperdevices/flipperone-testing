@@ -21,6 +21,13 @@ slint = ["dep:slint", "dep:slint-build", "dep:i-slint-common"]
 # with a virtual keyboard. Off by default, and deliberately so: the installer, the
 # boot menu and recovery draw their own UI and never host anything, so they must
 # not pull wlroots in. Layer 2 of the two the plan describes.
+# Convert and scale a hosted app's frames on the GPU rather than the CPU. Layer 2
+# only: nothing in the boot menu, the installer or recovery goes near EGL.
+gpu = [
+    "wayland",
+    "dep:khronos-egl",
+    "dep:libloading",
+]
 wayland = [
     "dep:serde",
     "dep:serde_json",
@@ -38,6 +45,8 @@ drm = { version = "0.14", optional = true }
 # For sway's IPC replies. Hand-parsing them cost three bugs: a `num` field on every
 # node in the tree, a workspace bounded by "the next num", and finally pretty-printed
 # JSON that no substring search matched. A parser is smaller than those mistakes.
+khronos-egl = { version = "6", features = ["dynamic"], optional = true }
+libloading = { version = "0.8", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 wayland-client = { version = "0.31", optional = true }
@@ -71,6 +80,10 @@ png = "0.17"
 
 # Declared so `cargo test` does not try to build them without the feature: examples
 # are built by the test profile, and these two use a module that is gated out.
+[[example]]
+name = "gpu_probe"
+required-features = ["gpu"]
+
 [[example]]
 name = "wl_probe"
 required-features = ["wayland"]
