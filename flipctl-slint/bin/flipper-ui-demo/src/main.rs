@@ -2,6 +2,7 @@
 //!
 //! Modes:
 //!   --panel        DRM/KMS + evdev on the device (needs the `device` feature)
+//!   --wayland      a compositor owns the panel; we are a client of it
 //!   --png <path>   render one frame and exit (needs the `slint` feature)
 //!
 //! On the panel: up and down move the selection, ok flashes the press state,
@@ -24,7 +25,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let result = if has("--panel") || has("--headless") {
+    let result = if has("--panel") || has("--headless") || has("--wayland") {
         let frames = value("--frames").and_then(|v| v.parse::<u64>().ok());
         panel(
             value("--kms-device").as_deref(),
@@ -35,6 +36,7 @@ fn main() -> ExitCode {
             value("--assets"),
             has("--headless"),
             value("--peer"),
+            has("--wayland"),
         )
     } else if let Some(path) = value("--png") {
         png(
@@ -66,6 +68,7 @@ const USAGE: &str = "\
 usage: flipper-ui-demo [--panel [--kms-device PATH]] [--png PATH]
 
   --panel        drive the real 256x144 SPI panel and its buttons
+  --wayland      present to the compositor that owns the panel, and take its keys
   --kms-device   override device autodetection (default: probe /dev/dri/card*
                  for the flipper_one_display driver)
   --frames N     exit after N committed frames, reporting timings
@@ -1205,6 +1208,104 @@ fn canvas_image(grey: &[u8]) -> Option<slint::Image> {
 
 /// Start a console app, or bring the one already running forward.
 ///
+/// Where frames go: the card itself, or a compositor that holds it.
+///
+/// `KmsSink` is what the boot menu, the installer and recovery use, and it is what
+/// flipctl uses with no compositor around. `WlSink` is the same frames attached to a
+/// surface, which is how flipctl runs under a compositor that owns the panel and,
+/// unchanged, in a window on a desktop. Only the last step differs; the renderer
+/// above knows nothing about either.
+#[cfg(all(feature = "device", feature = "slint"))]
+enum PanelOut {
+    Kms(flipper_ui::kms::KmsSink),
+    #[cfg(feature = "wayland")]
+    Wl(flipper_ui::wl_sink::WlSink),
+}
+
+#[cfg(all(feature = "device", feature = "slint"))]
+impl PanelOut {
+    fn size(&self) -> (u16, u16) {
+        match self {
+            Self::Kms(s) => s.size(),
+            #[cfg(feature = "wayland")]
+            Self::Wl(_) => (flipper_ui::PANEL_W, flipper_ui::PANEL_H),
+        }
+    }
+
+    fn commit(
+        &mut self,
+        frame: flipper_ui::Frame<'_>,
+        damage: flipper_ui::pixel::Rect,
+    ) -> std::io::Result<()> {
+        use flipper_ui::FrameSink;
+        match self {
+            Self::Kms(s) => s.commit(frame, damage),
+            #[cfg(feature = "wayland")]
+            Self::Wl(s) => s.commit(frame, damage),
+        }
+    }
+
+    /// Keys, for the sink that also carries them. The KMS path reads evdev itself.
+    fn poll_key(&mut self) -> Option<flipper_ui::KeyEvent> {
+        match self {
+            Self::Kms(_) => None,
+            #[cfg(feature = "wayland")]
+            Self::Wl(s) => {
+                use flipper_ui::InputSource;
+                s.poll()
+            }
+        }
+    }
+
+    /// Hand the card over to a program that draws for itself.
+    ///
+    /// Refused under a compositor, and that is the point: the console kind exists
+    /// because a program had to be given the hardware, and a compositor makes that
+    /// both unnecessary and destructive, since letting go would take the panel from
+    /// the compositor rather than from us.
+    fn detach(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Kms(s) => s.detach(),
+            #[cfg(feature = "wayland")]
+            Self::Wl(_) => Err(std::io::Error::other(
+                "a compositor owns the panel; console apps need --panel",
+            )),
+        }
+    }
+
+    fn attach(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Kms(s) => s.attach(),
+            #[cfg(feature = "wayland")]
+            Self::Wl(_) => Ok(()),
+        }
+    }
+
+    fn is_detached(&self) -> bool {
+        match self {
+            Self::Kms(s) => s.is_detached(),
+            #[cfg(feature = "wayland")]
+            Self::Wl(_) => false,
+        }
+    }
+
+    fn flush_path(&self) -> String {
+        match self {
+            Self::Kms(s) => s.flush_path().to_string(),
+            #[cfg(feature = "wayland")]
+            Self::Wl(_) => "compositor".to_string(),
+        }
+    }
+
+    fn format(&self) -> String {
+        match self {
+            Self::Kms(s) => s.format().to_string(),
+            #[cfg(feature = "wayland")]
+            Self::Wl(_) => "XRGB8888 via wl_shm".to_string(),
+        }
+    }
+}
+
 /// Returns which session is in front now, or None when the entry is not a console
 /// app at all. Not blocking and not modal: the program runs on its own VT and the
 /// main loop keeps turning, which is what lets Tab and Back work while it is in
@@ -1212,7 +1313,7 @@ fn canvas_image(grey: &[u8]) -> Option<slint::Image> {
 #[cfg(all(feature = "device", feature = "slint"))]
 fn start_console(
     entry: &flipper_ui::app::AppEntry,
-    sink: Option<&mut flipper_ui::kms::KmsSink>,
+    sink: Option<&mut PanelOut>,
     running: &mut Vec<flipper_ui::console::Session>,
     // Opened here rather than per session, and only once there is a session.
     keys: &mut Option<flipper_ui::console::Keyboard>,
@@ -1919,6 +2020,7 @@ fn panel(
     assets: Option<String>,
     headless: bool,
     peer: Option<String>,
+    wayland: bool,
 ) -> std::io::Result<()> {
     use std::time::{Duration, Instant};
 
@@ -1938,6 +2040,15 @@ fn panel(
 
     let mut sink = if headless {
         None
+    } else if wayland {
+        #[cfg(feature = "wayland")]
+        {
+            let sink = flipper_ui::wl_sink::WlSink::new(PANEL_W, PANEL_H)?;
+            eprintln!("surface        {PANEL_W}x{PANEL_H} on the compositor");
+            Some(PanelOut::Wl(sink))
+        }
+        #[cfg(not(feature = "wayland"))]
+        return Err(std::io::Error::other("rebuild with --features wayland"));
     } else {
         let sink = KmsSink::open(kms_device.map(std::path::Path::new))?;
         let (w, h) = sink.size();
@@ -1946,11 +2057,14 @@ fn panel(
                 "panel reports {w}x{h}, this build is compiled for {PANEL_W}x{PANEL_H}"
             )));
         }
-        Some(sink)
+        Some(PanelOut::Kms(sink))
     };
     // Buttons are left alone in headless mode: whoever owns the panel owns them
     // too, and two readers both reacting would be confusing.
-    let mut input = if headless {
+    // Under a compositor the keys come with the frames: it holds the input devices
+    // and hands us key events on the same connection, so reading evdev as well would
+    // be two readers of one press.
+    let mut input = if headless || wayland {
         None
     } else {
         Some(EvdevSource::open()?)
@@ -2399,6 +2513,11 @@ fn panel(
                 // a simulated press has reached nothing yet, where a real one has
                 // already been delivered to the VT by the kernel.
                 pending_remote.push(event);
+            }
+        }
+        if let Some(sink) = sink.as_mut() {
+            while let Some(event) = sink.poll_key() {
+                pending_input.push(event);
             }
         }
         if let Some(input) = input.as_mut() {
@@ -4650,6 +4769,7 @@ fn panel(
     _assets: Option<String>,
     _headless: bool,
     _peer: Option<String>,
+    _wayland: bool,
 ) -> std::io::Result<()> {
     Err(std::io::Error::other(
         "rebuild with --features device,slint",

@@ -26,6 +26,10 @@ pub mod kms;
 pub mod console;
 #[cfg(feature = "remote")]
 pub mod remote;
+#[cfg(feature = "wayland")]
+pub mod wl;
+#[cfg(feature = "wayland")]
+pub mod wl_sink;
 #[cfg(feature = "slint")]
 pub mod slint_render;
 

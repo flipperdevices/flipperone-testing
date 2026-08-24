@@ -10,6 +10,8 @@ default = []
 device = ["flipper-ui/device"]
 remote = ["flipper-ui/remote"]
 slint = ["flipper-ui/slint", "dep:png", "dep:slint"]
+# Present through a compositor rather than to the card, and take its keys.
+wayland = ["flipper-ui/wayland"]
 
 [dependencies]
 flipper-ui.workspace = true
