@@ -1177,35 +1177,6 @@ fn snapshot_of(frame: &[flipper_ui::pixel::Gray8]) -> flipper_ui::switcher::Snap
     std::sync::Arc::new(frame.iter().map(|p| p.0).collect())
 }
 
-/// An app's canvas as an image, or None when it sent the wrong number of bytes.
-///
-/// One byte per pixel in, three out: the panel is greyscale but Slint's software
-/// renderer takes RGB, and expanding here is what keeps the app's side of the
-/// protocol one byte per pixel.
-#[cfg(feature = "slint")]
-fn canvas_image(grey: &[u8]) -> Option<slint::Image> {
-    use flipper_ui::theme::{PANEL_H, PANEL_W};
-    let expected = usize::from(PANEL_W) * usize::from(PANEL_H);
-    if grey.len() != expected {
-        // Said once, not per frame: an app that gets this wrong gets it wrong
-        // every frame.
-        static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            eprintln!(
-                "app            canvas is {} bytes, expected {expected}",
-                grey.len()
-            );
-        }
-        return None;
-    }
-    let mut buffer =
-        slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(u32::from(PANEL_W), u32::from(PANEL_H));
-    for (px, v) in buffer.make_mut_slice().iter_mut().zip(grey.iter()) {
-        *px = slint::Rgb8Pixel { r: *v, g: *v, b: *v };
-    }
-    Some(slint::Image::from_rgb8(buffer))
-}
-
 /// Start a console app, or bring the one already running forward.
 ///
 /// Where frames go: the card itself, or a compositor that holds it.
@@ -1314,6 +1285,10 @@ impl PanelOut {
 struct WlApp {
     name: String,
     session: flipper_ui::wl::Session,
+    /// Which output shows it and which workspace holds it.
+    place: flipper_ui::sway::Placement,
+    /// What it draws at, so its output can be re-moded without asking it again.
+    size: (u32, u32),
     /// Whether flipctl paints its status bar over this app's frames.
     status: bool,
     /// Which edge is the app's own top, so the bar goes there rather than on ours.
@@ -1322,24 +1297,57 @@ struct WlApp {
 
 /// Launch a Wayland app in its own compositor, or name the one already running.
 #[cfg(all(feature = "device", feature = "slint", feature = "wayland"))]
-fn start_cage(entry: &flipper_ui::app::AppEntry, running: &mut Vec<WlApp>) -> Option<String> {
+fn start_hosted(
+    entry: &flipper_ui::app::AppEntry,
+    host: &mut Option<flipper_ui::sway::Host>,
+    running: &mut Vec<WlApp>,
+) -> Option<String> {
     if entry.kind != flipper_ui::app::Kind::Wayland {
         return None;
     }
-    // Only ever one copy. A second instance would draw into a second compositor that
-    // nothing reads, so the app would look started and stay invisible.
+    // Only ever one copy. A second instance would draw on a second output that nothing
+    // reads, so the app would look started and stay invisible.
     if running.iter().any(|a| a.name == entry.name) {
         eprintln!("app            front is {} (already running)", entry.name);
         return Some(entry.name.clone());
     }
 
+    // The compositor starts with the first app rather than with flipctl: a device that
+    // never hosts anything should not be paying for one.
+    if host.is_none() {
+        match flipper_ui::sway::Host::start() {
+            Ok(started) => {
+                eprintln!("host           compositor up for hosted apps");
+                *host = Some(started);
+            }
+            Err(e) => {
+                eprintln!("host           no compositor ({e}); {} cannot run", entry.name);
+                return None;
+            }
+        }
+    }
+    let host = host.as_mut()?;
+
     // Its own size if it insists on one, the panel's otherwise. Doom renders 320x200
-    // and cannot be told otherwise, so the fitting is ours to do on the way out.
+    // and cannot be told otherwise, and here it simply gets an output that shape.
     let (w, h) = entry.size.unwrap_or((
         u32::from(flipper_ui::PANEL_W),
         u32::from(flipper_ui::PANEL_H),
     ));
-    match flipper_ui::wl::Session::launch_in(
+    let place = match host.place(w, h) {
+        Ok(place) => place,
+        Err(e) => {
+            eprintln!("app            no output for {}: {e}", entry.name);
+            return None;
+        }
+    };
+    let (dir, display) = host.display();
+    let (dir, display) = (dir.to_path_buf(), display.to_string());
+
+    match flipper_ui::wl::Session::attach(
+        &dir,
+        &display,
+        &place.output,
         &entry.wayland,
         &entry.dir,
         w,
@@ -1349,13 +1357,16 @@ fn start_cage(entry: &flipper_ui::app::AppEntry, running: &mut Vec<WlApp>) -> Op
     ) {
         Ok(session) => {
             eprintln!(
-                "app            {} started in its own cage at {w}x{h}{}",
+                "app            {} started on {} at {w}x{h}{}",
                 entry.name,
+                place.output,
                 if entry.audio { ", with sound" } else { "" }
             );
             running.push(WlApp {
                 name: entry.name.clone(),
                 session,
+                place,
+                size: (w, h),
                 status: entry.status,
                 rotate: entry.rotate,
             });
@@ -1363,6 +1374,7 @@ fn start_cage(entry: &flipper_ui::app::AppEntry, running: &mut Vec<WlApp>) -> Op
         }
         Err(e) => {
             eprintln!("app            {} did not start: {e}", entry.name);
+            host.release(place, w, h);
             None
         }
     }
@@ -1542,6 +1554,67 @@ fn load_rgba(path: &std::path::Path) -> Option<slint::Image> {
 /// the same handful thirty times a second, and expanding greyscale to RGB each
 /// time would allocate about a megabyte a frame to draw the same pixels.
 #[cfg(feature = "slint")]
+/// A full-screen canvas straight onto the panel, with its text drawn over it.
+///
+/// The app painted the panel's own format, so Slint has nothing to add: routing those
+/// bytes through an image meant expanding them to RGB, having the renderer draw them
+/// back into greyscale, and paying for a scene nobody looks at. Measured on a bench
+/// that never pauses: 16.0ms of commit carried 0.95ms of expansion, 1.66ms of render
+/// and about 9ms of per-turn UI work, which is 30fps for a picture that was already
+/// finished.
+///
+/// The text is flipctl's job either way. An app has no font, so it cannot measure a
+/// string and cannot centre one.
+#[cfg(all(feature = "device", feature = "slint", feature = "wayland"))]
+fn paint_canvas(
+    frame: &mut [flipper_ui::Gray8],
+    scene: &flipper_ui::Scene,
+    status: Option<(&[flipper_ui::Gray8], u16)>,
+) {
+    use flipper_ui::font::{ROW, ROW_ACTIVE, TITLE};
+
+    let pixels = flipper_ui::pixel::from_bytes(&scene.canvas);
+    if pixels.len() == frame.len() {
+        frame.copy_from_slice(pixels);
+    } else {
+        // A canvas of the wrong size is the app's mistake, and a blank panel says so
+        // more clearly than a torn one.
+        frame.fill(flipper_ui::Gray8::WHITE);
+    }
+
+    let (pw, ph) = (
+        usize::from(flipper_ui::PANEL_W),
+        usize::from(flipper_ui::PANEL_H),
+    );
+    for line in &scene.texts {
+        let font = match line.font {
+            1 => &ROW,
+            2 => &ROW_ACTIVE,
+            _ => &TITLE,
+        };
+        let width = i32::from(font.text_width(&line.text));
+        let x = match line.align {
+            -1 => line.x - width,
+            0 => line.x - width / 2,
+            _ => line.x,
+        };
+        let ink = if line.white {
+            flipper_ui::Gray8::WHITE
+        } else {
+            flipper_ui::Gray8::BLACK
+        };
+        font.for_each_pixel(&line.text, x, line.y, |px, py| {
+            if px >= 0 && py >= 0 && (px as usize) < pw && (py as usize) < ph {
+                frame[py as usize * pw + px as usize] = ink;
+            }
+        });
+    }
+
+    if let Some((strip, long)) = status {
+        paint_status(frame, strip, long, flipper_ui::Rotate::None);
+    }
+}
+
 /// flipctl's status bar, drawn for an app that is turned sideways.
 ///
 /// The panel is landscape and its own bar is 256 long, but a portrait app's top edge is
@@ -2698,6 +2771,17 @@ fn panel(
     let mut front_carded = Instant::now();
     #[cfg(feature = "remote")]
     let mut rebind = Instant::now();
+    // One compositor for every hosted app, started with the first of them. flipctl owns
+    // the panel throughout: sway runs headless and its frames reach the panel only
+    // because they are captured.
+    #[cfg(feature = "wayland")]
+    let mut host: Option<flipper_ui::sway::Host> = None;
+    // What each app's output was last set to, so an unchanged one is not re-moded on
+    // every turn of the loop.
+    #[cfg(feature = "wayland")]
+    let mut attention: std::collections::HashMap<String, flipper_ui::sway::Attention> =
+        std::collections::HashMap::new();
+
     // What it costs to put a hosted app's frame on the panel. A buffer of our own only
     // when the app asked for the status bar, since painting it means owning the copy.
     #[cfg(feature = "wayland")]
@@ -2715,6 +2799,17 @@ fn panel(
     let mut status_long = PANEL_W;
     #[cfg(feature = "wayland")]
     let mut status_drawn = Instant::now() - Duration::from_secs(2);
+    // What a canvas app costs, per second while one is sending. The pixels arrive in
+    // the panel's own format, are expanded to RGB for Slint and reduced again on the
+    // way out, and the question is what that is worth.
+    let mut canvas_frames: u32 = 0;
+    let mut canvas_expand = Duration::ZERO;
+    let mut canvas_reported = Instant::now();
+    let mut canvas_marks = (0u64, Duration::ZERO, Duration::ZERO);
+    // The canvas an app sent this turn, painted straight onto the panel rather than
+    // handed to Slint. Held rather than drawn on the spot because the panel is
+    // committed once, at the bottom of the loop.
+    let mut canvas_now: Option<flipper_ui::Scene> = None;
     // The last status the poller produced, kept because a turned app's bar is drawn
     // here rather than by Slint, and it needs the same numbers.
     #[cfg(feature = "wayland")]
@@ -3117,7 +3212,13 @@ fn panel(
                     eprintln!("app            {front} drew nothing in 10s, giving the panel back");
                 } else {
                     eprintln!("app            {front} exited, giving the panel back");
-                    wl_apps.retain(|a| a.name != front);
+                    if let Some(at) = wl_apps.iter().position(|a| a.name == front) {
+                        let gone = wl_apps.remove(at);
+                        if let Some(host) = host.as_mut() {
+                            host.release(gone.place.clone(), gone.size.0, gone.size.1);
+                        }
+                        attention.remove(&gone.name);
+                    }
                 }
                 wl_front = None;
                 screen.set_screen(launched_from);
@@ -3146,14 +3247,22 @@ fn panel(
 
             // Anything that exited in the background, so its card stops claiming it
             // is running and its cage is reaped rather than left as a zombie.
+            let mut ended: Vec<(flipper_ui::sway::Placement, (u32, u32), String)> = Vec::new();
             wl_apps.retain_mut(|a| {
                 if a.session.alive() {
                     true
                 } else {
                     eprintln!("app            {} exited", a.name);
+                    ended.push((a.place.clone(), a.size, a.name.clone()));
                     false
                 }
             });
+            for (place, size, name) in ended {
+                if let Some(host) = host.as_mut() {
+                    host.release(place, size.0, size.1);
+                }
+                attention.remove(&name);
+            }
 
             // With an app on the panel, none of flipctl's own screens are visible: not
             // on the panel, which has the app's frame, and not in the browser view,
@@ -3273,7 +3382,16 @@ fn panel(
                         // no workspace to give back.
                         #[cfg(feature = "wayland")]
                         if let Some(at) = wl_apps.iter().position(|a| a.name == name) {
-                            drop(wl_apps.remove(at));
+                            let gone = wl_apps.remove(at);
+                            // The output goes back to the host rather than being
+                            // abandoned: sway can create an output and cannot destroy
+                            // one, so an afternoon of launching and killing would climb
+                            // to HEADLESS-40.
+                            if let Some(host) = host.as_mut() {
+                                host.release(gone.place.clone(), gone.size.0, gone.size.1);
+                            }
+                            attention.remove(&gone.name);
+                            drop(gone);
                             if wl_front.as_deref() == Some(name.as_str()) {
                                 wl_front = None;
                                 screen.set_screen(launched_from);
@@ -3554,7 +3672,7 @@ fn panel(
                                         launched_from = Screen::Apps;
                                         #[cfg(feature = "wayland")]
                                         {
-                                            wl_front = start_cage(entry, &mut wl_apps);
+                                            wl_front = start_hosted(entry, &mut host, &mut wl_apps);
                                             wl_since = Instant::now();
                                             wl_drawn = false;
                                             wl_fresh = true;
@@ -4240,6 +4358,52 @@ fn panel(
             }
         }
 
+        // Every app is a client of one compositor, so a compositor fault is not one
+        // app's problem but all of them at once. Said plainly rather than left as a
+        // panel of dead cards, and the next launch starts a new one.
+        #[cfg(feature = "wayland")]
+        if host.as_mut().is_some_and(|h| !h.alive()) {
+            let lost: Vec<String> = wl_apps.iter().map(|a| a.name.clone()).collect();
+            eprintln!(
+                "host           the compositor died, taking {} with it",
+                if lost.is_empty() { "no apps".into() } else { lost.join(", ") }
+            );
+            for name in &lost {
+                recents.close(name);
+            }
+            wl_apps.clear();
+            host = None;
+            if wl_front.is_some() {
+                wl_front = None;
+                screen.set_screen(launched_from);
+                window.request_redraw();
+            }
+        }
+
+        // How fast each app's output runs, by what is looking at it: the panel, the
+        // deck, or nothing. One IPC call per change, and none when nothing changed.
+        #[cfg(feature = "wayland")]
+        if let Some(host) = host.as_mut() {
+            let watched = switcher
+                .as_ref()
+                .and_then(|sw| sw.focused_name())
+                .map(str::to_string);
+            for app in wl_apps.iter() {
+                let want = if wl_front.as_deref() == Some(app.name.as_str()) {
+                    flipper_ui::sway::Attention::Front
+                } else if watched.as_deref() == Some(app.name.as_str()) {
+                    flipper_ui::sway::Attention::Card
+                } else {
+                    flipper_ui::sway::Attention::Idle
+                };
+                if attention.get(&app.name) != Some(&want) {
+                    if host.attend(&app.place, want, app.size.0, app.size.1).is_ok() {
+                        attention.insert(app.name.clone(), want);
+                    }
+                }
+            }
+        }
+
         // Only while the deck is open, and only the card being looked at. A card
         // nobody can see is not worth a capture,
         // and the first refresh lands within a tenth of a second of it opening, so
@@ -4287,6 +4451,27 @@ fn panel(
             card_count = 0;
             card_time = Duration::ZERO;
             card_reported = Instant::now();
+        }
+
+        // What a canvas app costs, measured the same way before and after any change
+        // to the path: frames it managed, and where the time went.
+        if canvas_frames > 0 && canvas_reported.elapsed() >= Duration::from_secs(1) {
+            let secs = canvas_reported.elapsed().as_secs_f32();
+            let (was_frames, was_render, was_commit) = canvas_marks;
+            let drawn = (frames - was_frames).max(1);
+            eprintln!(
+                "canvas         {:.1} fps sent, {:.1} fps drawn, expand {:.2} ms, \
+                 render {:.2} ms, commit {:.2} ms",
+                canvas_frames as f32 / secs,
+                drawn as f32 / secs,
+                canvas_expand.as_secs_f32() * 1000.0 / canvas_frames as f32,
+                (render_total - was_render).as_secs_f32() * 1000.0 / drawn as f32,
+                (commit_total - was_commit).as_secs_f32() * 1000.0 / drawn as f32,
+            );
+            canvas_frames = 0;
+            canvas_expand = Duration::ZERO;
+            canvas_reported = Instant::now();
+            canvas_marks = (frames, render_total, commit_total);
         }
 
         // A second's worth of staleness at most, and only a 36KB copy when there is
@@ -4381,7 +4566,12 @@ fn panel(
                     // compositor and the program inside it go together.
                     #[cfg(feature = "wayland")]
                     if let Some(at) = wl_apps.iter().position(|a| a.name == name) {
-                        drop(wl_apps.remove(at));
+                        let gone = wl_apps.remove(at);
+                        if let Some(host) = host.as_mut() {
+                            host.release(gone.place.clone(), gone.size.0, gone.size.1);
+                        }
+                        attention.remove(&gone.name);
+                        drop(gone);
                         if wl_front.as_deref() == Some(name.as_str()) {
                             wl_front = None;
                             screen.set_screen(launched_from);
@@ -4771,7 +4961,7 @@ fn panel(
                             launched_from = Screen::Apps;
                             #[cfg(feature = "wayland")]
                             {
-                                wl_front = start_cage(entry, &mut wl_apps);
+                                wl_front = start_hosted(entry, &mut host, &mut wl_apps);
                                 wl_since = Instant::now();
                                 wl_drawn = false;
                                 wl_fresh = true;
@@ -5171,9 +5361,11 @@ fn panel(
                     // The app painted it: hand the bitmap over as an image and
                     // let it have the whole panel.
                     flipper_ui::SceneKind::Canvas => {
-                        if let Some(image) = canvas_image(&scene.canvas) {
-                            screen.set_app_bitmap(image);
-                        }
+                        // Painted straight onto the panel further down, not handed to
+                        // Slint: the bytes are already the panel's format. The scene is
+                        // kept so that path can read its text and its status flag.
+                        canvas_now = Some(scene.clone());
+                        canvas_frames += 1;
                         let texts: Vec<flipper_ui::ui::CanvasText> = scene
                             .texts
                             .iter()
@@ -5241,6 +5433,51 @@ fn panel(
                     }
                 }
             }
+        }
+
+        // A canvas app's frame is finished the moment it arrives, so it goes to the
+        // panel here and the rest of the loop is skipped: the scroll clamps, dialog
+        // models, keyboard cells and screen pollers below are all for screens nobody
+        // is looking at. Measured with a bench that never pauses: painting the canvas
+        // instead of handing it to Slint took the frame from 33ms to 16.2ms of visible
+        // work, and the remaining 17ms was this section.
+        if let Some(scene) = canvas_now.take() {
+            let strip = if scene.status_bar {
+                if status_drawn.elapsed() >= Duration::from_secs(1) {
+                    status_drawn = Instant::now();
+                    window.request_redraw();
+                    if render_into(&window, &mut frame).is_some() {
+                        let rows =
+                            usize::from(PANEL_W) * flipper_ui::theme::metric::STATUS_BAR_H as usize;
+                        status_long = PANEL_W;
+                        status_strip.truncate(rows);
+                        status_strip.copy_from_slice(&frame[..rows]);
+                    }
+                }
+                Some((status_strip.as_slice(), status_long))
+            } else {
+                None
+            };
+            paint_canvas(&mut frame, &scene, strip);
+            let all = flipper_ui::Rect::new(0, 0, PANEL_W, PANEL_H);
+            let composed = Frame::new(&frame, PANEL_W, PANEL_H);
+            let commit_start = Instant::now();
+            if let Some(sink) = sink.as_mut() {
+                sink.commit(composed, all)?;
+            }
+            #[cfg(feature = "remote")]
+            if let Some(view) = web.as_mut() {
+                if view.viewers() > 0 {
+                    let _ = view.commit(composed, all);
+                }
+            }
+            frames += 1;
+            commit_total += commit_start.elapsed();
+            commit_worst = commit_worst.max(commit_start.elapsed());
+            for (_, app) in apps_live.iter_mut() {
+                app.poll();
+            }
+            continue;
         }
 
         // The marker on a busy cards page moves on the clock, so it needs a

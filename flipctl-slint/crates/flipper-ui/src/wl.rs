@@ -127,7 +127,7 @@ xkb_symbols "flipctl" {
 };
 "#;
 
-/// An app running in its own compositor.
+/// An app running in the shared compositor, on an output of its own.
 ///
 /// Frames are read on a thread of their own, not on the caller's. The two costs of
 /// showing a hosted app are a readback from its compositor and a transfer to the
@@ -137,10 +137,11 @@ xkb_symbols "flipctl" {
 /// the last one is still going out, and the ceiling becomes the slower of the two
 /// rather than their sum.
 pub struct Session {
-    cage: Child,
+    /// The app itself. There is no compositor here to own: `sway::Host` has it, and
+    /// this is a client of it.
+    app: Child,
     keyboard: ZwpVirtualKeyboardV1,
     started: Instant,
-    dir: PathBuf,
     conn: Connection,
     frames: Arc<Frames>,
     reader: Option<std::thread::JoinHandle<()>>,
@@ -178,6 +179,9 @@ struct Want {
 /// front. Both want "give me the current frame as grey8", and neither wants to know
 /// how screencopy negotiates a buffer.
 struct Grab {
+    /// Which output this grab reads, by name. Under one compositor every app has an
+    /// output of its own, so "the first one" is somebody else's app.
+    want: Option<String>,
     conn: Connection,
     queue: EventQueue<State>,
     state: State,
@@ -240,6 +244,10 @@ struct Capture {
 }
 
 struct State {
+    /// Every output the compositor has, and its name once it says so. One app per
+    /// output means capture has to ask for a particular one, and the only way to tell
+    /// them apart is the name event, which arrives after the bind.
+    outputs: Vec<(wl_output::WlOutput, Option<String>)>,
     output: Option<wl_output::WlOutput>,
     seat: Option<wl_seat::WlSeat>,
     shm: Option<wl_shm::WlShm>,
@@ -321,7 +329,7 @@ impl Grab {
         timeout: Duration,
     ) -> io::Result<bool> {
         let manager = self.state.screencopy.clone().unwrap();
-        let output = self.state.output.clone().unwrap();
+        let output = self.chosen()?;
         let Some(dmabuf) = self.state.dmabuf.clone() else {
             return Err(io::Error::other("compositor has no linux-dmabuf"));
         };
@@ -421,7 +429,7 @@ impl Grab {
         out: &mut [u8],
     ) -> io::Result<bool> {
         let manager = self.state.screencopy.clone().unwrap();
-        let output = self.state.output.clone().unwrap();
+        let output = self.chosen()?;
         let qh = self.queue.handle();
 
         self.state.capture[0] = Capture::default();
@@ -474,6 +482,36 @@ impl Grab {
         Ok(true)
     }
 
+    /// The output this grab was asked for, or the only one there is.
+    ///
+    /// Named outputs arrive asynchronously: the bind happens on the registry and the
+    /// name follows as an event, so a grab created immediately after an output was
+    /// added has to wait for it rather than assume it is there.
+    fn chosen(&mut self) -> io::Result<wl_output::WlOutput> {
+        let Some(want) = self.want.clone() else {
+            return self
+                .state
+                .output
+                .clone()
+                .ok_or_else(|| io::Error::other("compositor has no output"));
+        };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some((output, _)) = self
+                .state
+                .outputs
+                .iter()
+                .find(|(_, name)| name.as_deref() == Some(want.as_str()))
+            {
+                return Ok(output.clone());
+            }
+            if Instant::now() > deadline {
+                return Err(io::Error::other(format!("no output named {want}")));
+            }
+            self.pump(deadline)?;
+        }
+    }
+
     /// The capture, scaled to the panel and greyed, in one pass.
     ///
     /// Everything the panel needs and nothing it does not. The frame arrives 32-bit
@@ -504,23 +542,21 @@ impl Grab {
 }
 
 impl Session {
-    /// Launch `command` inside its own compositor, sized `w` by `h`.
+    /// Start `command` as a client of the host, capturing the output it was given.
     ///
-    /// The command runs under `cage`, which hosts exactly one app and exits with
-    /// it, so a dead app is a closed socket rather than something to reap and
-    /// notice. The headless output starts at cage's default size and is set to
-    /// ours with `wlr-randr`, the one part still shelling out: output management is
-    /// a protocol we could speak directly, and it happens once per launch.
-    pub fn launch(command: &str, w: u32, h: u32) -> io::Result<Self> {
-        Self::launch_in(command, Path::new("."), w, h, &[], false)
-    }
-
-    /// The same, from `dir`, with `env` as `KEY=VALUE` pairs from the manifest.
+    /// The app is an ordinary Wayland client: it connects to sway's socket, is placed on
+    /// the workspace pinned to its own output, and draws at whatever rate that output
+    /// runs. flipctl reads that output and nothing else, which is what keeps one app's
+    /// frames out of another's card.
     ///
-    /// The directory matters more than it looks: an app's own config files are
-    /// named relative to it, so Doom reads its key bindings only from its app
-    /// directory.
-    pub fn launch_in(
+    /// `SWAYSOCK` is withheld deliberately. An app that could talk to the compositor's
+    /// IPC could move itself between outputs, focus another app's workspace or read the
+    /// tree, and none of that is an app's business.
+    #[allow(clippy::too_many_arguments)]
+    pub fn attach(
+        host_dir: &Path,
+        display: &str,
+        output: &str,
         command: &str,
         dir_of_app: &Path,
         w: u32,
@@ -528,119 +564,15 @@ impl Session {
         env: &[String],
         audio: bool,
     ) -> io::Result<Self> {
-        // A runtime directory per app, so the socket path is ours to know rather
-        // than ours to guess. Watching XDG_RUNTIME_DIR for a new `wayland-N` looks
-        // simpler and does not work: a killed compositor leaves its socket file
-        // behind with no live lock holder, so the next one rebinds the same name and
-        // a directory diff sees nothing appear. An empty directory has no such
-        // history, and the app gets a runtime dir of its own into the bargain.
-        let dir = private_runtime_dir()?;
-        let socket = dir.join("wayland-0");
-
-        // The app waits for us to size its output before it starts. Without the gate
-        // it maps against cage's 1280x720 default and only then gets a configure for
-        // the real size, which a terminal takes as a grid of the wrong shape: mc came
-        // up sized for a screen it never had.
-        let go = dir.join("go");
-        let gated = format!(
-            "while [ ! -e {} ]; do sleep 0.02; done; exec {command}",
-            go.display()
-        );
-
-        let mut cmd = Command::new("cage");
-        cmd.arg("--")
-            .arg("/bin/sh")
-            .arg("-c")
-            .arg(&gated)
-            .current_dir(dir_of_app)
-            .env("WLR_BACKENDS", "headless")
-            .env("WLR_LIBINPUT_NO_DEVICES", "1")
-            .env("WLR_HEADLESS_OUTPUTS", "1")
-            .env("XDG_RUNTIME_DIR", &dir)
-            // What each toolkit needs to pick the Wayland backend rather than
-            // looking for a DRM device or an X server. Set here because it is what
-            // hosting means: an app in a cage has no other way out.
-            .env("QT_QPA_PLATFORM", "wayland")
-            // No titlebar and no close button. Qt draws its own decorations unless told
-            // otherwise, and on a 144 pixel panel a frame eats a seventh of the screen
-            // for buttons nothing can click: there is no pointer here.
-            .env("QT_WAYLAND_DISABLE_WINDOWDECORATION", "1")
-            .env("SDL_VIDEODRIVER", "wayland")
-            // SDL prefers libdecor for client-side decorations whenever the library
-            // is present, and `libdecor-0-0` is installed here while none of its
-            // plugin packages are. It then reports "no plugins found, falling back on
-            // no decorations" and never completes the configure handshake, so the
-            // client never commits a buffer: Doom reached window creation, drew
-            // nothing, and the cage's output read back as 320x200 of pure black.
-            // The compositor offers server-side decorations anyway, and an app here
-            // has no titlebar to draw in the first place.
-            .env("SDL_VIDEO_WAYLAND_ALLOW_LIBDECOR", "0")
-            .env("GDK_BACKEND", "wayland")
-            .env("CLUTTER_BACKEND", "wayland")
-            .env_remove("WAYLAND_DISPLAY")
-            .env_remove("WAYLAND_SOCKET")
-            .stdin(Stdio::null());
-        if audio {
-            sound(&dir, &mut cmd);
-        }
-        for pair in env {
-            if let Some((name, value)) = pair.split_once('=') {
-                cmd.env(name, value);
-            }
-        }
-        // Its own process group, so stopping the app means stopping the group. The
-        // cage is the direct child, the shell is its child and the program is the
-        // shell's, and killing only what we spawned leaves a game running with no
-        // window and no card.
-        {
-            use std::os::unix::process::CommandExt;
-            cmd.process_group(0);
-        }
-        // `panic = "abort"` means no Drop runs on a panic, so a crash would leave a
-        // compositor and its app behind. The kernel can promise what Drop cannot.
-        unsafe {
-            use std::os::unix::process::CommandExt;
-            cmd.pre_exec(|| {
-                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-        let cage = cmd.spawn()?;
-
-        if !wait_for(&socket, Duration::from_secs(10)) {
-            return Err(io::Error::other(format!(
-                "cage never bound {}",
-                socket.display()
-            )));
-        }
-
-        // With a refresh rate, always. A custom mode with none leaves the headless
-        // output's frame timer at whatever wlroots makes of a zero, and a client that
-        // paces itself on frame callbacks then draws once and waits: Doom came out at
-        // 0.2 fps and a blank panel, its first frame captured before it had drawn
-        // anything.
-        let status = Command::new("wlr-randr")
-            .args(["--output", "HEADLESS-1", "--custom-mode"])
-            .arg(format!("{w}x{h}@{}", app_refresh()))
-            .env("WAYLAND_DISPLAY", "wayland-0")
-            .env("XDG_RUNTIME_DIR", &dir)
-            .stdout(Stdio::null())
-            .status();
-        if !matches!(status, Ok(s) if s.success()) {
-            eprintln!("wl: could not set {w}x{h}, output stays at cage's default");
-        }
-        // Sized, so the app may start.
-        std::fs::write(&go, b"")?;
-
+        let socket = host_dir.join(display);
         let stream = UnixStream::connect(&socket)?;
         let conn = Connection::from_socket(stream).map_err(io::Error::other)?;
-        let (globals, mut queue) = wayland_client::globals::registry_queue_init::<State>(&conn)
-            .map_err(io::Error::other)?;
+        let (globals, mut queue) =
+            wayland_client::globals::registry_queue_init::<State>(&conn).map_err(io::Error::other)?;
         let qh = queue.handle();
 
         let mut state = State {
+            outputs: Vec::new(),
             output: None,
             seat: None,
             shm: None,
@@ -655,7 +587,12 @@ impl Session {
         for g in globals.contents().clone_list() {
             match g.interface.as_str() {
                 "wl_output" => {
-                    state.output = Some(globals.registry().bind(g.name, 1.min(g.version), &qh, ()))
+                    let bound: wl_output::WlOutput =
+                        globals.registry().bind(g.name, 4.min(g.version), &qh, ());
+                    state.outputs.push((bound.clone(), None));
+                    if state.output.is_none() {
+                        state.output = Some(bound);
+                    }
                 }
                 "wl_seat" => {
                     state.seat = Some(globals.registry().bind(g.name, 1.min(g.version), &qh, ()))
@@ -684,8 +621,10 @@ impl Session {
         let manager = state.keyboards.clone().ok_or_else(|| missing("virtual keyboard"))?;
         let shm_global = state.shm.clone().ok_or_else(|| missing("wl_shm"))?;
         state.screencopy.clone().ok_or_else(|| missing("screencopy"))?;
-        state.output.clone().ok_or_else(|| missing("wl_output"))?;
 
+        // One virtual keyboard per app, all on the compositor's single seat. Which app
+        // receives a press is decided by focus rather than by which keyboard sent it,
+        // so this is bookkeeping rather than routing.
         let keyboard = manager.create_virtual_keyboard(&seat, &qh, ());
         let keymap = memfd("flipctl-keymap", KEYMAP.as_bytes())?;
         keyboard.keymap(1, keymap.as_fd(), KEYMAP.len() as u32);
@@ -693,7 +632,46 @@ impl Session {
         conn.roundtrip().map_err(io::Error::other)?;
         queue.roundtrip(&mut state).map_err(io::Error::other)?;
 
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c")
+            .arg(command)
+            .current_dir(dir_of_app)
+            .env("XDG_RUNTIME_DIR", host_dir)
+            .env("WAYLAND_DISPLAY", display)
+            .env("QT_QPA_PLATFORM", "wayland")
+            .env("QT_WAYLAND_DISABLE_WINDOWDECORATION", "1")
+            .env("SDL_VIDEODRIVER", "wayland")
+            .env("SDL_VIDEO_WAYLAND_ALLOW_LIBDECOR", "0")
+            .env("GDK_BACKEND", "wayland")
+            .env("CLUTTER_BACKEND", "wayland")
+            .env_remove("SWAYSOCK")
+            .env_remove("WAYLAND_SOCKET")
+            .stdin(Stdio::null());
+        if audio {
+            sound(host_dir, &mut cmd);
+        }
+        for pair in env {
+            if let Some((name, value)) = pair.split_once('=') {
+                cmd.env(name, value);
+            }
+        }
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+        unsafe {
+            use std::os::unix::process::CommandExt;
+            cmd.pre_exec(|| {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let app = cmd.spawn()?;
+
         let grab = Grab {
+            want: Some(output.to_string()),
             conn: conn.clone(),
             queue,
             state,
@@ -723,10 +701,9 @@ impl Session {
             })?;
 
         Ok(Self {
-            cage,
+            app,
             keyboard,
             started: Instant::now(),
-            dir,
             conn,
             frames,
             reader: Some(reader),
@@ -735,9 +712,9 @@ impl Session {
         })
     }
 
-    /// True while the app is still running.
+    /// True while the app is still running.    /// True while the app is still running.
     pub fn alive(&mut self) -> bool {
-        matches!(self.cage.try_wait(), Ok(None))
+        matches!(self.app.try_wait(), Ok(None))
     }
 
     /// Press or release one key, by evdev code.
@@ -795,12 +772,12 @@ impl Drop for Session {
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
-        // The group next: a killed cage cannot take its app with it, so signalling
-        // only the cage leaves the program behind, holding whatever it holds.
-        crate::app::stop_group(self.cage.id());
-        let _ = self.cage.kill();
-        let _ = self.cage.wait();
-        let _ = std::fs::remove_dir_all(&self.dir);
+        // The group next, because the command is a shell and the program is its child:
+        // signalling only what we spawned leaves a game running with no window. The
+        // runtime directory is the host's and outlives every app in it.
+        crate::app::stop_group(self.app.id());
+        let _ = self.app.kill();
+        let _ = self.app.wait();
     }
 }
 
@@ -1069,7 +1046,7 @@ fn runtime_dir() -> PathBuf {
 }
 
 /// An empty 0700 directory under the user's runtime dir, for one app's socket.
-fn private_runtime_dir() -> io::Result<PathBuf> {
+pub(crate) fn private_runtime_dir() -> io::Result<PathBuf> {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = runtime_dir().join(format!("flipctl-app-{}-{n}", std::process::id()));
@@ -1079,16 +1056,6 @@ fn private_runtime_dir() -> io::Result<PathBuf> {
     Ok(dir)
 }
 
-fn wait_for(path: &Path, wait: Duration) -> bool {
-    let deadline = Instant::now() + wait;
-    while Instant::now() < deadline {
-        if path.exists() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    false
-}
 
 impl Dispatch<ZwlrScreencopyFrameV1, usize> for State {
     fn event(
@@ -1135,7 +1102,22 @@ impl Dispatch<wl_registry::WlRegistry, wayland_client::globals::GlobalListConten
     }
 }
 
-delegate_noop!(State: ignore wl_output::WlOutput);
+impl Dispatch<wl_output::WlOutput, ()> for State {
+    fn event(
+        state: &mut Self,
+        output: &wl_output::WlOutput,
+        event: wl_output::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_output::Event::Name { name } = event {
+            if let Some(slot) = state.outputs.iter_mut().find(|(o, _)| o == output) {
+                slot.1 = Some(name);
+            }
+        }
+    }
+}
 delegate_noop!(State: ignore wl_seat::WlSeat);
 delegate_noop!(State: ignore wl_shm::WlShm);
 delegate_noop!(State: ignore wl_shm_pool::WlShmPool);

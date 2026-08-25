@@ -30,6 +30,8 @@ pub mod scale;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 #[cfg(feature = "wayland")]
+pub mod sway;
+#[cfg(feature = "wayland")]
 pub mod wl;
 #[cfg(feature = "wayland")]
 pub mod wl_sink;
