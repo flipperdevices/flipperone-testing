@@ -19,10 +19,14 @@ publish = false
 name = "Uptime"
 apt = ["procps"]
 
-# No dependencies on purpose. An app talks newline-delimited JSON over stdin and
-# stdout, which is a println away, so the smallest useful app needs no crates at
-# all and builds in a couple of seconds on the device.
+# The app draws itself, with flipctl's own widgets and tokens: flipctl-app is the
+# framework, and through it the Slint software renderer that paints the panel.
 [dependencies]
+flipctl-app = { path = "../../crates/flipctl-app" }
+slint = { version = "1.17", default-features = false, features = ["compat-1-2", "backend-winit-wayland", "renderer-software", "std"] }
+
+[build-dependencies]
+flipctl-app = { path = "../../crates/flipctl-app", features = ["build"] }
 
 [profile.release]
 opt-level = "z"

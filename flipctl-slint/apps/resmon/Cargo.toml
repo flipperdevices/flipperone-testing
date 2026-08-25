@@ -14,9 +14,15 @@ publish = false
 [package.metadata.flipctl]
 name = "Resources"
 
-# No dependencies, and none needed: everything here comes out of /proc and /sys,
-# the scenes are JSON written by hand, and the one graph is a byte per pixel.
+# Everything read here comes out of /proc and /sys. What is not free is the
+# drawing: flipctl-app is the framework, and through it the widgets, the panel's
+# fonts and the Slint software renderer.
 [dependencies]
+flipctl-app = { path = "../../crates/flipctl-app" }
+slint = { version = "1.17", default-features = false, features = ["compat-1-2", "backend-winit-wayland", "renderer-software", "std"] }
+
+[build-dependencies]
+flipctl-app = { path = "../../crates/flipctl-app", features = ["build"] }
 
 [profile.release]
 opt-level = "z"

@@ -1,38 +1,20 @@
 //! Uptime, as a flipctl app: the example of one written in Rust.
 //!
-//! An app never draws. It writes a scene description and reads key events, so it
-//! links no GUI toolkit and needs no crates: the protocol is newline-delimited
-//! JSON over stdin and stdout.
-//!
-//!     app -> flipctl   {"screen": {...}}
-//!     flipctl -> app   {"key": "run", "down": true}
+//! The app draws its own screen. It composes flipctl's list body from the
+//! framework in crates/flipctl-app, fills in the rows it reads out of /proc, and
+//! paints them into its own Wayland surface: no protocol, no scene, and the same
+//! interface as the rest of the device because the widget and the tokens are the
+//! same ones flipctl's menus use.
 //!
 //! It wraps `uptime`, which is why the manifest declares procps, and reads
 //! /proc directly for the numbers that command rounds off.
 
-use std::io::{BufRead, Write};
+use std::time::Duration;
 
-/// Rows the form body shows at once.
-const WINDOW: usize = 5;
+use flipctl_app::{Key, StatusSource};
+use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
-/// Escape the few characters a JSON string cannot hold literally.
-///
-/// Hand-written rather than pulled from a crate: the only strings here are
-/// numbers, labels and one line of `uptime` output, and a dependency to quote
-/// them would be larger than the program.
-fn json(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' | '\r' | '\t' => out.push(' '),
-            c if (c as u32) < 0x20 => out.push(' '),
-            c => out.push(c),
-        }
-    }
-    out
-}
+slint::include_modules!();
 
 /// Seconds as a person reads a duration: the two largest units that matter.
 fn duration(total: f64) -> String {
@@ -104,68 +86,81 @@ fn boot_time() -> String {
     run_uptime(&["-s"])
 }
 
-fn draw(selected: usize) {
-    let rows = rows();
-    let mut body = String::new();
-    for (i, (label, value)) in rows.iter().skip(offset(selected, rows.len())).take(WINDOW).enumerate() {
-        if i > 0 {
-            body.push(',');
-        }
-        body.push_str(&format!(
-            "{{\"label\":\"{}\",\"value\":\"{}\"}}",
-            json(label),
-            json(value)
-        ));
-    }
-    let off = offset(selected, rows.len());
-    let mut out = std::io::stdout().lock();
-    let _ = writeln!(
-        out,
-        "{{\"screen\":{{\"type\":\"form\",\"title\":\"Uptime\",\"rows\":[{body}],\
-         \"selected\":{},\"total\":{},\"offset\":{off},\
-         \"buttons\":[\"Close\",\"\",\"\",\"\",\"Refresh\"]}}}}",
-        selected - off,
-        rows.len()
-    );
-    let _ = out.flush();
+
+/// The rows as the list body wants them: a label on the left, a value on the
+/// right, and no icon or chevrons.
+fn items() -> Vec<ListItem> {
+    rows()
+        .into_iter()
+        .map(|(label, value)| ListItem {
+            label: label.into(),
+            status: value.into(),
+            icon: 0,
+            frames: 1,
+            chevrons: 0,
+            value: Default::default(),
+            at_start: false,
+            at_end: false,
+        })
+        .collect()
 }
 
-/// First row to send, keeping the selection inside the window.
-///
-/// The app windows its own rows and says where they sit, which is what lets
-/// flipctl draw a scrollbar without being handed every row every frame.
-fn offset(selected: usize, total: usize) -> usize {
-    if total <= WINDOW {
-        0
-    } else {
-        selected.saturating_sub(WINDOW - 1).min(total - WINDOW)
-    }
+/// Re-read /proc and put the numbers on screen, keeping the selection.
+fn refresh(ui: &AppWindow) {
+    let rows = items();
+    ui.set_total(rows.len() as i32);
+    ui.set_rows(ModelRc::new(VecModel::from(rows)));
 }
 
-fn main() {
-    let mut selected = 0usize;
-    draw(selected);
+fn main() -> Result<(), slint::PlatformError> {
+    let ui = AppWindow::new()?;
+    refresh(&ui);
 
-    let total = rows().len();
-    for line in std::io::stdin().lock().lines().map_while(Result::ok) {
-        // The messages are small and their shape is fixed, so the two fields are
-        // found by looking for them rather than by parsing.
-        if !line.contains("\"down\":true") && !line.contains("\"down\": true") {
-            continue;
+    // The panel's own bar, read here rather than handed over: an app has the same
+    // access to sysfs that flipctl does.
+    let mut status = StatusSource::new(Duration::from_secs(2));
+    flipctl_app::apply_status!(&ui, PanelStatus, status.current());
+
+    let tick = slint::Timer::default();
+    let refreshing = ui.as_weak();
+    tick.start(slint::TimerMode::Repeated, Duration::from_secs(1), move || {
+        let Some(ui) = refreshing.upgrade() else {
+            return;
+        };
+        refresh(&ui);
+        if let Some(now) = status.poll() {
+            flipctl_app::apply_status!(&ui, PanelStatus, now);
         }
-        let key = line
-            .split("\"key\"")
-            .nth(1)
-            .and_then(|rest| rest.split('"').nth(1))
-            .unwrap_or("");
+    });
+
+    let keys = ui.as_weak();
+    ui.on_keyed(move |text, down| {
+        let Some(ui) = keys.upgrade() else {
+            return;
+        };
+        let Some(key) = Key::from_slint(text.as_str()) else {
+            return;
+        };
+        // The soft bar shows which button is held, as it does everywhere else.
+        ui.set_pressed_slot(match (down, key.soft_slot()) {
+            (true, Some(slot)) => slot as i32,
+            _ => -1,
+        });
+        if !down {
+            return;
+        }
+        let total = ui.get_rows().row_count() as i32;
         match key {
-            "down" => selected = (selected + 1) % total,
-            "up" => selected = (selected + total - 1) % total,
-            // Every draw re-reads /proc, so this is the refresh.
-            "run" | "ok" => {}
-            "esc" | "back" => return,
-            _ => continue,
+            Key::Down if total > 0 => ui.set_selected((ui.get_selected() + 1).rem_euclid(total)),
+            Key::Up if total > 0 => ui.set_selected((ui.get_selected() - 1).rem_euclid(total)),
+            // Every draw re-reads /proc, so Run is the refresh.
+            Key::Run | Key::Ok => refresh(&ui),
+            Key::Escape | Key::Back => {
+                let _ = slint::quit_event_loop();
+            }
+            _ => {}
         }
-        draw(selected);
-    }
+    });
+
+    ui.run()
 }

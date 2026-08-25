@@ -1,23 +1,21 @@
-//! A resource monitor, in the shape btop draws one: what every core is doing,
-//! what memory is doing, both of them over the last few minutes, and which
-//! processes are responsible.
+//! What the machine is doing: four pages, drawn by the app itself.
 //!
-//! An app never draws. It writes a scene description and reads key events, so it
-//! links no GUI toolkit and needs no crates: the protocol is newline-delimited
-//! JSON over stdin and stdout.
+//! Three of them are lists of rows and the fourth is a picture. The rows go into
+//! flipctl's detail body and the picture into its canvas body, both from the
+//! framework in crates/flipctl-app, so a gauge here is the gauge Settings draws.
+//! The picture is painted with the same primitives and fonts, into a panel-sized
+//! greyscale surface this app owns.
 //!
-//!     app -> flipctl   {"screen": {...}}
-//!     flipctl -> app   {"key": "run", "down": true}
-//!
-//! Four screens. Three of them are lists of rows with bars, which flipctl already
-//! knows how to draw, so they are described rather than painted and come out
-//! looking like the rest of the device. The fourth is a pair of history graphs,
-//! which is not a list of anything, so that one the app paints: a panel-sized
-//! greyscale bitmap with the labels left to flipctl, since an app has no font.
+//! Everything on screen comes out of /proc and /sys: no daemon, no sampling
+//! thread, one read of each file a second.
 
-use std::io::{BufRead, Write};
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
+
+use flipctl_app::paint::Surface;
+use flipctl_app::{theme, Key, StatusSource};
+use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+
+slint::include_modules!();
 
 /// How often the numbers are re-read, and so how much time one column of the
 /// graph stands for.
@@ -31,8 +29,7 @@ const HISTORY: usize = 248;
 /// Rows a list body shows at once.
 const WINDOW: usize = 8;
 
-const PANEL_W: usize = 256;
-const PANEL_H: usize = 144;
+const PANEL_W: usize = theme::PANEL_W as usize;
 /// The system's status bar owns the rows above this, and its soft buttons the
 /// bottom 14, which is what the graphs are laid out inside.
 const TOP: usize = 13;
@@ -210,15 +207,36 @@ fn processes() -> Vec<Proc> {
 // ── the state the screens read ─────────────────────────────────────────────
 
 #[derive(Copy, Clone, PartialEq)]
-enum Screen {
+enum Page {
     Cpu,
     Memory,
     Graph,
     Procs,
 }
 
+impl Page {
+    /// The next page to the right, wrapping.
+    fn next(self) -> Self {
+        match self {
+            Self::Cpu => Self::Memory,
+            Self::Memory => Self::Graph,
+            Self::Graph => Self::Procs,
+            Self::Procs => Self::Cpu,
+        }
+    }
+
+    fn previous(self) -> Self {
+        match self {
+            Self::Cpu => Self::Procs,
+            Self::Memory => Self::Cpu,
+            Self::Graph => Self::Memory,
+            Self::Procs => Self::Graph,
+        }
+    }
+}
+
 struct Monitor {
-    screen: Screen,
+    page: Page,
     selected: usize,
     cpu: Cpu,
     /// Busy share per core, aggregate first, from the last two readings.
@@ -238,7 +256,7 @@ struct Monitor {
 impl Monitor {
     fn new() -> Self {
         Self {
-            screen: Screen::Cpu,
+            page: Page::Cpu,
             selected: 0,
             cpu: read_cpu(),
             loads: Vec::new(),
@@ -320,123 +338,80 @@ impl Monitor {
     }
 }
 
-// ── writing scenes ─────────────────────────────────────────────────────────
 
-/// Escape the few characters a JSON string cannot hold literally.
-///
-/// Hand-written rather than pulled from a crate: the only strings here are
-/// labels, sizes and process names, and a dependency to quote them would be
-/// larger than the program.
-fn json(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' | '\r' | '\t' => out.push(' '),
-            c if (c as u32) < 0x20 => out.push(' '),
-            c => out.push(c),
-        }
-    }
-    out
-}
+// ── the pages, which the app draws ─────────────────────────────────────────
 
-/// One row of a detail scene: a label and a value, a bar, a divider or a line.
+/// One row of a page: a label and a value, a bar, or a rule between sections.
 enum Row {
     Pair(String, String),
-    /// Label, fill, and whether it draws in the dim tone.
-    Gauge(String, i32, bool),
+    /// Label and fill.
+    Gauge(String, i32),
     Divider,
 }
 
 impl Row {
-    fn write(&self, out: &mut String) {
+    /// The row as the detail body takes it: kind 0 a pair, 1 a divider, 2 a gauge.
+    fn placed(&self) -> DetailRow {
         match self {
-            Row::Pair(label, value) => out.push_str(&format!(
-                "{{\"label\":\"{}\",\"value\":\"{}\"}}",
-                json(label),
-                json(value)
-            )),
-            Row::Gauge(label, percent, dim) => out.push_str(&format!(
-                "{{\"kind\":\"gauge\",\"label\":\"{}\",\"percent\":{},\"dim\":{}}}",
-                json(label),
-                (*percent).clamp(0, 100),
-                dim
-            )),
-            Row::Divider => out.push_str("{\"kind\":\"divider\"}"),
+            Row::Pair(label, value) => DetailRow {
+                kind: 0,
+                label: label.into(),
+                value: value.into(),
+                percent: 0,
+                dim: false,
+            },
+            Row::Gauge(label, percent) => DetailRow {
+                kind: 2,
+                label: label.into(),
+                value: SharedString::new(),
+                percent: (*percent).clamp(0, 100),
+                dim: false,
+            },
+            Row::Divider => DetailRow {
+                kind: 1,
+                label: SharedString::new(),
+                value: SharedString::new(),
+                percent: 0,
+                dim: false,
+            },
         }
     }
 }
 
-/// The soft buttons, the same on every screen so the app is one press from any of
-/// its views. The screen you are on is not offered again.
-fn buttons(screen: Screen) -> String {
-    let label = |want: Screen, text: &str| {
-        if screen == want {
-            String::new()
+/// The soft buttons, the same on every page so the app is one press from any of
+/// its views. The page you are on is not offered again.
+fn buttons(page: Page) -> Vec<SharedString> {
+    let label = |want: Page, text: &str| {
+        if page == want {
+            SharedString::new()
         } else {
-            text.to_string()
+            text.into()
         }
     };
-    let slots = [
-        "Close".to_string(),
-        label(Screen::Cpu, "CPU"),
-        label(Screen::Memory, "Mem"),
-        label(Screen::Graph, "Graph"),
-        label(Screen::Procs, "Procs"),
-    ];
-    slots
+    vec![
+        "Close".into(),
+        label(Page::Cpu, "CPU"),
+        label(Page::Memory, "Mem"),
+        label(Page::Graph, "Graph"),
+        label(Page::Procs, "Procs"),
+    ]
+}
+
+fn cpu_rows(m: &Monitor) -> (String, Vec<Row>) {
+    let rows = m
+        .loads
         .iter()
-        .map(|s| format!("\"{}\"", json(s)))
-        .collect::<Vec<_>>()
-        .join(",")
+        .skip(1)
+        .enumerate()
+        // Short labels on purpose: the bar starts clear of its label, so a label
+        // carrying the reading would move the bar every second. The reading goes
+        // in the title, where it holds still.
+        .map(|(i, pct)| Row::Gauge(format!("C{i}"), *pct))
+        .collect();
+    (format!("CPU {}%", m.total_load()), rows)
 }
 
-fn detail(title: &str, rows: &[Row], selected: usize, screen: Screen) {
-    // The window the app sends, and where it sits, so flipctl can draw a
-    // scrollbar without being handed every row.
-    let offset = if rows.len() <= WINDOW {
-        0
-    } else {
-        selected.saturating_sub(WINDOW - 1).min(rows.len() - WINDOW)
-    };
-    let mut body = String::new();
-    for (i, row) in rows.iter().skip(offset).take(WINDOW).enumerate() {
-        if i > 0 {
-            body.push(',');
-        }
-        row.write(&mut body);
-    }
-    let mut out = std::io::stdout().lock();
-    let _ = writeln!(
-        out,
-        "{{\"screen\":{{\"type\":\"detail\",\"title\":\"{}\",\"rows\":[{body}],\
-         \"selected\":{},\"total\":{},\"offset\":{offset},\"buttons\":[{}]}}}}",
-        json(title),
-        selected.saturating_sub(offset),
-        rows.len(),
-        buttons(screen)
-    );
-    let _ = out.flush();
-}
-
-fn cpu_screen(m: &Monitor) {
-    let mut rows = Vec::new();
-    for (i, pct) in m.loads.iter().skip(1).enumerate() {
-        // Short labels on purpose: flipctl starts an app's bar clear of its own
-        // label, so a label carrying the reading would move the bar every second.
-        // The reading goes in the title, where it holds still.
-        rows.push(Row::Gauge(format!("C{i}"), *pct, false));
-    }
-    detail(
-        &format!("CPU {}%", m.total_load()),
-        &rows,
-        m.selected.min(rows.len().saturating_sub(1)),
-        Screen::Cpu,
-    );
-}
-
-fn memory_screen(m: &Monitor) {
+fn memory_rows(m: &Monitor) -> (String, Vec<Row>) {
     let total = field(&m.mem, "MemTotal");
     let available = field(&m.mem, "MemAvailable");
     let used = total.saturating_sub(available);
@@ -445,14 +420,10 @@ fn memory_screen(m: &Monitor) {
 
     let mut rows = vec![
         Row::Pair("Used".into(), format!("{} / {}", size(used), size(total))),
-        Row::Gauge("Memory".into(), m.mem_percent(), false),
+        Row::Gauge("Memory".into(), m.mem_percent()),
     ];
     if swap_total > 0 {
-        rows.push(Row::Gauge(
-            "Swap".into(),
-            (swap_used * 100 / swap_total) as i32,
-            false,
-        ));
+        rows.push(Row::Gauge("Swap".into(), (swap_used * 100 / swap_total) as i32));
     } else {
         // Said rather than left out: an absent swap row reads as a screen that
         // forgot to look.
@@ -462,262 +433,205 @@ fn memory_screen(m: &Monitor) {
     rows.push(Row::Pair("Cached".into(), size(field(&m.mem, "Cached"))));
     rows.push(Row::Pair("Buffers".into(), size(field(&m.mem, "Buffers"))));
     rows.push(Row::Pair("Dirty".into(), size(field(&m.mem, "Dirty"))));
-    rows.push(Row::Pair(
-        "Shared".into(),
-        size(field(&m.mem, "Shmem")),
-    ));
+    rows.push(Row::Pair("Shared".into(), size(field(&m.mem, "Shmem"))));
     if !m.temps.is_empty() {
         rows.push(Row::Divider);
         for (name, celsius) in &m.temps {
             rows.push(Row::Pair(name.clone(), format!("{celsius}C")));
         }
     }
-    detail("Memory", &rows, m.selected.min(rows.len() - 1), Screen::Memory);
+    ("Memory".into(), rows)
 }
 
-fn procs_screen(m: &Monitor) {
+fn procs_rows(m: &Monitor) -> (String, Vec<Row>) {
     let rows: Vec<Row> = m
         .proc_load
         .iter()
         .take(24)
-        .map(|(_, name, pct, rss)| {
-            Row::Pair(name.clone(), format!("{pct}% {}", size(*rss)))
-        })
+        .map(|(_, name, pct, rss)| Row::Pair(name.clone(), format!("{pct}% {}", size(*rss))))
         .collect();
     let rows = if rows.is_empty() {
         vec![Row::Pair("No readings yet".into(), String::new())]
     } else {
         rows
     };
-    detail(
-        &format!("Processes {}", m.procs.len()),
-        &rows,
-        m.selected.min(rows.len() - 1),
-        Screen::Procs,
-    );
+    (format!("Processes {}", m.procs.len()), rows)
 }
 
-// ── the graphs, which the app paints ───────────────────────────────────────
+// ── the graphs, which the app paints itself ────────────────────────────────
 
 /// The two frames: label row, then the graph under it.
-const CPU_LABEL_Y: usize = TOP;
-const CPU_GRAPH_Y: usize = TOP + 11;
-const GRAPH_H: usize = 46;
-const MEM_LABEL_Y: usize = CPU_GRAPH_Y + GRAPH_H + 2;
-const MEM_GRAPH_Y: usize = MEM_LABEL_Y + 11;
-const GRAPH_X: usize = 2;
-const GRAPH_W: usize = PANEL_W - 2 * GRAPH_X;
+const CPU_LABEL_Y: i32 = TOP as i32;
+const CPU_GRAPH_Y: i32 = TOP as i32 + 11;
+const GRAPH_H: i32 = 46;
+const MEM_LABEL_Y: i32 = CPU_GRAPH_Y + GRAPH_H + 2;
+const MEM_GRAPH_Y: i32 = MEM_LABEL_Y + 11;
+const GRAPH_X: i32 = 2;
+const GRAPH_W: i32 = PANEL_W as i32 - 2 * GRAPH_X;
 
-struct Canvas {
-    px: Vec<u8>,
-}
-
-impl Canvas {
-    fn new() -> Self {
-        Self {
-            px: vec![255; PANEL_W * PANEL_H],
+/// One history, as a column per sample filled from the bottom.
+///
+/// Newest at the right, which is the way every graph of this kind reads, and a
+/// history shorter than the frame leaves the left end empty rather than
+/// stretching: the graph is a record of time, so a column has to mean the same
+/// span wherever it sits.
+fn graph(surface: &mut Surface, x: i32, y: i32, w: i32, h: i32, history: &[i32]) {
+    surface.round_frame(x, y, w, h, 2, theme::color::BLACK);
+    let (inner_w, inner_h) = (w - 2, h - 2);
+    let shown = history.len().min(inner_w as usize);
+    for (i, value) in history[history.len() - shown..].iter().enumerate() {
+        let column = x + 1 + inner_w - shown as i32 + i as i32;
+        let filled = (*value).clamp(0, 100) * inner_h / 100;
+        // The tone says how hard it is working: the top of a tall column is ink,
+        // the body of a quiet one is grey, so a glance reads the shape and a
+        // closer look reads the level.
+        let tone = if *value >= 80 {
+            theme::color::BLACK
+        } else {
+            theme::color::STATUS_DIM
+        };
+        for row in 0..filled {
+            surface.pixel(column, y + h - 2 - row, tone);
         }
     }
-
-    fn set(&mut self, x: usize, y: usize, v: u8) {
-        if x < PANEL_W && y < PANEL_H {
-            self.px[y * PANEL_W + x] = v;
-        }
-    }
-
-    /// A one-pixel outline with its corners cut, which is the corner every frame
-    /// in this system has.
-    fn frame(&mut self, x: usize, y: usize, w: usize, h: usize, radius: usize) {
-        for i in radius..w - radius {
-            self.set(x + i, y, 0);
-            self.set(x + i, y + h - 1, 0);
-        }
-        for i in radius..h - radius {
-            self.set(x, y + i, 0);
-            self.set(x + w - 1, y + i, 0);
-        }
-        for i in 0..radius {
-            let inset = radius - 1 - i;
-            self.set(x + inset, y + i, 0);
-            self.set(x + w - 1 - inset, y + i, 0);
-            self.set(x + inset, y + h - 1 - i, 0);
-            self.set(x + w - 1 - inset, y + h - 1 - i, 0);
-        }
-    }
-
-    /// One history, as a column per sample filled from the bottom.
-    ///
-    /// Newest at the right, which is the way every graph of this kind reads, and
-    /// a history shorter than the frame leaves the left end empty rather than
-    /// stretching: the graph is a record of time, so a column has to mean the
-    /// same span wherever it sits.
-    fn graph(&mut self, x: usize, y: usize, w: usize, h: usize, history: &[i32]) {
-        self.frame(x, y, w, h, 2);
-        let inner_w = w - 2;
-        let inner_h = h - 2;
-        let shown = history.len().min(inner_w);
-        for (i, value) in history[history.len() - shown..].iter().enumerate() {
-            let column = x + 1 + inner_w - shown + i;
-            let filled = (*value as usize * inner_h) / 100;
-            for row in 0..filled {
-                // The tone says how hard it is working: the top of a tall column
-                // is ink, the body of a quiet one is grey, so a glance reads the
-                // shape and a closer look reads the level.
-                let tone = if *value >= 80 { 0 } else { 0x99 };
-                self.set(column, y + h - 2 - row, tone);
-            }
-        }
-        // The half-way rule, so a column can be read against something.
-        for i in (1..inner_w).step_by(4) {
-            self.set(x + i, y + h / 2, 0x99);
-        }
-    }
-
-    fn base64(&self) -> String {
-        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut out = String::with_capacity(self.px.len().div_ceil(3) * 4);
-        for chunk in self.px.chunks(3) {
-            let b = [
-                chunk[0],
-                chunk.get(1).copied().unwrap_or(0),
-                chunk.get(2).copied().unwrap_or(0),
-            ];
-            let bits = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
-            out.push(ALPHABET[(bits >> 18 & 63) as usize] as char);
-            out.push(ALPHABET[(bits >> 12 & 63) as usize] as char);
-            out.push(if chunk.len() > 1 {
-                ALPHABET[(bits >> 6 & 63) as usize] as char
-            } else {
-                '='
-            });
-            out.push(if chunk.len() > 2 {
-                ALPHABET[(bits & 63) as usize] as char
-            } else {
-                '='
-            });
-        }
-        out
+    // The half-way rule, so a column can be read against something.
+    for i in (1..inner_w).step_by(4) {
+        surface.pixel(x + i, y + h / 2, theme::color::STATUS_DIM);
     }
 }
 
-fn graph_screen(m: &Monitor) {
-    let mut canvas = Canvas::new();
-    canvas.graph(GRAPH_X, CPU_GRAPH_Y, GRAPH_W, GRAPH_H, &m.cpu_history);
-    canvas.graph(GRAPH_X, MEM_GRAPH_Y, GRAPH_W, GRAPH_H, &m.mem_history);
+/// The graph page: the two pictures, and the readings that label them.
+fn graph_page(m: &Monitor) -> (slint::Image, Vec<CanvasText>) {
+    let mut surface = Surface::panel();
+    surface.clear(theme::color::WHITE);
+    graph(&mut surface, GRAPH_X, CPU_GRAPH_Y, GRAPH_W, GRAPH_H, &m.cpu_history);
+    graph(&mut surface, GRAPH_X, MEM_GRAPH_Y, GRAPH_W, GRAPH_H, &m.mem_history);
 
     let total = field(&m.mem, "MemTotal");
     let used = total.saturating_sub(field(&m.mem, "MemAvailable"));
     // Labels above each frame rather than inside it: a graph at 100% would bury
     // text drawn over it, and the reading is the thing you came for.
-    let minutes = m.cpu_history.len() / 60;
-    let texts = format!(
-        "{{\"x\":4,\"y\":{CPU_LABEL_Y},\"text\":\"CPU {}%\"}},\
-         {{\"x\":252,\"y\":{CPU_LABEL_Y},\"text\":\"{} min\",\"align\":\"right\"}},\
-         {{\"x\":4,\"y\":{MEM_LABEL_Y},\"text\":\"MEM {}%\"}},\
-         {{\"x\":252,\"y\":{MEM_LABEL_Y},\"text\":\"{} / {}\",\"align\":\"right\"}}",
-        m.total_load(),
-        minutes,
-        m.mem_percent(),
-        size(used),
-        size(total)
-    );
-
-    let mut out = std::io::stdout().lock();
-    let _ = writeln!(
-        out,
-        "{{\"screen\":{{\"type\":\"canvas\",\"status\":true,\"data\":\"{}\",\
-         \"text\":[{texts}],\"buttons\":[{}]}}}}",
-        canvas.base64(),
-        buttons(Screen::Graph)
-    );
-    let _ = out.flush();
+    // align 1 ends the text at x, which is how a reading on the right edge stays put
+    // as its digits change; -1 starts it there. Zero would centre it on x.
+    let label = |x: i32, y: i32, text: String, ends_at_x: bool| CanvasText {
+        x: x as f32,
+        y: y as f32,
+        text: text.into(),
+        font: 0,
+        align: if ends_at_x { 1 } else { -1 },
+        white: false,
+    };
+    let texts = vec![
+        label(4, CPU_LABEL_Y, format!("CPU {}%", m.total_load()), false),
+        label(252, CPU_LABEL_Y, format!("{} min", m.cpu_history.len() / 60), true),
+        label(4, MEM_LABEL_Y, format!("MEM {}%", m.mem_percent()), false),
+        label(252, MEM_LABEL_Y, format!("{} / {}", size(used), size(total)), true),
+    ];
+    (flipctl_app::picture(&surface), texts)
 }
 
-fn draw(m: &Monitor) {
-    match m.screen {
-        Screen::Cpu => cpu_screen(m),
-        Screen::Memory => memory_screen(m),
-        Screen::Graph => graph_screen(m),
-        Screen::Procs => procs_screen(m),
+/// Put the current page on screen.
+fn draw(ui: &AppWindow, m: &Monitor) {
+    ui.set_buttons(ModelRc::new(VecModel::from(buttons(m.page))));
+    ui.set_graph(m.page == Page::Graph);
+    if m.page == Page::Graph {
+        let (picture, texts) = graph_page(m);
+        ui.set_picture(picture);
+        ui.set_texts(ModelRc::new(VecModel::from(texts)));
+        return;
     }
+    let (title, rows) = match m.page {
+        Page::Cpu => cpu_rows(m),
+        Page::Memory => memory_rows(m),
+        Page::Procs => procs_rows(m),
+        Page::Graph => unreachable!("the picture is drawn above"),
+    };
+    // The body shows a window of the rows and scrolls it, so the selection is what
+    // decides where that window sits.
+    let selected = m.selected.min(rows.len().saturating_sub(1));
+    let offset = if rows.len() <= WINDOW {
+        0
+    } else {
+        selected.saturating_sub(WINDOW - 1).min(rows.len() - WINDOW)
+    };
+    ui.set_heading(title.into());
+    ui.set_offset(offset as i32);
+    ui.set_rows(ModelRc::new(VecModel::from(
+        rows.iter().map(Row::placed).collect::<Vec<_>>(),
+    )));
 }
 
-fn main() {
-    let mut m = Monitor::new();
+fn main() -> Result<(), slint::PlatformError> {
+    let ui = AppWindow::new()?;
+    let m = Monitor::new();
     // The first reading has nothing to be a difference from, so a load cannot be
-    // stated yet. One tick's wait buys every number on the screen.
-    std::thread::sleep(TICK);
-    m.tick(TICK);
-    draw(&m);
+    // stated yet: the page fills in on the first tick.
+    draw(&ui, &m);
 
-    // Keys arrive on their own schedule and the numbers on ours, so stdin is read
-    // by a thread and the loop waits on whichever comes first.
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        for line in std::io::stdin().lock().lines().map_while(Result::ok) {
-            if tx.send(line).is_err() {
-                return;
-            }
+    let mut status = StatusSource::new(Duration::from_secs(2));
+    flipctl_app::apply_status!(&ui, PanelStatus, status.current());
+
+    let monitor = std::rc::Rc::new(std::cell::RefCell::new(m));
+    let ticking = ui.as_weak();
+    let watched = monitor.clone();
+    let mut last = Instant::now();
+    let tick = slint::Timer::default();
+    tick.start(slint::TimerMode::Repeated, TICK, move || {
+        let Some(ui) = ticking.upgrade() else {
+            return;
+        };
+        let elapsed = last.elapsed();
+        last = Instant::now();
+        let mut m = watched.borrow_mut();
+        m.tick(elapsed);
+        draw(&ui, &m);
+        if let Some(now) = status.poll() {
+            flipctl_app::apply_status!(&ui, PanelStatus, now);
         }
     });
 
-    let mut last = Instant::now();
-    loop {
-        let waited = TICK.saturating_sub(last.elapsed());
-        match rx.recv_timeout(waited) {
-            Ok(line) => {
-                // The messages are small and their shape is fixed, so the two
-                // fields are found by looking for them rather than by parsing.
-                if !line.contains("\"down\":true") && !line.contains("\"down\": true") {
-                    continue;
-                }
-                let key = line
-                    .split("\"key\"")
-                    .nth(1)
-                    .and_then(|rest| rest.split('"').nth(1))
-                    .unwrap_or("");
-                match key {
-                    "esc" | "back" => return,
-                    "ptt" => m.screen = Screen::Cpu,
-                    "edit" => m.screen = Screen::Memory,
-                    "view" => m.screen = Screen::Graph,
-                    "run" => m.screen = Screen::Procs,
-                    // Left and right walk the same four screens, for a hand that
-                    // is already on the D-pad.
-                    "right" => {
-                        m.screen = match m.screen {
-                            Screen::Cpu => Screen::Memory,
-                            Screen::Memory => Screen::Graph,
-                            Screen::Graph => Screen::Procs,
-                            Screen::Procs => Screen::Cpu,
-                        }
-                    }
-                    "left" => {
-                        m.screen = match m.screen {
-                            Screen::Cpu => Screen::Procs,
-                            Screen::Memory => Screen::Cpu,
-                            Screen::Graph => Screen::Memory,
-                            Screen::Procs => Screen::Graph,
-                        }
-                    }
-                    "down" => m.selected += 1,
-                    "up" => m.selected = m.selected.saturating_sub(1),
-                    _ => continue,
-                }
-                if matches!(key, "left" | "right" | "ptt" | "edit" | "view" | "run") {
-                    // Each screen has its own list, so a selection carried across
-                    // would land somewhere arbitrary.
-                    m.selected = 0;
-                }
-                draw(&m);
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                let elapsed = last.elapsed();
-                last = Instant::now();
-                m.tick(elapsed);
-                draw(&m);
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+    let keys = ui.as_weak();
+    let pressed = monitor.clone();
+    ui.on_keyed(move |text, down| {
+        let Some(ui) = keys.upgrade() else {
+            return;
+        };
+        let Some(key) = Key::from_slint(text.as_str()) else {
+            return;
+        };
+        ui.set_pressed_slot(match (down, key.soft_slot()) {
+            (true, Some(slot)) => slot as i32,
+            _ => -1,
+        });
+        if !down {
+            return;
         }
-    }
+        let mut m = pressed.borrow_mut();
+        let was = m.page;
+        match key {
+            Key::Escape | Key::Back => {
+                let _ = slint::quit_event_loop();
+                return;
+            }
+            Key::View => m.page = Page::Cpu,
+            Key::Power => m.page = Page::Memory,
+            Key::Edit => m.page = Page::Graph,
+            Key::Run => m.page = Page::Procs,
+            // Left and right walk the same four pages, for a hand that is already
+            // on the D-pad.
+            Key::Right => m.page = m.page.next(),
+            Key::Left => m.page = m.page.previous(),
+            Key::Down => m.selected += 1,
+            Key::Up => m.selected = m.selected.saturating_sub(1),
+            _ => return,
+        }
+        // Each page has its own list, so a selection carried across would land
+        // somewhere arbitrary.
+        if m.page != was {
+            m.selected = 0;
+        }
+        draw(&ui, &m);
+    });
+
+    ui.run()
 }

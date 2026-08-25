@@ -1,0 +1,8 @@
+# Uptime, drawing its own screen.
+#
+# A Wayland client like any other: flipctl runs it on a workspace of its own and
+# reads its frames. What it draws is flipctl's own list body, from the framework in
+# crates/flipctl-app, so it is the same interface without a protocol between them.
+name = "Uptime"
+wayland = "./target/release/uptime-app"
+apt = ["procps"]

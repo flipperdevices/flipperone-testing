@@ -1,0 +1,48 @@
+// Resources: four pages, three of rows and one of graphs, drawn here.
+//
+// The rows are flipctl's own detail body and the graphs are its canvas body, so a
+// gauge in this app and a gauge in Settings are the same pixels. What the app adds
+// is the picture: it paints the two frames and their columns itself, with the
+// primitives in flipper-ui's paint module, and hands over a panel-sized picture.
+import { Shell, PanelStatus } from "@app/shell.slint";
+import { DetailBody, DetailRow } from "@flipctl/detail.slint";
+import { CanvasBody, CanvasText } from "@flipctl/canvas.slint";
+
+export { DetailRow, CanvasText, PanelStatus }
+
+export component AppWindow inherits Shell {
+    // The graph page draws a picture; the other three draw rows.
+    in property <bool> graph;
+    in property <string> heading;
+    in property <[DetailRow]> rows;
+    in property <int> offset;
+    in property <[string]> buttons;
+    in property <int> pressed_slot: -1;
+    in property <image> picture;
+    in property <[CanvasText]> texts;
+
+    // The shell's keys, under a name this component owns so Rust can see it.
+    callback keyed(string, bool);
+    key(text, down) => {
+        root.keyed(text, down);
+    }
+
+    if !root.graph: DetailBody {
+        rows: root.rows;
+        breadcrumb: root.heading;
+        offset: root.offset;
+        buttons: root.buttons;
+        pressed_slot: root.pressed_slot;
+        // The labels are the app's own, so the gauges are sized around them
+        // rather than pinned to the column a first-party screen uses.
+        fit_gauges: true;
+    }
+
+    if root.graph: CanvasBody {
+        bitmap: root.picture;
+        texts: root.texts;
+        status_bar: true;
+        buttons: root.buttons;
+        pressed_slot: root.pressed_slot;
+    }
+}

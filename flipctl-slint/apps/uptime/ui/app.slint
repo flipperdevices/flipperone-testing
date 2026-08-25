@@ -1,0 +1,32 @@
+// Uptime's screen: flipctl's own list body, filled in here.
+//
+// The app draws this itself. Nothing describes it to flipctl, which sees a Wayland
+// client like any other; what keeps it looking like the rest of the device is that
+// the body and the tokens are the ones flipctl's own menus are drawn from.
+import { Shell, PanelStatus } from "@app/shell.slint";
+import { MenuBody, ListItem } from "@flipctl/list.slint";
+
+export { ListItem, PanelStatus }
+
+export component AppWindow inherits Shell {
+    in property <[ListItem]> rows;
+    in property <int> selected;
+    in property <int> scroll;
+    in property <int> total;
+    in property <int> pressed_slot: -1;
+    // The shell's keys, under a name this component owns so Rust can see it.
+    callback keyed(string, bool);
+    key(text, down) => {
+        root.keyed(text, down);
+    }
+
+    MenuBody {
+        items: root.rows;
+        selected: root.selected;
+        scroll: root.scroll;
+        total: root.total;
+        real_frame: true;
+        buttons: ["Close", "", "", "", "Refresh"];
+        pressed_slot: root.pressed_slot;
+    }
+}
