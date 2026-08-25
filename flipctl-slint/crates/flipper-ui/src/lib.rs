@@ -52,7 +52,7 @@ pub mod theme {
     include!(concat!(env!("OUT_DIR"), "/theme.rs"));
 }
 
-pub use app::{AppEntry, RunningApp, Scene, SceneKind};
+pub use app::{AppEntry, Rotate, RunningApp, Scene, SceneKind};
 pub use font::BitmapFont;
 pub use key::{FlipperKey, KeyEvent};
 pub use platform::{Frame, FrameSink, InputSource};

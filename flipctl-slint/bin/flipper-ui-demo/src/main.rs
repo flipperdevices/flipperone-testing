@@ -1314,6 +1314,10 @@ impl PanelOut {
 struct WlApp {
     name: String,
     session: flipper_ui::wl::Session,
+    /// Whether flipctl paints its status bar over this app's frames.
+    status: bool,
+    /// Which edge is the app's own top, so the bar goes there rather than on ours.
+    rotate: flipper_ui::Rotate,
 }
 
 /// Launch a Wayland app in its own compositor, or name the one already running.
@@ -1335,10 +1339,26 @@ fn start_cage(entry: &flipper_ui::app::AppEntry, running: &mut Vec<WlApp>) -> Op
         u32::from(flipper_ui::PANEL_W),
         u32::from(flipper_ui::PANEL_H),
     ));
-    match flipper_ui::wl::Session::launch_in(&entry.wayland, &entry.dir, w, h, &entry.env) {
+    match flipper_ui::wl::Session::launch_in(
+        &entry.wayland,
+        &entry.dir,
+        w,
+        h,
+        &entry.env,
+        entry.audio,
+    ) {
         Ok(session) => {
-            eprintln!("app            {} started in its own cage at {w}x{h}", entry.name);
-            running.push(WlApp { name: entry.name.clone(), session });
+            eprintln!(
+                "app            {} started in its own cage at {w}x{h}{}",
+                entry.name,
+                if entry.audio { ", with sound" } else { "" }
+            );
+            running.push(WlApp {
+                name: entry.name.clone(),
+                session,
+                status: entry.status,
+                rotate: entry.rotate,
+            });
             Some(entry.name.clone())
         }
         Err(e) => {
@@ -1522,6 +1542,98 @@ fn load_rgba(path: &std::path::Path) -> Option<slint::Image> {
 /// the same handful thirty times a second, and expanding greyscale to RGB each
 /// time would allocate about a megabyte a frame to draw the same pixels.
 #[cfg(feature = "slint")]
+/// flipctl's status bar, drawn for an app that is turned sideways.
+///
+/// The panel is landscape and its own bar is 256 long, but a portrait app's top edge is
+/// 144, so rotating the rendered one would crop the clock off the end. This draws a bar
+/// to the width it will actually occupy, from the same status flipctl shows everywhere
+/// else, and hands it back as a strip `STATUS_BAR_H` tall.
+#[cfg(all(feature = "device", feature = "slint", feature = "wayland"))]
+fn portrait_status(status: &flipper_ui::Status, long: u16) -> Vec<flipper_ui::Gray8> {
+    use flipper_ui::font::TITLE;
+    use flipper_ui::theme::metric::STATUS_BAR_H;
+
+    let tall = STATUS_BAR_H as u16;
+    let mut strip = flipper_ui::Surface::new(long, tall);
+    strip.clear(flipper_ui::Gray8::WHITE);
+
+    // The same things flipctl's own bar shows, in the same order: the radios at the
+    // leading edge, the battery at the trailing one. No clock, because flipctl's bar
+    // has none and a turned app should get the same bar rather than a different one.
+    let mut ink = |text: &str, x: i32| {
+        TITLE.for_each_pixel(text, x, 2, |px, py| {
+            strip.pixel(px, py, flipper_ui::Gray8::BLACK);
+        });
+    };
+
+    let charge = if status.battery < 0 {
+        "--%".to_string()
+    } else if status.charging {
+        format!("{}%+", status.battery)
+    } else {
+        format!("{}%", status.battery)
+    };
+    let mut radios = String::new();
+    if status.modem_available {
+        radios.push_str(status.access_tech);
+        radios.push(' ');
+    }
+    if status.wifi_connected {
+        radios.push_str("wifi ");
+    }
+    if matches!(status.ethernet, flipper_ui::Ethernet::Real) {
+        radios.push_str("eth");
+    }
+    ink(radios.trim_end(), 3);
+    let width = i32::from(TITLE.text_width(&charge));
+    ink(&charge, i32::from(long) - width - 3);
+
+    // A rule along the inside edge, as the landscape bar has under it.
+    strip.rect(0, i32::from(tall) - 1, i32::from(long), 1, flipper_ui::Gray8::BLACK);
+    strip.pixels().to_vec()
+}
+
+/// Paint a status strip along the edge that is the app's top.
+///
+/// The frame is the panel's, landscape; the strip is the app's, so for a turned app
+/// every pixel moves. Written as one loop over the strip rather than three cases over
+/// the frame: the strip is 13 by 144 and the arithmetic is the only difference.
+#[cfg(all(feature = "device", feature = "slint", feature = "wayland"))]
+fn paint_status(
+    frame: &mut [flipper_ui::Gray8],
+    strip: &[flipper_ui::Gray8],
+    long: u16,
+    turn: flipper_ui::Rotate,
+) {
+    use flipper_ui::theme::metric::STATUS_BAR_H;
+    let (pw, ph) = (
+        usize::from(flipper_ui::PANEL_W),
+        usize::from(flipper_ui::PANEL_H),
+    );
+    let tall = STATUS_BAR_H as usize;
+    for y in 0..tall {
+        for x in 0..usize::from(long) {
+            let Some(&ink) = strip.get(y * usize::from(long) + x) else {
+                continue;
+            };
+            let (fx, fy) = match turn {
+                // Landscape: the strip is the top rows as it stands.
+                flipper_ui::Rotate::None => (x, y),
+                // The panel's left edge is the app's top, so the strip runs down it,
+                // turned the way the device is held: its start is at the bottom of the
+                // panel and its rows run outward. The obvious mapping puts it upside
+                // down, which is how this was found.
+                flipper_ui::Rotate::Left => (y, ph - 1 - x),
+                // The right edge, the other way round.
+                flipper_ui::Rotate::Right => (pw - tall + y, ph - 1 - x),
+            };
+            if fx < pw && fy < ph {
+                frame[fy * pw + fx] = ink;
+            }
+        }
+    }
+}
+
 /// One card, with its picture converted once and kept.
 ///
 /// The cache holds the snapshot itself rather than its address. It used to key on
@@ -2586,8 +2698,27 @@ fn panel(
     let mut front_carded = Instant::now();
     #[cfg(feature = "remote")]
     let mut rebind = Instant::now();
-    // What it costs to put a hosted app's frame on the panel. No buffer of our own any
-    // more: the reader hands over a panel-sized greyscale frame and the sink takes it.
+    // What it costs to put a hosted app's frame on the panel. A buffer of our own only
+    // when the app asked for the status bar, since painting it means owning the copy.
+    #[cfg(feature = "wayland")]
+    let mut app_view =
+        vec![flipper_ui::pixel::Gray8::BLACK; usize::from(PANEL_W) * usize::from(PANEL_H)];
+    // The status bar as an app borrows it, and how long it is: the panel's width for a
+    // landscape app, the panel's height for one that is turned. Refreshed on a clock
+    // rather than per frame, since the battery and the radios do not change at 60Hz.
+    #[cfg(feature = "wayland")]
+    let mut status_strip = vec![
+        flipper_ui::pixel::Gray8::WHITE;
+        usize::from(PANEL_W) * flipper_ui::theme::metric::STATUS_BAR_H as usize
+    ];
+    #[cfg(feature = "wayland")]
+    let mut status_long = PANEL_W;
+    #[cfg(feature = "wayland")]
+    let mut status_drawn = Instant::now() - Duration::from_secs(2);
+    // The last status the poller produced, kept because a turned app's bar is drawn
+    // here rather than by Slint, and it needs the same numbers.
+    #[cfg(feature = "wayland")]
+    let mut last_status = flipper_ui::Status::default();
     #[cfg(feature = "wayland")]
     let mut app_frames: u32 = 0;
     #[cfg(feature = "wayland")]
@@ -2884,7 +3015,16 @@ fn panel(
                     wl_fresh = false;
                     // Nothing to convert and nothing to scale: the reader hands over a
                     // panel-sized greyscale frame, which is exactly what the sink takes.
-                    let ready = flipper_ui::pixel::from_bytes(&bytes);
+                    // An app that asked for the status bar gets a copy with our own top
+                    // rows painted in, which is the one case worth 36KB.
+                    let (wants_status, turn) = (app.status, app.rotate);
+                    let ready: &[flipper_ui::pixel::Gray8] = if wants_status {
+                        app_view.copy_from_slice(flipper_ui::pixel::from_bytes(&bytes));
+                        paint_status(&mut app_view, &status_strip, status_long, turn);
+                        &app_view
+                    } else {
+                        flipper_ui::pixel::from_bytes(&bytes)
+                    };
                     let put = Instant::now();
                     let all = flipper_ui::pixel::Rect::new(0, 0, PANEL_W, PANEL_H);
                     if let Some(sink) = sink.as_mut() {
@@ -2914,6 +3054,37 @@ fn panel(
                         recents.snapshot(&front, bytes.clone());
                         switch_dirty = true;
                     }
+                }
+            }
+
+            // The status bar the app is borrowing, refreshed once a second. Rendered
+            // from flipctl's own scene rather than assembled here, so it is the same
+            // bar, in the same font, saying the same things as everywhere else. The
+            // app draws nothing and has nothing to ask for: it loses its top 13 pixels
+            // and gains a clock, a battery and the radios.
+            if let Some(turn) = wl_apps
+                .iter()
+                .find(|a| a.name == front && a.status)
+                .map(|a| a.rotate)
+                .filter(|_| status_drawn.elapsed() >= Duration::from_secs(1))
+            {
+                status_drawn = Instant::now();
+                if turn == flipper_ui::Rotate::None {
+                    // Landscape: flipctl's own bar, taken from its own scene, so it is
+                    // the same bar in the same font rather than a copy of the idea.
+                    window.request_redraw();
+                    if render_into(&window, &mut frame).is_some() {
+                        let rows =
+                            usize::from(PANEL_W) * flipper_ui::theme::metric::STATUS_BAR_H as usize;
+                        status_long = PANEL_W;
+                        status_strip.truncate(rows);
+                        status_strip.copy_from_slice(&frame[..rows]);
+                    }
+                } else {
+                    // Turned: the bar has to be drawn to the length it will occupy,
+                    // which is the panel's height, so the rendered one cannot be reused.
+                    status_long = PANEL_H;
+                    status_strip = portrait_status(&last_status, PANEL_H);
                 }
             }
 
@@ -4814,6 +4985,10 @@ fn panel(
         }
 
         if let Some(now) = status.poll() {
+            #[cfg(feature = "wayland")]
+            {
+                last_status = now;
+            }
             apply_status(&screen, now);
             
             eprintln!(

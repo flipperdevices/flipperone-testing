@@ -67,6 +67,18 @@ pub enum Kind {
 /// The per-app virtualenv, inside the app's own directory.
 pub const VENV: &str = ".venv";
 
+/// Which edge of the panel is the app's own top.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
+pub enum Rotate {
+    /// Landscape, like the panel and like flipctl.
+    #[default]
+    None,
+    /// Portrait, read with the device turned so the panel's left edge is up.
+    Left,
+    /// Portrait the other way, the panel's right edge up.
+    Right,
+}
+
 /// An app found on disk, before it runs.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct AppEntry {
@@ -94,6 +106,31 @@ pub struct AppEntry {
     /// output while that app is in front, so the compositor fits the whole picture
     /// onto the panel instead.
     pub size: Option<(u32, u32)>,
+    /// Whether the app is allowed to reach the sound server.
+    ///
+    /// Off by default, because a hosted app gets a runtime directory of its own and
+    /// the sockets live in the real one: silence is what absence produces. Declaring
+    /// it links PipeWire's sockets in and pins the app to the panel's own speaker, so
+    /// it plays there rather than following whatever sink the desktop chose, which on
+    /// this device is usually HDMI.
+    ///
+    /// It covers capture as well as playback: a client that can reach the socket can
+    /// record, and separating the two would mean PipeWire access rules rather than
+    /// anything of ours.
+    pub audio: bool,
+    /// Whether flipctl paints its own status bar over the app's picture.
+    ///
+    /// The same bargain the canvas scenes get, and for the same reason: an app has no
+    /// idea what the battery or the radios are doing, so a hosted app that wants the
+    /// panel's usual top row asks flipctl for it rather than drawing a picture of one.
+    /// Nothing is asked of the app, which simply loses its top 13 pixels.
+    pub status: bool,
+    /// Which way the app's picture is turned relative to the panel.
+    ///
+    /// The panel is landscape and some apps are drawn portrait, to be read with the
+    /// device turned. flipctl needs to know because it paints over their frames: a
+    /// status bar belongs on the edge that is the app's top, not on the panel's.
+    pub rotate: Rotate,
     /// Which console font to run it in, by cell: "4x6", "5x8", "6x12", "7x14",
     /// "8x16". Empty for the default. Console apps only, since it decides how many
     /// rows and columns the program gets and nothing else in the system has any.
@@ -422,6 +459,13 @@ pub fn discover(dir: &Path) -> Vec<AppEntry> {
                         console: String::new(),
                         wayland,
                         size: py_size(&src, "size"),
+                        audio: py_bool(&src, "audio").unwrap_or(false),
+                        status: py_bool(&src, "status").unwrap_or(false),
+                        rotate: match py_string(&src, "rotate").unwrap_or_default().as_str() {
+                            "left" => Rotate::Left,
+                            "right" => Rotate::Right,
+                            _ => Rotate::None,
+                        },
                         font: String::new(),
                         graphics: true,
                         mirror: true,
@@ -441,6 +485,9 @@ pub fn discover(dir: &Path) -> Vec<AppEntry> {
                         console,
                         wayland: String::new(),
                         size: None,
+                        audio: py_bool(&src, "audio").unwrap_or(false),
+                        status: py_bool(&src, "status").unwrap_or(false),
+                        rotate: Rotate::None,
                         font: py_string(&src, "font").unwrap_or_default(),
                         graphics: py_string(&src, "draws")
                             .is_some_and(|d| d.eq_ignore_ascii_case("pixels")),
@@ -464,6 +511,9 @@ pub fn discover(dir: &Path) -> Vec<AppEntry> {
                     console: String::new(),
                     wayland: String::new(),
                     size: None,
+                audio: false,
+                status: false,
+                rotate: Rotate::None,
                     font: String::new(),
                     graphics: false,
                     mirror: true,
@@ -489,6 +539,9 @@ pub fn discover(dir: &Path) -> Vec<AppEntry> {
                 console: String::new(),
                 wayland: String::new(),
                 size: None,
+                audio: false,
+                status: false,
+                rotate: Rotate::None,
                 font: String::new(),
                 graphics: false,
                 mirror: true,

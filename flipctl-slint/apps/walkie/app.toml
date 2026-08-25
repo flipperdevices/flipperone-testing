@@ -1,0 +1,15 @@
+# The walkie-talkie, ported from the flipctl2 mockup to a Wayland client.
+#
+# `audio` is what earns it the sound server: the clip it receives plays on the panel's
+# own speaker rather than on whatever sink the desktop chose, and holding PTT records,
+# which the mockup could not do.
+name = "Walkie Talkie"
+wayland = "python3 app.py"
+audio = true
+# flipctl paints its own status bar over the top 13 pixels: the art has a drawing of
+# one, and an app cannot know what the battery or the radios are doing.
+status = true
+# Portrait: the art is read with the device turned, so the panel's left edge is the
+# app's top and that is where the status bar belongs.
+rotate = "left"
+apt = ["python3-pyqt6", "qt6-wayland", "alsa-utils"]

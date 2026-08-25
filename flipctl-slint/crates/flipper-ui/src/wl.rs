@@ -512,7 +512,7 @@ impl Session {
     /// ours with `wlr-randr`, the one part still shelling out: output management is
     /// a protocol we could speak directly, and it happens once per launch.
     pub fn launch(command: &str, w: u32, h: u32) -> io::Result<Self> {
-        Self::launch_in(command, Path::new("."), w, h, &[])
+        Self::launch_in(command, Path::new("."), w, h, &[], false)
     }
 
     /// The same, from `dir`, with `env` as `KEY=VALUE` pairs from the manifest.
@@ -526,6 +526,7 @@ impl Session {
         w: u32,
         h: u32,
         env: &[String],
+        audio: bool,
     ) -> io::Result<Self> {
         // A runtime directory per app, so the socket path is ours to know rather
         // than ours to guess. Watching XDG_RUNTIME_DIR for a new `wayland-N` looks
@@ -560,6 +561,10 @@ impl Session {
             // looking for a DRM device or an X server. Set here because it is what
             // hosting means: an app in a cage has no other way out.
             .env("QT_QPA_PLATFORM", "wayland")
+            // No titlebar and no close button. Qt draws its own decorations unless told
+            // otherwise, and on a 144 pixel panel a frame eats a seventh of the screen
+            // for buttons nothing can click: there is no pointer here.
+            .env("QT_WAYLAND_DISABLE_WINDOWDECORATION", "1")
             .env("SDL_VIDEODRIVER", "wayland")
             // SDL prefers libdecor for client-side decorations whenever the library
             // is present, and `libdecor-0-0` is installed here while none of its
@@ -575,6 +580,9 @@ impl Session {
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("WAYLAND_SOCKET")
             .stdin(Stdio::null());
+        if audio {
+            sound(&dir, &mut cmd);
+        }
         for pair in env {
             if let Some((name, value)) = pair.split_once('=') {
                 cmd.env(name, value);
@@ -986,6 +994,43 @@ fn read_frames(mut grab: Grab, frames: Arc<Frames>) {
             }
         }
     }
+}
+
+/// The panel's own speaker, by name.
+///
+/// Named rather than numbered: card numbers move between kernels, and this one is
+/// derived from the platform device instead. The desktop usually has HDMI or
+/// DisplayPort as its default sink, so an app that followed the default would play out
+/// of the television while the panel is what the user is looking at; pinning also means
+/// unplugging a display cannot silence the panel's apps.
+///
+/// `FLIPCTL_SINK` overrides it, for a machine whose speaker is something else.
+fn speaker() -> String {
+    std::env::var("FLIPCTL_SINK")
+        .unwrap_or_else(|_| "alsa_output.platform-sound.stereo-fallback".into())
+}
+
+/// Let one app reach the sound server, playing on the panel's speaker.
+///
+/// The sockets are linked into the app's private runtime directory rather than handed
+/// over as paths, so anything that looks where the convention says to look finds them:
+/// PipeWire's own clients, PulseAudio's, and ALSA's through the plugin that ships here.
+/// Both pins are set because they answer to different clients: `PIPEWIRE_NODE` steers
+/// native and ALSA-bridged ones, `PULSE_SINK` the PulseAudio ones.
+///
+/// No device access is involved. Sound travels over a socket, so `DevicePolicy=closed`
+/// stays as it is and nothing can take the codec for itself.
+fn sound(dir: &Path, cmd: &mut Command) {
+    let real = runtime_dir();
+    for name in ["pipewire-0", "pulse"] {
+        let from = real.join(name);
+        if from.exists() {
+            let _ = std::os::unix::fs::symlink(&from, dir.join(name));
+        }
+    }
+    let sink = speaker();
+    cmd.env("PIPEWIRE_NODE", &sink);
+    cmd.env("PULSE_SINK", &sink);
 }
 
 /// A sealed anonymous file holding `bytes`, for handing to the compositor.
