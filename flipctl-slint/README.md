@@ -19,6 +19,9 @@ consumer exists so far.
 | `crates/flipper-ui/src/evdev.rs` | Raw evdev button reader, no libinput. |
 | `crates/flipper-ui/src/remote/` | Browser view: frame stream, input endpoint, comparison page. |
 | `tools/` | Converters for the prototype's packed fonts and 6-bit greyscale sprites. |
+| `crates/flipper-tokens/` | The theme generators, as a library both flipctl's build script and an app's can call. |
+| `crates/flipctl-app/` | The framework a hosted app draws itself with: the window, the keys, the status global, and the widget library. |
+| `docs/apps.md` | How to write an app. |
 | `docs/inventory.md` | The design system as measured, and where fake-flipctl2's own docs have drifted from its code. |
 | `docs/dependencies.md` | What the binary links, and why, with measurements. |
 

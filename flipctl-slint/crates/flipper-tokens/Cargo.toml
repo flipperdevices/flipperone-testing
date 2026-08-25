@@ -1,0 +1,10 @@
+# The token generators, as a library both build scripts can call: flipctl's own
+# and a hosted app's. Build-time only, so it carries nothing but a TOML parser.
+[package]
+name = "flipper-tokens"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+toml = "0.8"

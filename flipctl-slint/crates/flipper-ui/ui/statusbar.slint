@@ -11,7 +11,37 @@
 // mask plus a tint, so `colorize` reproduces it. The charging bolt is the one
 // exception: the prototype draws it with `drawSpriteLiteral`, keeping each
 // pixel's own value, so it is a real greyscale image and is not colorized.
+// The three fonts, imported here because every screen has this bar on it, and one
+// import anywhere in the compilation reaches the whole of it: a hosted app that
+// draws with the widget library gets them without knowing where they live.
+//
+// They are pixel fonts on a 64-unit design-pixel grid at 1024 units/em, so they
+// rasterise with zero partial coverage at 16px and only at 16px. Font size is
+// therefore never a free parameter.
+import "../../../third_party/flipctl-fonts/HaxrCorp4090-FlipCTL/HaxrCorp4090-FlipCTL.ttf";
+import "../../../third_party/flipctl-fonts/Busy9px-FlipCTL/Busy9px-FlipCTL.ttf";
+import "../../../third_party/flipctl-fonts/Born2bSportyV2-FlipCTL/Born2bSportyV2-FlipCTL.ttf";
+
 import { FlipperTheme } from "@theme";
+
+// What the bar shows, for a caller with no properties to set.
+//
+// flipctl sets the properties on the body it draws, as it always has. A hosted app
+// has no such body to hand: it composes one of these widgets itself and would
+// otherwise thread nine values through its own component, so it writes them here
+// once and every bar in the program reads them.
+export global PanelStatus {
+    in property <int> battery: -1;
+    in property <bool> charging;
+    in property <bool> wifi_connected;
+    in property <int> wifi_quality;
+    // 0 down, 1 real, 2 usb gadget.
+    in property <int> ethernet;
+    in property <bool> recording;
+    in property <bool> modem_available;
+    in property <string> access_tech: "--";
+    in property <int> modem_quality;
+}
 
 export component StatusBar inherits Rectangle {
     in property <int> battery: -1;

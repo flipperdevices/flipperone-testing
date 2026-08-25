@@ -5,7 +5,7 @@
 // are #6d6d6d and their values black, which is the one place the design uses a
 // mid-grey for text rather than for a divider.
 import { FlipperTheme } from "@theme";
-import { StatusBar } from "statusbar.slint";
+import { StatusBar, PanelStatus } from "statusbar.slint";
 import { SoftBar } from "frame.slint";
 
 export struct IdleLink {
@@ -140,14 +140,14 @@ export component IdleBody inherits Rectangle {
     width: 100%;
     height: 100%;
     background: FlipperTheme.white;
-    in property <int> battery: -1;
-    in property <bool> charging;
-    in property <bool> wifi_connected;
-    in property <int> wifi_quality;
-    in property <int> ethernet;
-    in property <bool> modem_available;
-    in property <string> access_tech: "--";
-    in property <int> modem_quality;
+    in property <int> battery: PanelStatus.battery;
+    in property <bool> charging: PanelStatus.charging;
+    in property <bool> wifi_connected: PanelStatus.wifi_connected;
+    in property <int> wifi_quality: PanelStatus.wifi_quality;
+    in property <int> ethernet: PanelStatus.ethernet;
+    in property <bool> modem_available: PanelStatus.modem_available;
+    in property <string> access_tech: PanelStatus.access_tech;
+    in property <int> modem_quality: PanelStatus.modem_quality;
 
     // Tenths of a degree, and milliwatts. -32768 means unknown, so the readout is
     // omitted rather than showing a placeholder number.

@@ -1,0 +1,37 @@
+# The framework a hosted app draws itself with.
+#
+# An app is an ordinary Wayland client: it joins the compositor flipctl runs, gets
+# a 256x144 surface and draws every pixel of it. What it takes from here is the
+# look, so a hosted app and flipctl's own screens are the same interface: the
+# tokens, the widgets from crates/flipper-ui/ui, the two panel fonts, and the
+# panel's keys as an enum rather than as scancodes.
+[package]
+name = "flipctl-app"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[features]
+# The build-script half: generates the theme and compiles an app's components.
+# Off by default so the runtime library carries no build-time dependency.
+build = ["flipper-tokens", "slint-build"]
+
+[dependencies]
+flipper-ui = { path = "../flipper-ui", default-features = false }
+flipper-tokens = { path = "../flipper-tokens", optional = true }
+slint-build = { version = "1.17", optional = true }
+
+# A window on a compositor, drawn by the software renderer: the same renderer
+# flipctl uses for the panel, so a widget is the same pixels either side. No GPU
+# and no fontconfig, which is what keeps an app's footprint to its own code.
+[dependencies.slint]
+version = "1.17"
+default-features = false
+features = ["compat-1-2", "backend-winit-wayland", "renderer-software", "std"]
+
+[dependencies.i-slint-common]
+version = "=1.17.1"
+features = ["fontconfig-dlopen"]
+
+[build-dependencies]
+flipper-tokens = { path = "../flipper-tokens" }

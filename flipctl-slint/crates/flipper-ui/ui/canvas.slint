@@ -9,7 +9,7 @@
 // still the system's.
 import { FlipperTheme } from "@theme";
 import { SoftBar } from "frame.slint";
-import { StatusBar } from "statusbar.slint";
+import { StatusBar, PanelStatus } from "statusbar.slint";
 
 export struct CanvasText {
     x: length,
@@ -29,15 +29,15 @@ export component CanvasBody inherits Rectangle {
     // includes it. Off by default: a canvas app has the whole panel unless it says
     // otherwise.
     in property <bool> status_bar;
-    in property <int> battery: -1;
-    in property <bool> charging;
-    in property <bool> wifi_connected;
-    in property <int> wifi_quality;
-    in property <int> ethernet;
-    in property <bool> recording;
-    in property <bool> modem_available;
-    in property <string> access_tech: "--";
-    in property <int> modem_quality;
+    in property <int> battery: PanelStatus.battery;
+    in property <bool> charging: PanelStatus.charging;
+    in property <bool> wifi_connected: PanelStatus.wifi_connected;
+    in property <int> wifi_quality: PanelStatus.wifi_quality;
+    in property <int> ethernet: PanelStatus.ethernet;
+    in property <bool> recording: PanelStatus.recording;
+    in property <bool> modem_available: PanelStatus.modem_available;
+    in property <string> access_tech: PanelStatus.access_tech;
+    in property <int> modem_quality: PanelStatus.modem_quality;
     in property <[CanvasText]> texts;
     in property <[string]> buttons;
     in property <int> pressed_slot: -1;

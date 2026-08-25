@@ -3,17 +3,9 @@
 //
 // Geometry and colour come from @theme, generated from tokens.toml. Every value
 // the prototype pins is pinned here.
-//
-// The three fonts are pixel fonts on a 64-unit design-pixel grid at 1024
-// units/em, so they rasterise with zero partial coverage at 16px and only at
-// 16px. Font size is therefore never a free parameter.
-import "../../../third_party/flipctl-fonts/HaxrCorp4090-FlipCTL/HaxrCorp4090-FlipCTL.ttf";
-import "../../../third_party/flipctl-fonts/Busy9px-FlipCTL/Busy9px-FlipCTL.ttf";
-import "../../../third_party/flipctl-fonts/Born2bSportyV2-FlipCTL/Born2bSportyV2-FlipCTL.ttf";
-
 import { FlipperTheme } from "@theme";
 import { SelectorFrame, SoftBar } from "frame.slint";
-import { StatusBar } from "statusbar.slint";
+import { StatusBar, PanelStatus } from "statusbar.slint";
 
 export struct ListItem {
     label: string,
@@ -243,15 +235,15 @@ export component MenuBody inherits Rectangle {
     in property <int> scroll;
     in property <int> tick;
     in property <bool> pressed;
-    in property <int> battery: -1;
-    in property <bool> charging;
-    in property <bool> wifi_connected;
-    in property <int> wifi_quality;
-    in property <int> ethernet;
-    in property <bool> recording;
-    in property <bool> modem_available;
-    in property <string> access_tech: "--";
-    in property <int> modem_quality;
+    in property <int> battery: PanelStatus.battery;
+    in property <bool> charging: PanelStatus.charging;
+    in property <bool> wifi_connected: PanelStatus.wifi_connected;
+    in property <int> wifi_quality: PanelStatus.wifi_quality;
+    in property <int> ethernet: PanelStatus.ethernet;
+    in property <bool> recording: PanelStatus.recording;
+    in property <bool> modem_available: PanelStatus.modem_available;
+    in property <string> access_tech: PanelStatus.access_tech;
+    in property <int> modem_quality: PanelStatus.modem_quality;
     // One entry per physical soft key, in silkscreen order: esc, view, power,
     // edit, run. Slot i labels the key beneath it, so a model of any other length
     // shifts every label onto the wrong key. An empty string draws no button.

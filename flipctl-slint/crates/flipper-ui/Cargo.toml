@@ -72,7 +72,7 @@ features = ["compat-1-2", "renderer-software", "std", "unsafe-single-threaded"]
 optional = true
 
 [build-dependencies]
-toml = "0.8"
+flipper-tokens = { path = "../flipper-tokens" }
 slint-build = { version = "1.17", optional = true }
 
 [dev-dependencies]

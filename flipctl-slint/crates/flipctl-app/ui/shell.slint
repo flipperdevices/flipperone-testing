@@ -1,0 +1,53 @@
+// The window a hosted app draws in, and the status the panel's bar shows.
+//
+// An app is a Wayland client with a 256x144 surface, so unlike flipctl's own Root
+// it has a real window and gets its keys from the compositor. Both of those are
+// boilerplate no app should repeat, so they live here.
+import { FlipperTheme } from "@theme";
+// Re-exported so an app imports the window and the bar it writes to from one place.
+import { PanelStatus } from "@flipctl/statusbar.slint";
+export { PanelStatus }
+
+export component Shell inherits Window {
+    width: 256px;
+    height: 144px;
+    background: FlipperTheme.white;
+    default-font-family: "HaxrCorp 4090";
+    default-font-size: 16px;
+
+    // The key's text and whether it went down. The panel's buttons arrive as
+    // ordinary keys, and Key::from_slint gives them their names back.
+    //
+    // A component inheriting this one cannot export a callback it did not declare,
+    // so an app forwards this to one of its own:
+    //
+    //     callback keyed(string, bool);
+    //     key(text, down) => { root.keyed(text, down); }
+    callback key(string, bool);
+
+    // The keys go to the focused item, and a window that has never been asked has
+    // no focused item, so this is both declared and taken: forward-focus alone left
+    // the app deaf. The scope wraps the app's content and fills the window, because
+    // a zero-sized one is not an item the focus can rest on.
+    forward-focus: scope;
+
+    init => {
+        scope.focus();
+    }
+
+    scope := FocusScope {
+        width: 100%;
+        height: 100%;
+
+        key-pressed(event) => {
+            root.key(event.text, true);
+            EventResult.accept
+        }
+        key-released(event) => {
+            root.key(event.text, false);
+            EventResult.accept
+        }
+
+        @children
+    }
+}

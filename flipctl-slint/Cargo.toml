@@ -1,7 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/flipper-tokens",
     "crates/flipper-ui",
+    "crates/flipctl-app",
     "bin/flipper-ui-demo",
 ]
 # Apps are not listed here. Each app crate carries its own empty [workspace]

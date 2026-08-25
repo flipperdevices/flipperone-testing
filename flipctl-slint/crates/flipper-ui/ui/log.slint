@@ -4,7 +4,7 @@
 // ITEM_H = 12, which fits nine lines under a title on a 144px panel. An app that
 // wants icons and a selector uses the form body instead.
 import { FlipperTheme } from "@theme";
-import { StatusBar } from "statusbar.slint";
+import { StatusBar, PanelStatus } from "statusbar.slint";
 import { SoftBar } from "frame.slint";
 
 export component LogBody inherits Rectangle {
@@ -17,14 +17,14 @@ export component LogBody inherits Rectangle {
     in property <int> pressed_slot: -1;
 
     // Status bar, shared with every other screen.
-    in property <int> battery: -1;
-    in property <bool> charging;
-    in property <bool> wifi_connected;
-    in property <int> wifi_quality;
-    in property <int> ethernet;
-    in property <bool> modem_available;
-    in property <string> access_tech: "--";
-    in property <int> modem_quality;
+    in property <int> battery: PanelStatus.battery;
+    in property <bool> charging: PanelStatus.charging;
+    in property <bool> wifi_connected: PanelStatus.wifi_connected;
+    in property <int> wifi_quality: PanelStatus.wifi_quality;
+    in property <int> ethernet: PanelStatus.ethernet;
+    in property <bool> modem_available: PanelStatus.modem_available;
+    in property <string> access_tech: PanelStatus.access_tech;
+    in property <int> modem_quality: PanelStatus.modem_quality;
 
     width: 100%;
     height: 100%;
