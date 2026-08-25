@@ -84,15 +84,19 @@ impl Host {
         let dir = crate::wl::private_runtime_dir()?;
         let config = dir.join("sway.conf");
         // No decorations, no bar, no cursor, no Xwayland: a hosted app is one window on
-        // an output nobody clicks.
+        // an output nobody clicks. The ground is the panel's own ink, so an app that
+        // does not cover its surface leaves black rather than sway's grey.
+        let ground = crate::theme::color::BLACK.0;
         std::fs::write(
             &config,
-            "output * bg #000000 solid_color\n\
+            format!(
+                "output * bg #{ground:02x}{ground:02x}{ground:02x} solid_color\n\
              default_border none\n\
              default_floating_border none\n\
              titlebar_padding 1\n\
              seat * hide_cursor 1\n\
-             xwayland disable\n",
+             xwayland disable\n"
+            ),
         )?;
 
         let mut cmd = Command::new("sway");
