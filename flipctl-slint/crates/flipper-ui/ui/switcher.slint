@@ -30,15 +30,7 @@ export struct SwitchCard {
     image_alpha: float,
     img_x: length,
     img_y: length,
-    // Drawn as a tab: white, a grey label on the left, three sides stroked.
-    tab: bool,
-    // The deepest tab, in the lighter grey.
-    tab_deep: bool,
-    // Which side a tab leaves open: 0 none, 1 top, 2 bottom.
-    open_edge: int,
-    label_dx: length,
-    label_dy: length,
-    // Deeper than a tab: the plain grey bar, no crossfade.
+    // Off the deck: the plain grey bar, no crossfade.
     deep: bool,
     killing: bool,
 }
@@ -92,12 +84,10 @@ component CardBody inherits Rectangle {
     }
 }
 
-// The outline of the same shape, with any one side left off.
+// The outline of the same shape.
 component CardStroke inherits Rectangle {
     in property <SwitchCard> card;
     in property <color> stroke;
-    // 0 none, 1 top, 2 bottom.
-    in property <int> open_edge;
 
     x: root.card.x;
     y: root.card.y;
@@ -105,17 +95,14 @@ component CardStroke inherits Rectangle {
     height: root.card.h;
     background: transparent;
 
-    property <bool> top: root.open_edge != 1;
-    property <bool> bottom: root.open_edge != 2;
-
-    if root.top: Rectangle {
+    if true: Rectangle {
         x: root.card.r_tl;
         y: 0;
         width: root.width - root.card.r_tl - root.card.r_tr;
         height: 1px;
         background: root.stroke;
     }
-    if root.bottom: Rectangle {
+    if true: Rectangle {
         x: root.card.r_bl;
         y: root.height - 1px;
         width: root.width - root.card.r_bl - root.card.r_br;
@@ -138,28 +125,28 @@ component CardStroke inherits Rectangle {
     }
     // A stair pixel per corner, skipped with the edge it belongs to.
     for i in [0, 1, 2, 3]: Rectangle {
-        visible: root.top && i < root.card.r_tl / 1px;
+        visible: i < root.card.r_tl / 1px;
         x: i * 1px;
         y: root.card.r_tl - 1px - i * 1px;
         width: 1px; height: 1px;
         background: root.stroke;
     }
     for i in [0, 1, 2, 3]: Rectangle {
-        visible: root.top && i < root.card.r_tr / 1px;
+        visible: i < root.card.r_tr / 1px;
         x: root.width - root.card.r_tr + i * 1px;
         y: i * 1px;
         width: 1px; height: 1px;
         background: root.stroke;
     }
     for i in [0, 1, 2, 3]: Rectangle {
-        visible: root.bottom && i < root.card.r_bl / 1px;
+        visible: i < root.card.r_bl / 1px;
         x: i * 1px;
         y: root.height - root.card.r_bl + i * 1px;
         width: 1px; height: 1px;
         background: root.stroke;
     }
     for i in [0, 1, 2, 3]: Rectangle {
-        visible: root.bottom && i < root.card.r_br / 1px;
+        visible: i < root.card.r_br / 1px;
         x: root.width - root.card.r_br + i * 1px;
         y: root.height - 1px - i * 1px;
         width: 1px; height: 1px;
@@ -216,38 +203,22 @@ component Card inherits Rectangle {
             fill: transparent;
         }
 
-        // An always-opaque bar under both styles. Without it each style draws at
-        // its own alpha and at the midpoint the body shows through between them.
-        if !root.card.tab || root.card.pos_clamped < 0.999: Rectangle {
-            x: root.card.x;
-            y: root.card.y;
-            width: root.card.w;
-            height: FlipperTheme.sw_bar_h_focused;
-            clip: true;
-            background: transparent;
-
-            Rectangle {
-                x: 0; y: 0;
-                width: parent.width;
-                height: parent.height;
-                background: FlipperTheme.black.mix(FlipperTheme.white, 1 - root.card.pos_clamped);
-            }
-        }
-
-        // Focused style: a black bar with the name in Born2bSporty, and all four
-        // sides stroked. Both drift toward the tab's look as the card leaves.
-        if root.card.pos_clamped < 0.999 && !root.card.deep: Rectangle {
+        // Every card wears its name on a black bar: the focused one a tall bar,
+        // a background card a shorter one, so its strip is mostly the app. The bar
+        // is what makes a strip legible as a card rather than a sliver of pixels.
+        if !root.card.deep: Rectangle {
             width: 100%;
             height: 100%;
             background: transparent;
-            opacity: 1 - root.card.pos_clamped;
 
             Rectangle {
                 x: root.card.x;
                 y: root.card.y;
                 width: root.card.w;
-                height: FlipperTheme.sw_bar_h_focused;
-                background: FlipperTheme.black.mix(FlipperTheme.white, 1 - root.card.pos_clamped);
+                height: FlipperTheme.sw_bar_h_focused
+                    - (FlipperTheme.sw_bar_h_focused - FlipperTheme.sw_bar_h) * root.card.pos_clamped;
+                clip: true;
+                background: FlipperTheme.black;
 
                 Text {
                     x: FlipperTheme.icon_pad;
@@ -262,37 +233,11 @@ component Card inherits Rectangle {
             }
             CardStroke {
                 card: root.card;
-                open_edge: 0;
                 stroke: FlipperTheme.black.mix(FlipperTheme.sw_tab, 1 - root.card.pos_clamped);
             }
         }
 
-        // Tab style: white, a grey label on the left, and the side that abuts the
-        // focused stack left open.
-        if root.card.tab && root.card.pos_clamped > 0.001: Rectangle {
-            width: 100%;
-            height: 100%;
-            background: transparent;
-            opacity: root.card.pos_clamped;
-            property <color> tone: root.card.tab_deep
-                ? FlipperTheme.sw_tab_deep
-                : FlipperTheme.sw_tab;
-
-            Text {
-                x: root.card.x + FlipperTheme.icon_pad + root.card.label_dx;
-                y: root.card.y + root.card.label_dy;
-                text: root.card.name;
-                font-size: 16px;
-                color: parent.tone;
-            }
-            CardStroke {
-                card: root.card;
-                open_edge: root.card.open_edge;
-                stroke: parent.tone;
-            }
-        }
-
-        // Deeper than a tab, or on its way off the left edge: the plain grey bar,
+        // Off the deck, or on its way off the left edge: the plain grey bar,
         // no crossfade to take part in.
         if root.card.deep || root.card.killing: Rectangle {
             x: root.card.x;

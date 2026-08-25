@@ -1720,7 +1720,6 @@ fn card_of(
     p: &flipper_ui::switcher::Placed,
     cache: &mut Vec<(flipper_ui::switcher::Snapshot, slint::Image)>,
 ) -> flipper_ui::ui::SwitchCard {
-    use flipper_ui::switcher::Edge;
     use flipper_ui::theme::{PANEL_H, PANEL_W};
 
     let image = match p.snapshot.as_ref() {
@@ -1767,15 +1766,6 @@ fn card_of(
         image_alpha: p.image_alpha,
         img_x: p.img_x as f32,
         img_y: p.img_y as f32,
-        tab: p.tab,
-        tab_deep: p.tab_deep,
-        open_edge: match p.open_edge {
-            Edge::None => 0,
-            Edge::Top => 1,
-            Edge::Bottom => 2,
-        },
-        label_dx: p.label_dx as f32,
-        label_dy: p.label_dy as f32,
         deep: p.deep,
         killing: p.killing,
     }

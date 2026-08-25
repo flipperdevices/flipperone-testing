@@ -47,61 +47,98 @@ const H: i32 = crate::theme::PANEL_H as i32;
 /// which is what makes it read as a window onto an app rather than a box.
 const CARD_W: i32 = W + 2;
 
-/// The four slots that have geometry, from the peek above down to the deepest
-/// tab. A card pushed past either end has no frame and fades out where it stood.
+/// The deck's vertical split.
 ///
-/// The right edge of every one of these runs past the panel, which is deliberate:
-/// a card is a window onto an app, not a box centred on the screen.
-const PEEK_ABOVE: State = frame(12, 1, 252, 100, (4, 4, 4, 4));
-const FOCUSED: State = frame(2, 15, CARD_W, 100, (4, 4, 4, 4));
-const TAB_BELOW: State = frame(12, 115, 252, 13, (0, 0, 4, 4));
-const TAB_DEEP: State = frame(50, 128, 252, 13, (0, 4, 4, 4));
+/// The Kill button sits on the bottom row, so the cards get everything above it:
+/// a strip that ran under the button would put a card's name behind it.
+///
+/// The focused card takes 55% of the panel and the background cards share the
+/// rest, a strip each: 32 pixels with one card either side, 21 when there are two
+/// below. More cards below tighten every strip toward `STRIP_MIN`, which has to
+/// clear the name bar with room to spare: a card's picture is drawn panel-sized
+/// and cropped, so what is left under the bar is all of the app that can be seen.
+const STRIP_MIN: i32 = BAR_H + 6;
+const FOCUS_H: i32 = H * 55 / 100;
+/// The panel less the soft-button row.
+const AREA: i32 = H - crate::theme::metric::BUTTON_H;
+/// How many cards below the focus have geometry: a fourth strip would fall under
+/// the floor.
+const BELOW_MAX: i32 = 2;
+/// A card is inset from the left, except the focused one, which is flush.
+const INSET_X: i32 = 12;
+const INSET_W: i32 = 252;
+/// Every corner of every card, now that none of them is a tab.
+const R: (i32, i32, i32, i32) = (4, 4, 4, 4);
+
+/// The heights the deck is drawn at, for a given number of neighbours.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct Deck {
+    /// A background card's visible strip.
+    pub strip: i32,
+    above: i32,
+    below: i32,
+}
+
+impl Deck {
+    pub fn new(above: i32, below: i32) -> Self {
+        let below = below.clamp(0, BELOW_MAX);
+        // An empty slot keeps its strip, so the focused card stays where it is
+        // whether or not there is a card behind it to show through.
+        let n = 1 + below.max(1);
+        let strip = ((AREA - FOCUS_H) / n).max(STRIP_MIN);
+        Self { strip, above: above.min(1), below }
+    }
+
+    /// The focused card: whatever the strips leave, which is 55% of the panel with
+    /// one card either side and less when the deck is deeper than that.
+    pub fn focused(&self) -> State {
+        frame(2, self.strip, CARD_W, AREA - (1 + self.below.max(1)) * self.strip, R)
+    }
+
+    /// The frame for an integer slot, if the deck has one.
+    ///
+    /// The right edge of every one of these runs past the panel, which is
+    /// deliberate: a card is a window onto an app, not a box centred on the
+    /// screen. A card above is as tall as the focused card and hides under it,
+    /// and the lowest one runs to the bottom edge, so only the strips show.
+    pub fn slot(&self, position: i32) -> Option<State> {
+        let f = self.focused();
+        match position {
+            1 if self.above >= 1 => Some(frame(INSET_X, 1, INSET_W, f.h, R)),
+            0 => Some(f),
+            -1 if self.below >= 1 => {
+                let y = f.y + f.h;
+                let h = if self.below >= 2 { self.strip } else { AREA - y };
+                Some(frame(INSET_X, y, INSET_W, h, R))
+            }
+            -2 if self.below >= 2 => {
+                let y = f.y + f.h + self.strip;
+                Some(frame(INSET_X, y, INSET_W, AREA - y, R))
+            }
+            _ => None,
+        }
+    }
+
+    /// Off the left edge, where a killed card goes.
+    fn killed(&self) -> State {
+        State { x: -W - 4, ..self.focused() }
+    }
+
+    /// The focused frame, one panel height down: the previous app rises from here
+    /// as the switcher opens.
+    fn intro_from_bottom(&self) -> State {
+        State { y: H, ..self.focused() }
+    }
+}
 
 /// Full-canvas overscan, square cornered: what the focused card zooms out of when
 /// the switcher opens and back into when it launches an app.
 const FULL: State = frame(-1, -1, CARD_W, H + 2, (0, 0, 0, 0));
-/// Off the left edge, where a killed card goes.
-const KILLED: State = frame(-260, 22, 252, 100, (4, 4, 4, 4));
-/// The focused frame, one panel height down: the previous app rises from here as
-/// the switcher opens.
-const INTRO_FROM_BOTTOM: State = frame(2, H, CARD_W, 100, (4, 4, 4, 4));
 
-/// The frame for an integer slot, if it has one.
+/// The frame for an integer slot in the nominal deck: one card either side of
+/// the focus, so a quarter, a half and a quarter.
 pub fn slot(position: i32) -> Option<State> {
-    match position {
-        1 => Some(PEEK_ABOVE),
-        0 => Some(FOCUSED),
-        -1 => Some(TAB_BELOW),
-        -2 => Some(TAB_DEEP),
-        _ => None,
-    }
-}
-
-/// Whether a slot draws as a tab: white, a three-sided grey stroke, a grey label
-/// on the left rather than a title bar.
-fn tab_of(position: i32) -> Option<Tab> {
-    match position {
-        -2 => Some(Tab { open_edge: Edge::Top, label_dx: 0, label_dy: 0, deep: true }),
-        -1 => Some(Tab { open_edge: Edge::Top, label_dx: 1, label_dy: 0, deep: false }),
-        1 => Some(Tab { open_edge: Edge::Bottom, label_dx: 0, label_dy: 1, deep: false }),
-        _ => None,
-    }
-}
-
-/// The side a tab leaves unstroked: the one that abuts the focused stack.
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum Edge {
-    None,
-    Top,
-    Bottom,
-}
-
-#[derive(Copy, Clone, Debug)]
-struct Tab {
-    open_edge: Edge,
-    label_dx: i32,
-    label_dy: i32,
-    deep: bool,
+    Deck::new(1, 1).slot(position)
 }
 
 /// One transition. Every phase runs this long except the opener, which takes
@@ -116,7 +153,8 @@ const IMG_LIFT: i32 = 13;
 const IMG_LIFT_ZOOM: i32 = 12;
 /// The image's left edge in the focused frame.
 const IMG_X: i32 = 2;
-/// Title bar heights: the focused card's is taller for emphasis.
+/// A background card's name bar, and the one a card off the deck draws as it
+/// fades. The focused card's is taller.
 pub const BAR_H: i32 = 14;
 pub const BAR_H_FOCUSED: i32 = 16;
 
@@ -276,9 +314,6 @@ pub struct Card {
     overlay: bool,
     /// Its image starts as the whole screen rather than inside a frame.
     image_from_full: bool,
-    /// Keep the bottom stroke a tab would drop, so the line where the outgoing
-    /// card meets the incoming one stays visible.
-    keep_bottom: bool,
     hidden: bool,
 }
 
@@ -369,26 +404,26 @@ impl Switcher {
             switcher.phase = Phase::Scrolling;
             switcher.duration = ANIM_MS * 2.0;
 
-            let a = &mut switcher.cards[0];
-            a.anim_from = Some(0);
-            a.position = 1;
-            a.from_state = Some(FULL);
-            a.to_state = Some(PEEK_ABOVE);
-            a.image_from_full = true;
-            a.keep_bottom = true;
-
-            let b = &mut switcher.cards[1];
-            b.anim_from = Some(0);
-            b.position = 0;
-            b.from_state = Some(INTRO_FROM_BOTTOM);
-            b.to_state = Some(FOCUSED);
-            b.overlay = true;
-
             let n = switcher.cards.len();
             for i in 2..n {
                 switcher.cards[i].anim_from = None;
                 switcher.cards[i].position = linear_position(i, 1);
             }
+            let deck = Deck::new(1, n as i32 - 2);
+
+            let a = &mut switcher.cards[0];
+            a.anim_from = Some(0);
+            a.position = 1;
+            a.from_state = Some(FULL);
+            a.to_state = deck.slot(1);
+            a.image_from_full = true;
+
+            let b = &mut switcher.cards[1];
+            b.anim_from = Some(0);
+            b.position = 0;
+            b.from_state = Some(deck.intro_from_bottom());
+            b.to_state = Some(deck.focused());
+            b.overlay = true;
         }
         switcher
     }
@@ -461,7 +496,6 @@ impl Switcher {
             card.to_state = None;
             card.overlay = false;
             card.image_from_full = false;
-            card.keep_bottom = false;
             card.hidden = false;
         }
         let focused = self.focused;
@@ -499,7 +533,6 @@ impl Switcher {
             card.hidden = false;
             card.overlay = false;
             card.image_from_full = false;
-            card.keep_bottom = false;
         }
         self.phase = Phase::Scrolling;
         self.duration = ANIM_MS;
@@ -605,16 +638,25 @@ impl Switcher {
         out
     }
 
+    /// The deck the cards on screen add up to.
+    fn deck(&self) -> Deck {
+        let live = || self.cards.iter().filter(|c| !c.hidden && !c.killing);
+        let above = live().any(|c| c.position >= 1) as i32;
+        let below = live().filter(|c| c.position <= -1).count() as i32;
+        Deck::new(above, below)
+    }
+
     fn place(&self, card: &Card, e: f32) -> Option<Placed> {
+        let deck = self.deck();
         let mut alpha = 1.0f32;
         let mut pinned: Option<f32> = None;
         if card.from_state.is_some() && card.to_state.is_none() {
             pinned = Some(card.position.abs() as f32);
-            if slot(card.position).is_none() {
+            if deck.slot(card.position).is_none() {
                 alpha = alpha.min(1.0 - e);
             }
         } else if let Some(from) = card.anim_from {
-            match (slot(from).is_some(), slot(card.position).is_some()) {
+            match (deck.slot(from).is_some(), deck.slot(card.position).is_some()) {
                 (true, false) => {
                     alpha = 1.0 - e;
                     pinned = Some(from.abs() as f32);
@@ -641,17 +683,17 @@ impl Switcher {
         };
         let pos_clamped = pos_abs.clamp(0.0, 1.0);
 
-        let tab = tab_of(card.position).or_else(|| card.anim_from.and_then(tab_of));
-        let deep = tab.is_none()
-            && card.position.abs() >= 2
-            && card.anim_from.is_none_or(|f| f.abs() >= 2);
+        // Past the deepest strip a card has no frame of its own and draws as the
+        // plain grey bar while it fades out where it stood.
+        let deep = deck.slot(card.position).is_none()
+            && card.anim_from.is_none_or(|f| deck.slot(f).is_none());
 
         // The image rides above the frame's interior top so the source's own
         // status bar is cropped rather than sitting under the title bar. During a
         // zoom it translates only, never scales: resampling a pixel screen is
         // worse than cropping it.
         let (img_x, img_y) = if card.image_from_full || matches!(self.phase, Phase::Opening | Phase::Closing) {
-            let target = slot(card.position).unwrap_or(FOCUSED);
+            let target = deck.slot(card.position).unwrap_or_else(|| deck.focused());
             let target_y = target.y - IMG_LIFT_ZOOM;
             if self.phase == Phase::Closing {
                 (
@@ -684,20 +726,13 @@ impl Switcher {
             state,
             alpha,
             pos_clamped,
-            image_alpha: alpha * (1.0 - pos_clamped),
+            // The neighbours keep their picture, at full strength. It used to fade
+            // out with distance, which was right when they were tabs with a label
+            // and nothing else: now that a strip of the app is the whole point of a
+            // background card, fading it leaves an empty card.
+            image_alpha: alpha,
             img_x,
             img_y,
-            tab: tab.is_some(),
-            tab_deep: tab.is_some_and(|t| t.deep),
-            open_edge: match tab {
-                // Keeping the bottom stroke is what makes the line where the
-                // outgoing card meets the incoming one visible during the opener.
-                Some(t) if card.keep_bottom && t.open_edge == Edge::Bottom => Edge::None,
-                Some(t) => t.open_edge,
-                None => Edge::None,
-            },
-            label_dx: tab.map_or(0, |t| t.label_dx),
-            label_dy: tab.map_or(0, |t| t.label_dy),
             deep,
             killing: card.killing,
             z,
@@ -705,14 +740,16 @@ impl Switcher {
     }
 
     fn state_of(&self, card: &Card, e: f32) -> Option<State> {
+        let deck = self.deck();
+        let focused = deck.focused();
         if card.killing {
-            return Some(lerp_state(FOCUSED, KILLED, e));
+            return Some(lerp_state(focused, deck.killed(), e));
         }
         if self.phase == Phase::Opening && card.position == 0 {
-            return Some(lerp_state(FULL, FOCUSED, e));
+            return Some(lerp_state(FULL, focused, e));
         }
         if self.phase == Phase::Closing && card.position == 0 {
-            return Some(lerp_state(FOCUSED, FULL, e));
+            return Some(lerp_state(focused, FULL, e));
         }
         if self.phase == Phase::Bouncing && card.position == 0 && self.bounce_dir != 0 {
             // A single pulse: out and back, peaking halfway. Down means the card
@@ -720,17 +757,17 @@ impl Switcher {
             let t = (self.started.elapsed().as_secs_f32() * 1000.0 / self.duration).clamp(0.0, 1.0);
             let pulse = (std::f32::consts::PI * t).sin() * BOUNCE_PX;
             let dy = -(self.bounce_dir as f32) * pulse;
-            return Some(State { y: FOCUSED.y + dy.round() as i32, ..FOCUSED });
+            return Some(State { y: focused.y + dy.round() as i32, ..focused });
         }
         if matches!(self.phase, Phase::Scrolling | Phase::Killing) && card.anim_from.is_some() {
-            let from = card.from_state.or_else(|| slot(card.anim_from?));
-            let to = card.to_state.or_else(|| slot(card.position));
+            let from = card.from_state.or_else(|| deck.slot(card.anim_from?));
+            let to = card.to_state.or_else(|| deck.slot(card.position));
             return match (from, to) {
                 (Some(a), Some(b)) => Some(lerp_state(a, b, e)),
                 (a, b) => b.or(a),
             };
         }
-        slot(card.position)
+        deck.slot(card.position)
     }
 }
 
@@ -754,12 +791,7 @@ pub struct Placed {
     pub image_alpha: f32,
     pub img_x: i32,
     pub img_y: i32,
-    pub tab: bool,
-    pub tab_deep: bool,
-    pub open_edge: Edge,
-    pub label_dx: i32,
-    pub label_dy: i32,
-    /// Deeper than a tab: the plain grey bar, no crossfade.
+    /// Off the deck: the plain grey bar, no crossfade.
     pub deep: bool,
     pub killing: bool,
     z: f32,

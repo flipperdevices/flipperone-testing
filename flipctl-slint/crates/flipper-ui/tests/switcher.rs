@@ -1,15 +1,15 @@
 //! The app switcher's stack, phases and geometry.
 //!
-//! The frames are the prototype's, transcribed, so they are asserted literally:
-//! if a slot moves, that is a design decision and this test is where it gets
-//! noticed. The rest is behaviour that cannot be seen in a screenshot, which is
+//! The frames come out of the deck's split of the panel, so they are asserted
+//! literally: if a slot moves, that is a design decision and this test is where
+//! it gets noticed. The rest is behaviour that cannot be seen in a screenshot, which is
 //! why it is worth a test at all: what the focus does at the ends of the stack,
 //! where it lands after a kill, and that a launch waits for its animation.
 
 use std::sync::Arc;
 
 use flipper_ui::key::FlipperKey::{AppSwitch, Back, Down, Escape, Ok, Run, Up};
-use flipper_ui::switcher::{self, Action, Edge, Kind, Phase, Recents, State, Switcher};
+use flipper_ui::switcher::{self, Action, Deck, Kind, Phase, Recents, State, Switcher};
 
 fn recents(names: &[&str]) -> Recents {
     let mut r = Recents::default();
@@ -52,30 +52,57 @@ fn names(r: &Recents) -> Vec<&str> {
     r.list().iter().map(|e| e.name.as_str()).collect()
 }
 
-/// The slot frames, as transcribed from POSITIONS. Every one of them runs off the
-/// right edge of the panel on purpose.
+/// The deck's split of the panel: 55% for the focused card, a strip each for the
+/// cards either side of it, and nothing under the soft-button row. Every frame
+/// runs off the right edge of the panel on purpose.
 #[test]
-fn the_slots_are_where_the_prototype_puts_them() {
+fn the_deck_gives_the_focused_card_the_middle_half() {
     let f = |p| switcher::slot(p).expect("slot has geometry");
     assert_eq!(
         f(1),
-        State { x: 12, y: 1, w: 252, h: 100, r_tl: 4, r_tr: 4, r_bl: 4, r_br: 4 }
+        State { x: 12, y: 1, w: 252, h: 80, r_tl: 4, r_tr: 4, r_bl: 4, r_br: 4 },
+        "a card above is as tall as the focused card and hides under it"
     );
     assert_eq!(
         f(0),
-        State { x: 2, y: 15, w: 258, h: 100, r_tl: 4, r_tr: 4, r_bl: 4, r_br: 4 }
+        State { x: 2, y: 25, w: 258, h: 80, r_tl: 4, r_tr: 4, r_bl: 4, r_br: 4 }
     );
     assert_eq!(
         f(-1),
-        State { x: 12, y: 115, w: 252, h: 13, r_tl: 0, r_tr: 0, r_bl: 4, r_br: 4 },
-        "the tab below is square where it meets the focused card"
-    );
-    assert_eq!(
-        f(-2),
-        State { x: 50, y: 128, w: 252, h: 13, r_tl: 0, r_tr: 4, r_bl: 4, r_br: 4 }
+        State { x: 12, y: 105, w: 252, h: 25, r_tl: 4, r_tr: 4, r_bl: 4, r_br: 4 },
+        "the card below runs down to the Kill button, not past it"
     );
     assert!(switcher::slot(2).is_none(), "nothing above the peek");
-    assert!(switcher::slot(-3).is_none(), "nothing below the deepest tab");
+    assert!(switcher::slot(-2).is_none(), "one card below, one slot below");
+    assert!(switcher::slot(-3).is_none(), "nothing below the deepest strip");
+}
+
+/// More cards below tighten the strips instead of adding a sliver: the focused
+/// card keeps its half and each background card keeps enough height to show a
+/// piece of its app rather than a header.
+#[test]
+fn more_cards_tighten_the_strips_to_a_floor() {
+    let two = Deck::new(1, 2);
+    // The floor wins here, so the focused card gives up a few rows rather than
+    // the deepest strip losing its name.
+    assert_eq!(two.strip, 20, "three strips share what the focus leaves");
+    assert_eq!(two.focused(), State { x: 2, y: 20, w: 258, h: 70, r_tl: 4, r_tr: 4, r_bl: 4, r_br: 4 });
+    let below = two.slot(-1).expect("a strip below");
+    let deepest = two.slot(-2).expect("the deepest strip");
+    assert_eq!(below.y, 90);
+    assert_eq!(below.h, 20);
+    assert_eq!(deepest.y, 110);
+    assert_eq!(deepest.y + deepest.h, 130, "the deepest one stops at the Kill button");
+    assert!(two.slot(-3).is_none(), "a fourth card below would not fit");
+
+    // Past the floor the deck stops splitting: two below is as deep as it goes.
+    assert_eq!(Deck::new(1, 5), two);
+
+    // An empty slot keeps its strip, so the focused card does not move about as
+    // the stack grows and shrinks around it.
+    assert_eq!(Deck::new(0, 0).focused(), switcher::slot(0).unwrap());
+    assert_eq!(Deck::new(0, 1).focused(), switcher::slot(0).unwrap());
+    assert!(Deck::new(0, 1).slot(1).is_none(), "no card above, no strip drawn");
 }
 
 /// A lerp rounds the four edges, not the position and the size separately.
@@ -316,8 +343,8 @@ fn where_the_focus_starts_depends_on_where_you_were() {
     assert_eq!(from_elsewhere.focused, 0);
 }
 
-/// Styles by slot: the focused card is a card, the others are tabs, and the
-/// deepest one is the lighter grey.
+/// Styles by slot: the focused card wears a title bar, the ones either side of it
+/// show a strip of their app at full strength, and anything further is not drawn.
 #[test]
 fn slots_carry_their_own_style() {
     let r = recents(&["A", "B", "C", "D"]);
@@ -333,17 +360,15 @@ fn slots_carry_their_own_style() {
 
     let focused = by("C").expect("focused card");
     assert_eq!(focused.pos_clamped, 0.0);
-    assert!(!focused.tab, "the focused card is a card, not a tab");
     assert_eq!(focused.image_alpha, 1.0, "its thumbnail is fully visible");
+    assert!(!focused.deep);
 
-    let below = by("D").expect("tab below");
-    assert!(below.tab && !below.tab_deep);
-    assert_eq!(below.open_edge, Edge::Top, "open where it meets the card above");
-    assert_eq!(below.image_alpha, 0.0, "a tab shows no thumbnail");
-
-    let above = by("B").expect("peek above");
-    assert!(above.tab);
-    assert_eq!(above.open_edge, Edge::Bottom);
+    for name in ["D", "B"] {
+        let card = by(name).expect("a background card");
+        assert_eq!(card.pos_clamped, 1.0, "it is drawn in the background style");
+        assert_eq!(card.image_alpha, 1.0, "a background card is a strip of its app");
+        assert!(!card.deep, "it has a frame of its own, so it is no grey bar");
+    }
 
     // The card two above the focus has no slot and is not drawn at all.
     assert!(by("A").is_none(), "nothing past the peek is drawn");
