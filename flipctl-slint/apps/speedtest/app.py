@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Internet speed test, as a flipctl app.
 
+This app does not run. It speaks the JSON screen protocol flipctl no longer has,
+and it has no `app.toml`, so it is not listed either. It is kept as the source for
+a port to the Python side of the app framework, which does not exist yet, so
+everything described below is the removed protocol rather than how apps work.
+
 Measures against Ookla's servers directly, with nothing but the standard library.
 It used to wrap speedtest-cli, and everything that made the numbers worth trusting
 turned out to be the parts that worked around it: its server catalogue is stale

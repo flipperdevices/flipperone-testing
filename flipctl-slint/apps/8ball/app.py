@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""Magic 8 Ball, drawn by the app rather than assembled from components.
+"""Magic 8 Ball, painted by the app rather than described to flipctl.
 
-Every other app in here describes a screen as rows and lets flipctl lay it out.
-This one paints: it keeps a panel-sized greyscale buffer, draws a ball into it,
-and sends the bytes. flipctl blits them and adds nothing of its own.
+This app does not run. It speaks the JSON screen protocol flipctl no longer has,
+and it has no `app.toml`, so it is not listed either. It is kept as the source for
+a port to the Python side of the app framework, which does not exist yet, so
+everything described below is the removed protocol rather than how apps work.
+
+The other apps that speak the scene protocol send rows and let flipctl lay them
+out. This one paints: it keeps a panel-sized greyscale buffer, draws a ball into
+it, and sends the bytes. flipctl blits them, and the only things it adds are the
+ones the app cannot draw: the text below, and the soft buttons over the keys.
 
     app -> flipctl   {"screen": {"type": "canvas", "data": "<base64>",
                                  "text": [...], "buttons": [...]}}
@@ -32,7 +38,7 @@ import selectors
 import sys
 import time
 
-APP_NAME = "8 Ball"
+APP_NAME = "8 Ball (py)"
 
 W, H = 256, 144
 WHITE, BLACK = 0xFF, 0x00

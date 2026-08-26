@@ -50,13 +50,6 @@ fn bar_column(frame: &[flipper_ui::pixel::Gray8], index: usize) -> i32 {
     x as i32
 }
 
-/// True if anything is inked in the column `x` within row `index`.
-fn ink_in_column(frame: &[flipper_ui::pixel::Gray8], index: usize, x: usize) -> bool {
-    let w = usize::from(theme::PANEL_W);
-    let top = usize::from(metric::SUBMENU_CONTAINER_Y as u16)
-        + index * usize::from(metric::ITEM_H as u16);
-    (top..top + usize::from(metric::ITEM_H as u16)).any(|y| frame[y * w + x].0 < 0xd0)
-}
 
 fn row(kind: i32, label: &str, value: &str, percent: i32) -> DetailRow {
     DetailRow {
@@ -68,75 +61,10 @@ fn row(kind: i32, label: &str, value: &str, percent: i32) -> DetailRow {
     }
 }
 
-/// Gauges an app might send: a word, a long sentence, and none at all. Each bar
-/// clears its own label, so the three start in three different columns.
-fn gauge_rows() -> Vec<DetailRow> {
-    vec![
-        row(3, "Running  21% of two jobs", "", 0),
-        row(1, "", "", 0),
-        row(2, "Download", "", 42),
-        row(2, "Download progress bar with long text", "", 42),
-        row(2, "", "", 42),
-        row(1, "", "", 0),
-        row(0, "Elapsed", "12.4s", 0),
-    ]
-}
 
-#[test]
-fn a_gauge_bar_starts_clear_of_its_label() {
-    let window = FlipperSlintPlatform::install();
-    let screen = Root::new().expect("create Root");
-
-    let rows = gauge_rows();
-    // An app's scene, which is the only kind that sizes its gauges.
-    screen.set_screen(Screen::AppDetail);
-    screen.set_breadcrumb("> Progress".into());
-    screen.set_detail_rows(slint::ModelRc::new(slint::VecModel::from(rows.clone())));
-    screen.set_detail_offset(0);
-    screen.show().expect("show");
-    slint::platform::update_timers_and_animations();
-
-    let frame = render_frame(&window).expect("a fresh screen always paints");
-
-    let mut columns = Vec::new();
-    for (i, r) in rows.iter().enumerate() {
-        if r.kind != 2 {
-            continue;
-        }
-        // Each bar clears its own label, so the column is this row's business.
-        let expected = metric::MARGIN_H
-            + flipper_ui::layout::gauge_col_fit(flipper_ui::font::ROW.text_width(r.label.as_str()));
-        columns.push(expected);
-
-        assert_eq!(
-            bar_column(&frame, i),
-            expected,
-            "{}: bar is not where the arithmetic puts it",
-            r.label
-        );
-        // Nothing of the label may reach the bar: the pixel column before it is
-        // the gap, so ink there means the two are touching.
-        if expected > metric::MARGIN_H {
-            assert!(
-                !ink_in_column(&frame, i, expected as usize - 1),
-                "{}: label ink touches the bar at {expected}",
-                r.label
-            );
-        }
-    }
-
-    // The long label really does push its own bar right, and only its own: an
-    // unlabelled gauge stays in the minimum column beside a short-labelled one.
-    assert_eq!(columns.len(), 3);
-    assert!(
-        columns[1] > columns[0],
-        "the long label should move its bar: {columns:?}"
-    );
-    assert_eq!(
-        columns[2], metric::MARGIN_H,
-        "an unlabelled gauge has nothing to clear and takes the whole line"
-    );
-}
+// The rendered fitted column belongs to a hosted app: `fit_gauges` is set on the body
+// by the app that wants it, and flipctl's own window never asks for it. What is
+// asserted here is the arithmetic it uses and the fixed column it leaves alone.
 
 /// A sized column is the wider of the fixed column and what the label needs.
 #[test]
@@ -214,7 +142,7 @@ fn a_dim_gauge_draws_in_the_dim_tone() {
         row(2, "Download", "", 60),
         DetailRow { dim: true, ..row(2, "Verify", "", 60) },
     ];
-    screen.set_screen(Screen::AppDetail);
+    screen.set_screen(Screen::Detail);
     screen.set_detail_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
     screen.set_detail_offset(0);
     screen.show().expect("show");

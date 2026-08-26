@@ -14,6 +14,7 @@ consumer exists so far.
 | `crates/flipper-ui/tokens.toml` | Every colour, offset, radius, timing and count. The single source of truth. |
 | `crates/flipper-ui/build.rs` | Generates the Rust and Slint themes from it, and compiles the components. |
 | `crates/flipper-ui/ui/` | `root.slint` (the one window), `idle.slint`, `list.slint`, `statusbar.slint`, `frame.slint`. |
+| `crates/flipper-ui/src/app.rs` | App discovery: the manifests under `apps/`, the folders they are grouped in, and what each app needs installed. |
 | `crates/flipper-ui/src/status.rs` | Live battery, temperatures, power, hostname, profile and addresses, from sysfs and procfs. |
 | `crates/flipper-ui/src/kms.rs` | DRM/KMS panel sink. |
 | `crates/flipper-ui/src/evdev.rs` | Raw evdev button reader, no libinput. |

@@ -1,7 +1,0 @@
-# NetworkManager's text UI, in its own terminal.
-#
-# nmtui draws dialogs centred in whatever it is given, so it wants the roomiest
-# cell that still leaves it twelve rows: the same size mc gets.
-name = "nmtui"
-wayland = "foot --font=monospace:size=6 -e nmtui"
-apt = ["foot", "network-manager"]

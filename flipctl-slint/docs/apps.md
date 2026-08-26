@@ -6,6 +6,19 @@ and puts them on the panel. Nothing describes the app's screen to flipctl: the a
 owns every pixel of its surface, and what keeps it looking like the device is that
 it draws with flipctl's own widgets.
 
+## Where an app lives
+
+A directory with an `app.toml` in it, anywhere under `apps/`. A directory without one
+is a folder to look inside, nested as deeply as you like, so apps can be grouped:
+
+    apps/doom/app.toml              Doom, at the top of the list
+    apps/network/nmap/app.toml      inside the Network folder
+
+The Apps list browses those folders: a folder row shows how many apps are inside and
+Ok walks into it, Back comes back out, and the list opens at the top each time. An
+app's own directory ends the walk, so its `target` and `.venv` are never read as
+folders of apps.
+
 ## The manifest
 
 `app.toml` beside the program:
@@ -18,6 +31,7 @@ it draws with flipctl's own widgets.
 | `apt` | Debian packages the app needs. |
 | `audio` | Links the PipeWire sockets into the app's runtime directory and pins the panel's sink. |
 | `status` | flipctl paints its own status strip over the app's frame, for a program that cannot draw one. An app on the framework draws the real bar itself and leaves this off. |
+| `pip` | Python packages, installed into the app's own venv. |
 | `rotate` | `"left"` or `"right"` for a portrait app. |
 | `env` | Extra environment, one `"KEY=value"` per entry. |
 
@@ -74,7 +88,7 @@ Imported from `@flipctl`, the same components flipctl's own screens are built fr
 `apps/uptime` is the smallest one: five rows in `MenuBody`, a timer that re-reads
 `/proc`, and Close and Refresh on the soft bar.
 
-`apps/resmon` is the fuller one: four pages, three of rows in `DetailBody` and one
+`apps/sysmon` is the fuller one: four pages, three of rows in `DetailBody` and one
 that paints two graphs into a `Surface` and shows them through `CanvasBody`, with
 the soft keys switching pages.
 

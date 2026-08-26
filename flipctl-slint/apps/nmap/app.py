@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """nmap, as a flipctl app, drawn to the design in this directory.
 
+This app does not run. It speaks the JSON screen protocol flipctl no longer has,
+and it has no `app.toml`, so it is not listed either. It is kept as the source for
+a port to the Python side of the app framework, which does not exist yet, so
+everything described below is the removed protocol rather than how apps work.
+
 Four screens, from image1 to image4: the scan form, the live host list, one host's
 detail, and the advice popup with its portrait. None of them is a list of rows this
 system already draws, so the app paints: it keeps a panel-sized buffer, draws into

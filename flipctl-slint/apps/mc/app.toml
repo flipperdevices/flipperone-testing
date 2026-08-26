@@ -1,8 +1,0 @@
-# Midnight Commander, in a terminal that is itself a Wayland client.
-#
-# The font size is chosen for the panel rather than for a desk: at 6 points a
-# 256x144 surface is about 42 columns by 12 rows, which mc lays out without
-# collapsing a pane. The kernel's VT could only offer what KDFONTOP accepted.
-name = "Midnight Commander"
-wayland = "foot --font=monospace:size=6 -e mc"
-apt = ["foot", "mc"]

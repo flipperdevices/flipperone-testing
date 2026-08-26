@@ -6,10 +6,10 @@
 use crate::theme::metric;
 use crate::FlipperKey;
 
-/// The column an app-described gauge's bar starts in, given its own label.
+/// The column a hosted app's gauge bar starts in, given its own label.
 ///
-/// Only for a scene an app sent: the label is the app's to choose, so the bar has
-/// to be placed around it. A labelled bar clears its label and never starts before
+/// Only for an app: the label is the app's to choose, so the bar has to be placed
+/// around it. A labelled bar clears its label and never starts before
 /// the fixed column, and a gauge with no label starts at the margin and takes the
 /// whole line.
 ///

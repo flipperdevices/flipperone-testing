@@ -22,8 +22,6 @@ pub mod paint;
 pub mod evdev;
 #[cfg(feature = "device")]
 pub mod kms;
-#[cfg(feature = "device")]
-pub mod console;
 #[cfg(feature = "remote")]
 pub mod remote;
 pub mod scale;
@@ -54,7 +52,7 @@ pub mod theme {
     include!(concat!(env!("OUT_DIR"), "/theme.rs"));
 }
 
-pub use app::{AppEntry, Rotate, RunningApp, Scene, SceneKind};
+pub use app::{AppEntry, Rotate};
 pub use font::BitmapFont;
 pub use key::{FlipperKey, KeyEvent};
 pub use platform::{Frame, FrameSink, InputSource};

@@ -3,7 +3,7 @@
 # `audio` is what earns it the sound server: the clip it receives plays on the panel's
 # own speaker rather than on whatever sink the desktop chose, and holding PTT records,
 # which the mockup could not do.
-name = "Walkie Talkie"
+name = "Walkie Talkie (pyQT)"
 wayland = "python3 app.py"
 audio = true
 # flipctl paints its own status bar over the top 13 pixels: the art has a drawing of

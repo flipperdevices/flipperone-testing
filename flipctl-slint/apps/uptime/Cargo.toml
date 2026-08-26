@@ -9,16 +9,6 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
-# Read by flipctl without building this crate, so the app can be listed and
-# offered a build before a binary exists. Only `name` is required.
-#
-#   name  what the Apps menu shows
-#   icon  a file in this directory, 14x14
-#   apt   Debian packages
-[package.metadata.flipctl]
-name = "Uptime"
-apt = ["procps"]
-
 # The app draws itself, with flipctl's own widgets and tokens: flipctl-app is the
 # framework, and through it the Slint software renderer that paints the panel.
 [dependencies]

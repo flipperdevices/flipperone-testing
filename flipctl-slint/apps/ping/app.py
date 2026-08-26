@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Ping, as a flipctl app.
 
+This app does not run. It speaks the JSON screen protocol flipctl no longer has,
+and it has no `app.toml`, so it is not listed either. It is kept as the source for
+a port to the Python side of the app framework, which does not exist yet, so
+everything described below is the removed protocol rather than how apps work.
+
 Apps do not draw. They describe a screen and flipctl renders it, which is what
 keeps an app free of any GUI toolkit: this file is stdlib-only and would work
 unchanged in any language that can write a line of JSON.

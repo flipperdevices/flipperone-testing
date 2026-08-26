@@ -720,7 +720,7 @@ fn toggle_chevrons_do_not_move_with_the_value() {
     let screen = Root::new().unwrap();
     screen.show().unwrap();
 
-    let mut ends = |status: &str| -> (usize, usize) {
+    let ends = |status: &str| -> (usize, usize) {
         submenu_screen(&screen, 0);
         screen.set_items(slint::ModelRc::new(slint::VecModel::from(vec![item(
             "Airplane mode",
@@ -909,76 +909,3 @@ fn ethernet_cards_hold_their_geometry() {
     }
 }
 
-/// The generic card page, as nmap's host list uses it.
-///
-/// Three cards, one of them the dim report-only kind, over the busy track. The
-/// selected card is the first, so the drill-in bar and the black stroke are both
-/// in frame, and the icon comes from the app's own directory the way a real one
-/// does.
-#[test]
-fn a_cards_page_stacks_its_rows_under_the_title() {
-    use flipper_ui::ui::CardItem;
-
-    let window = FlipperSlintPlatform::install();
-    let screen = Root::new().expect("create Root");
-
-    let icon = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../apps/nmap/icons/monitor.png");
-    let image = slint::Image::load_from_path(&icon).unwrap_or_default();
-
-    let cards = vec![
-        CardItem {
-            icon: image.clone(),
-            name: "Desktop-AKBGGTH".into(),
-            info: "192.168.1.194 Intel Corporate".into(),
-            right: "Ports: 4 open".into(),
-            pill: false,
-            dim: false,
-            actionable: true,
-        },
-        CardItem {
-            icon: image.clone(),
-            name: "192.168.1.28".into(),
-            info: "".into(),
-            right: "Ports: 0 open".into(),
-            pill: false,
-            dim: false,
-            actionable: true,
-        },
-        CardItem {
-            icon: slint::Image::default(),
-            name: "No hosts up".into(),
-            info: "Nothing answered on this range".into(),
-            right: "".into(),
-            pill: false,
-            dim: true,
-            actionable: false,
-        },
-    ];
-    screen.set_app_cards(slint::ModelRc::new(slint::VecModel::from(cards)));
-    screen.set_app_title("Scanning 192.168.1.0-255".into());
-    screen.set_app_note("3 hosts up".into());
-    screen.set_app_busy(true);
-    screen.set_app_percent(37);
-    screen.set_app_slide(60);
-    screen.set_app_selected(0);
-    screen.set_app_scroll(0);
-    screen.set_app_total(9);
-    screen.set_app_buttons(slint::ModelRc::new(slint::VecModel::from(
-        ["Stop", "Help", "", "", "View"]
-            .iter()
-            .map(|s| slint::SharedString::from(*s))
-            .collect::<Vec<_>>(),
-    )));
-    screen.set_battery(87);
-    screen.set_screen(Screen::AppCards);
-
-    let frame = render_frame(&window).expect("frame");
-    let mut surface = Surface::panel();
-    for (i, px) in frame.iter().enumerate() {
-        let x = (i % usize::from(theme::PANEL_W)) as i32;
-        let y = (i / usize::from(theme::PANEL_W)) as i32;
-        surface.pixel(x, y, *px);
-    }
-    support::assert_golden("cards", &surface);
-}

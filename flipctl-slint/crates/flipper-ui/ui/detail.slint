@@ -2,7 +2,7 @@
 //
 // The five screens behind Settings and Network (Routing info, Battery info, Disk
 // info, Update, 5G Modem) are one shape with different content, so they share one
-// body and differ only in the row list their scene builds.
+// body and differ only in the rows they build.
 //
 // These are restyled, not transcribed. In the prototype they predate its own
 // design system: no `canvas.clear`, so they inherit the black ground the render
@@ -35,8 +35,8 @@ export component DetailBody inherits Rectangle {
     in property <[string]> buttons;
     in property <int> pressed_slot: -1;
     // Size the gauges around their labels instead of pinning them to the approved
-    // column. Set for a scene an app described, where the label is the app's to
-    // choose; a first-party screen leaves it off and keeps its fixed geometry.
+    // column. Set by a hosted app, where the label is the app's to choose; a
+    // first-party screen leaves it off and keeps its fixed geometry.
     in property <bool> fit_gauges;
 
     in property <int> battery: PanelStatus.battery;

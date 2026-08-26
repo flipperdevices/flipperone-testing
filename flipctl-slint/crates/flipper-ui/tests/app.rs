@@ -1,77 +1,17 @@
-//! The app scene parser and app discovery.
+//! App discovery.
 //!
-//! The parser reads whatever an app writes, so its failure mode matters: a
-//! malformed line must be ignored, never panic and never take the UI down.
+//! An app is a directory with an `app.toml` in it, and what is read from that
+//! manifest decides whether the app can be listed, started and built at all. Every
+//! test here reads a manifest without running or building anything, which is the
+//! property that lets the list open before an app's dependencies exist.
 
-use flipper_ui::app::{self, SceneKind};
+use flipper_ui::app;
 
-/// Exactly what apps/ping/app.py emits for its parameter form.
-const FORM: &str = r#"{"screen": {"type": "form", "title": "Ping", "rows": [{"label": "Host", "value": "1.1.1.1"}, {"label": "Count", "value": "5"}, {"label": "Interval", "value": "1.0s"}, {"label": "Size", "value": "56"}], "selected": 2, "buttons": ["Back", "", "", "", "Start"]}}"#;
 
-const LOG: &str = r#"{"screen": {"type": "log", "title": "Ping 1.1.1.1", "lines": ["PING 1.1.1.1", "seq 1  ttl 59  2.60 ms", "5/5 received, 0% loss"], "buttons": ["Back", "", "", "", "Again"]}}"#;
 
-#[test]
-fn parses_a_form_scene() {
-    let scene = app::parse_line(FORM).expect("form parses");
-    assert_eq!(scene.kind, SceneKind::Form);
-    assert_eq!(scene.title, "Ping");
-    assert_eq!(scene.selected, 2);
-    let pairs: Vec<(&str, &str)> = scene
-        .rows
-        .iter()
-        .map(|r| (r.label.as_str(), r.value.as_str()))
-        .collect();
-    assert_eq!(
-        pairs,
-        [
-            ("Host", "1.1.1.1"),
-            ("Count", "5"),
-            ("Interval", "1.0s"),
-            ("Size", "56"),
-        ]
-    );
-    assert_eq!(scene.buttons, vec!["Back", "", "", "", "Start"]);
-}
 
-#[test]
-fn parses_a_log_scene() {
-    let scene = app::parse_line(LOG).expect("log parses");
-    assert_eq!(scene.kind, SceneKind::Log);
-    assert_eq!(scene.title, "Ping 1.1.1.1");
-    assert_eq!(scene.rows.len(), 3);
-    assert_eq!(scene.rows[1].label, "seq 1  ttl 59  2.60 ms");
-    // A log row carries no value; only forms use the second column.
-    assert!(scene.rows.iter().all(|r| r.value.is_empty()));
-}
 
-/// An app writing nonsense must not be able to crash the UI. Every one of these
-/// should return None or a partial scene, and none should panic.
-#[test]
-fn malformed_input_is_ignored_not_fatal() {
-    for line in [
-        "",
-        "not json at all",
-        "{}",
-        r#"{"screen": {}}"#,
-        r#"{"screen": {"type": "log", "lines": ["unterminated}"#,
-        r#"{"screen": {"type": "form", "rows": [{"label": "a"}]}}"#,
-        r#"{"screen": {"type": "log", "lines": [], "selected": -}}"#,
-        r#"{"screen":{"type":"log","lines":["a \" quoted \" line"]}}"#,
-        // A long line must not be special.
-        &format!(r#"{{"screen": {{"type": "log", "lines": ["{}"]}}}}"#, "x".repeat(5000)),
-    ] {
-        let _ = app::parse_line(line);
-    }
-}
 
-/// Escapes survive, because ping output can contain quotes and backslashes.
-#[test]
-fn unescapes_strings() {
-    let line = r#"{"screen":{"type":"log","lines":["a \" b","c \\ d"]}}"#;
-    let scene = app::parse_line(line).expect("parses");
-    assert_eq!(scene.rows[0].label, "a \" b");
-    assert_eq!(scene.rows[1].label, "c \\ d");
-}
 
 /// Discovery reads the manifests in `apps/` and sorts by name, so the menu order
 /// does not depend on directory order.
@@ -83,8 +23,8 @@ fn discovers_the_apps_directory() {
         .expect("apps dir");
     let apps = app::discover(&root);
     assert!(
-        apps.iter().any(|a| a.name == "Ping" && a.apt == ["iputils-ping"]),
-        "expected the ping app, found {:?}",
+        apps.iter().any(|a| a.name == "Uptime" && a.apt == ["procps"]),
+        "expected the uptime app, found {:?}",
         apps.iter().map(|a| &a.name).collect::<Vec<_>>()
     );
     let names: Vec<&String> = apps.iter().map(|a| &a.name).collect();
@@ -101,13 +41,21 @@ fn tempdir(name: &str) -> std::path::PathBuf {
     dir
 }
 
-/// A directory with no app.py is skipped rather than breaking the listing.
+/// A directory with no manifest is skipped rather than breaking the listing.
+///
+/// Source with nothing declaring how to run it is not an app: half an app, an
+/// abandoned experiment or a directory of assets should not stop the list opening.
 #[test]
-fn a_directory_without_an_entry_is_skipped() {
+fn a_directory_without_a_manifest_is_skipped() {
     let tmp = tempdir("app-discovery");
     std::fs::create_dir_all(tmp.join("broken")).expect("mkdir");
+    std::fs::write(tmp.join("broken/app.py"), "print(\"hello\")\n").expect("write");
     std::fs::create_dir_all(tmp.join("good")).expect("mkdir");
-    std::fs::write(tmp.join("good/app.py"), "APP_NAME = \"Good\"\n").expect("write");
+    std::fs::write(
+        tmp.join("good/app.toml"),
+        "name = \"Good\"\nwayland = \"python3 app.py\"\n",
+    )
+    .expect("write");
 
     let apps = app::discover(&tmp);
     assert_eq!(apps.len(), 1);
@@ -117,9 +65,10 @@ fn a_directory_without_an_entry_is_skipped() {
 
 /// An entry's directory must be absolute.
 ///
-/// `spawn` sets the child's working directory to it, and a relative script path
-/// resolves against that new directory, so a relative entry turns `apps/ping` +
-/// `apps/ping/app.py` into `apps/ping/apps/ping/app.py` and fails with ENOENT.
+/// An app runs with its own directory as the working directory, and a relative
+/// program path would then resolve against that new directory: `apps/uptime` plus
+/// `./target/release/uptime-app` would become
+/// `apps/uptime/apps/uptime/target/release/uptime-app` and fail with ENOENT.
 #[test]
 fn discovered_paths_are_absolute() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps");
@@ -132,15 +81,10 @@ fn discovered_paths_are_absolute() {
             entry.name,
             entry.dir.display()
         );
-        // What must exist depends on the kind. A Python app's entry is its
-        // source; a Rust app's is a binary that may not be built yet, so the
-        // manifest is what proves the directory is an app; a console or Wayland app
-        // has nothing but its manifest, since the program it runs is the system's.
-        let proof = match entry.kind {
-            app::Kind::Python => entry.entry(),
-            app::Kind::Rust => entry.dir.join("Cargo.toml"),
-            app::Kind::Console | app::Kind::Wayland => entry.dir.join(app::MANIFEST),
-        };
+        // The manifest is the whole proof: what an app runs is a command line, and
+        // the program behind it may be the system's or a binary that is not built
+        // yet.
+        let proof = entry.dir.join(app::MANIFEST);
         assert!(
             proof.is_file(),
             "{} points at a missing file: {}",
@@ -150,31 +94,29 @@ fn discovered_paths_are_absolute() {
     }
 }
 
-/// The manifest is read out of the source, not by running it.
+/// The manifest is read as text, not by running anything.
 ///
 /// This is the whole point of scanning: an app that needs a package which is not
-/// installed fails on import, so anything that executes it to ask what it needs
-/// cannot work. The test therefore uses a file that would not survive being run.
+/// installed fails on import, and an app built from a crate has no binary at all
+/// until it is built, so anything that executes an app to ask what it needs cannot
+/// work.
 #[test]
 fn a_manifest_is_read_without_executing_the_app() {
     let dir = tempdir("manifest-scan");
     let app = dir.join("thing");
     std::fs::create_dir_all(&app).unwrap();
     std::fs::write(
-        app.join("app.py"),
-        r#"import nonexistent_module_that_would_fail
-APP_NAME = "Thing"
-APP_ICON = 'thing.png'
-APP_APT = ["iputils-ping", "curl"]
-APP_PIP = [
+        app.join("app.toml"),
+        r#"# A comment, and a key that only looks like one: not_name = "wrong"
+name = "Thing"
+icon = 'thing.png'
+wayland = "python3 app.py"
+apt = ["iputils-ping", "curl"]
+pip = [
     "requests",
     "rich",
 ]
-
-def helper():
-    # Indented assignments are not the manifest.
-    APP_NAME = "wrong"
-    return APP_NAME
+audio = true
 "#,
     )
     .unwrap();
@@ -183,282 +125,51 @@ def helper():
     assert_eq!(found.len(), 1);
     let a = &found[0];
     assert_eq!(a.name, "Thing");
+    assert_eq!(a.wayland, "python3 app.py");
     assert_eq!(a.icon, "thing.png", "single quotes count too");
     assert_eq!(a.apt, ["iputils-ping", "curl"]);
     assert_eq!(a.pip, ["requests", "rich"], "a list may span lines");
+    assert!(a.audio);
     assert_eq!(
         a.icon_path(),
         Some(app.canonicalize().unwrap().join("thing.png"))
     );
 }
 
-/// A directory with no app.py is not an app, and one with no APP_NAME is named
-/// after its directory.
-#[test]
-fn discovery_needs_app_py_and_falls_back_to_the_directory_name() {
-    let dir = tempdir("manifest-fallback");
-    std::fs::create_dir_all(dir.join("empty")).unwrap();
-    std::fs::create_dir_all(dir.join("unnamed")).unwrap();
-    std::fs::write(dir.join("unnamed").join("app.py"), "print('hi')\n").unwrap();
-
-    let found = flipper_ui::app::discover(&dir);
-    assert_eq!(found.len(), 1, "the directory with no app.py is skipped");
-    assert_eq!(found[0].name, "unnamed");
-    assert!(found[0].apt.is_empty());
-    assert!(found[0].pip.is_empty());
-    assert_eq!(found[0].icon, "");
-}
-
-/// A directory with a Cargo.toml is a Rust app, and its manifest is read from
-/// `[package.metadata.flipctl]` without building it.
+/// An app built from a crate: the manifest names it and the crate names the binary.
 ///
-/// Reading rather than building is the point: a Rust app has no binary at all
-/// until it is compiled, so anything that runs an app to ask what it needs cannot
-/// list one.
+/// Both files have a `name` at column zero, and the one that decides what to build
+/// is the crate's. Reading the wrong one offers a build that produces a binary
+/// nobody looks for.
 #[test]
-fn a_rust_app_is_read_from_its_cargo_manifest() {
-    let dir = tempdir("rust-app");
-    let app = dir.join("thing");
-    std::fs::create_dir_all(app.join("src")).unwrap();
-    std::fs::write(
-        app.join("Cargo.toml"),
-        r#"[workspace]
-
-[package]
-name = "thing-app"
-version = "0.1.0"
-edition = "2021"
-
-[package.metadata.flipctl]
-name = "Thing"
-icon = "thing.png"
-apt = ["procps", "curl"]
-
-[dependencies]
-"#,
-    )
-    .unwrap();
-    std::fs::write(app.join("src/main.rs"), "fn main() {}\n").unwrap();
-
-    let found = app::discover(&dir);
-    assert_eq!(found.len(), 1);
-    let a = &found[0];
-    assert_eq!(a.kind, app::Kind::Rust);
-    assert_eq!(a.name, "Thing", "the display name, not the crate name");
-    assert_eq!(a.bin, "thing-app", "the crate name, which is what cargo builds");
-    assert_eq!(a.icon, "thing.png");
-    assert_eq!(a.apt, ["procps", "curl"]);
-    assert!(a.pip.is_empty(), "pip is a Python notion");
-
-    // It runs as its own binary, with no interpreter in front of it.
-    let (program, args) = a.command();
-    assert_eq!(program, a.dir.join("target/release/thing-app"));
-    assert!(args.is_empty());
-
-    // With no binary built, the app needs one, and that is not a package to fetch.
-    let m = app::missing(a);
-    assert!(m.needs_build);
-    assert!(!m.is_empty());
-    assert!(m.pip.is_empty());
-}
-
-/// The section scanner must not confuse `name` under [package] with the display
-/// name under [package.metadata.flipctl].
-///
-/// Both keys are called `name` at column zero, so a scan that ignores which table
-/// it is in reads the crate name as the app's title.
-#[test]
-fn the_crate_name_and_the_display_name_are_kept_apart() {
-    let dir = tempdir("rust-app-names");
+fn a_crate_gives_the_binary_its_name() {
+    let dir = tempdir("crate-app-names");
     let app = dir.join("thing");
     std::fs::create_dir_all(&app).unwrap();
     std::fs::write(
+        app.join("app.toml"),
+        "name = \"Display Name\"\nwayland = \"./target/release/crate-name\"\n",
+    )
+    .unwrap();
+    std::fs::write(
         app.join("Cargo.toml"),
-        "[workspace]\n\n[package]\nname = \"crate-name\"\n\n\
-         [package.metadata.flipctl]\nname = \"Display Name\"\n",
+        "[workspace]\n\n[package]\nname = \"crate-name\"\n",
     )
     .unwrap();
 
     let found = app::discover(&dir);
     assert_eq!(found[0].name, "Display Name");
     assert_eq!(found[0].bin, "crate-name");
+    assert_eq!(found[0].binary(), found[0].dir.join("target/release/crate-name"));
 }
 
-/// A Rust app with no [package.metadata.flipctl] is still an app, named after its
-/// directory.
-#[test]
-fn a_rust_app_without_a_manifest_section_still_works() {
-    let dir = tempdir("rust-app-bare");
-    let app = dir.join("bare");
-    std::fs::create_dir_all(&app).unwrap();
-    std::fs::write(
-        app.join("Cargo.toml"),
-        "[workspace]\n\n[package]\nname = \"bare\"\nversion = \"0.1.0\"\n",
-    )
-    .unwrap();
 
-    let found = app::discover(&dir);
-    assert_eq!(found.len(), 1);
-    assert_eq!(found[0].name, "bare");
-    assert_eq!(found[0].kind, app::Kind::Rust);
-    assert!(found[0].apt.is_empty());
-}
 
-/// A detail scene: rows that are gauges, dividers and full-width lines, which is
-/// what an app reporting progress sends.
-///
-/// The row kinds are the numbers DetailRow uses, because that is what draws them,
-/// so this pins the mapping rather than the rendering.
-#[test]
-fn parses_a_detail_scene() {
-    let line = r#"{"screen": {"type": "detail", "title": "Progress", "rows": [
-        {"kind": "text", "label": "Running  21% of two jobs"},
-        {"kind": "divider"},
-        {"kind": "gauge", "label": "Download", "percent": 42},
-        {"label": "", "value": "42%", "dim": true},
-        {"label": "Elapsed", "value": "12.4s"}
-    ], "buttons": ["Back", "", "Reset", "", "Pause"]}}"#;
 
-    let scene = app::parse_line(line).expect("detail parses");
-    assert_eq!(scene.kind, SceneKind::Detail);
-    assert_eq!(scene.title, "Progress");
-    assert_eq!(scene.buttons, ["Back", "", "Reset", "", "Pause"]);
-    assert_eq!(scene.rows.len(), 5, "a divider is a row of its own");
 
-    assert_eq!(scene.rows[0].kind, 3);
-    assert_eq!(scene.rows[0].label, "Running  21% of two jobs");
 
-    assert_eq!(scene.rows[1].kind, 1);
-    assert_eq!(scene.rows[1].label, "", "a divider carries no label");
 
-    assert_eq!(scene.rows[2].kind, 2);
-    assert_eq!(scene.rows[2].label, "Download");
-    assert_eq!(scene.rows[2].percent, 42);
 
-    assert!(scene.rows[3].dim);
-    assert_eq!(scene.rows[3].value, "42%");
-
-    // No kind named means a label and a value, which is what a form row is.
-    assert_eq!(scene.rows[4].kind, 0);
-    assert!(!scene.rows[4].dim);
-}
-
-/// A gauge outside 0..=100 is clamped rather than trusted: the fill is a width,
-/// and a negative or oversized one would draw outside the frame.
-#[test]
-fn a_gauge_percent_is_clamped() {
-    let over = r#"{"screen":{"type":"detail","rows":[{"kind":"gauge","label":"a","percent":140}]}}"#;
-    let under = r#"{"screen":{"type":"detail","rows":[{"kind":"gauge","label":"a","percent":-20}]}}"#;
-    assert_eq!(app::parse_line(over).unwrap().rows[0].percent, 100);
-    assert_eq!(app::parse_line(under).unwrap().rows[0].percent, 0);
-}
-
-/// The Progress app is discovered like any other, and needs nothing installed.
-#[test]
-fn the_progress_app_is_listed() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../apps")
-        .canonicalize()
-        .expect("apps dir");
-    let apps = app::discover(&root);
-    let progress = apps
-        .iter()
-        .find(|a| a.name == "Progress")
-        .expect("the progress app");
-    assert_eq!(progress.kind, app::Kind::Python);
-    assert!(progress.apt.is_empty() && progress.pip.is_empty(), "stdlib only");
-}
-
-/// A canvas scene: the app owns the pixels and asks for text on top.
-///
-/// Base64 in, one byte per pixel out, and the text ops keep their own alignment
-/// and font, since an app has no way to measure a string.
-#[test]
-fn parses_a_canvas_scene() {
-    // Four pixels: black, white, mid, black. "AP+AAA==" is 00 FF 80 00.
-    let line = r#"{"screen": {"type": "canvas", "data": "AP+AAA==", "text": [
-        {"x": 128, "y": 46, "text": "ASK LATER", "align": "center", "font": "title"},
-        {"x": 4, "y": 2, "text": "3 asked", "white": true, "font": "row"}
-    ], "buttons": ["Back", "", "", "", "Shake"]}}"#;
-
-    let scene = app::parse_line(line).expect("canvas parses");
-    assert_eq!(scene.kind, SceneKind::Canvas);
-    assert_eq!(scene.canvas, [0x00, 0xff, 0x80, 0x00]);
-    assert!(scene.rows.is_empty(), "a canvas has no rows");
-    assert_eq!(scene.buttons, ["Back", "", "", "", "Shake"]);
-
-    assert_eq!(scene.texts.len(), 2);
-    assert_eq!(scene.texts[0].text, "ASK LATER");
-    assert_eq!(scene.texts[0].x, 128);
-    assert_eq!(scene.texts[0].align, 0, "centred");
-    assert_eq!(scene.texts[0].font, 0, "the title font");
-    assert!(!scene.texts[0].white);
-
-    assert_eq!(scene.texts[1].align, -1, "left of x by default");
-    assert_eq!(scene.texts[1].font, 1, "a list row");
-    assert!(scene.texts[1].white);
-}
-
-/// The 8 Ball app is discovered, and paints with nothing installed.
-#[test]
-fn the_8_ball_app_is_listed() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../apps")
-        .canonicalize()
-        .expect("apps dir");
-    let apps = app::discover(&root);
-    let ball = apps.iter().find(|a| a.name == "8 Ball").expect("the 8 ball app");
-    assert_eq!(ball.kind, app::Kind::Python);
-    assert!(ball.apt.is_empty() && ball.pip.is_empty(), "stdlib only");
-}
-
-/// A cards scene, as the nmap app sends one mid-scan.
-///
-/// The scene-level fields and the per-card ones share names on purpose (`percent`
-/// is a scene's progress and a detail row's gauge), so this checks the scene keeps
-/// its own rather than picking up the first one it finds inside a card.
-#[test]
-fn a_cards_scene_carries_its_page_and_its_rows() {
-    let line = r#"{"screen": {"type": "cards", "title": "Scanning 192.168.1.0-255",
-        "note": "2 hosts up", "busy": true, "percent": 37, "selected": 1,
-        "offset": 0, "total": 9, "cards": [
-        {"label": "Desktop-AKBGGTH", "info": "192.168.1.194 Intel Corporate",
-         "value": "Ports: 2 open", "icon": "icons/monitor.png", "actionable": true},
-        {"label": "No hosts up", "info": "Nothing answered", "dim": true}],
-        "buttons": ["Stop", "Help", "", "", "View"]}}"#;
-    let scene = app::parse_line(line).expect("a scene");
-
-    assert_eq!(scene.kind, app::SceneKind::Cards);
-    assert_eq!(scene.title, "Scanning 192.168.1.0-255");
-    assert_eq!(scene.note, "2 hosts up");
-    assert!(scene.busy);
-    assert_eq!(scene.percent, 37);
-    assert_eq!(scene.selected, 1);
-    assert_eq!(scene.total, 9);
-    assert_eq!(scene.buttons.len(), 5);
-
-    assert_eq!(scene.rows.len(), 2);
-    let first = &scene.rows[0];
-    assert_eq!(first.label, "Desktop-AKBGGTH");
-    assert_eq!(first.info, "192.168.1.194 Intel Corporate");
-    assert_eq!(first.value, "Ports: 2 open");
-    assert_eq!(first.icon, "icons/monitor.png");
-    assert!(first.actionable && !first.dim);
-
-    let second = &scene.rows[1];
-    assert!(second.dim, "a card that only reports says so by being dim");
-    assert!(!second.actionable, "and by having nothing to open");
-    assert_eq!(second.value, "", "no right-hand column");
-}
-
-/// An app that cannot say how far along it is leaves the track empty.
-#[test]
-fn a_cards_scene_without_a_percentage_reads_as_minus_one() {
-    let line = r#"{"screen": {"type": "cards", "title": "Scanning", "busy": true,
-        "cards": [{"label": "host", "percent": 40}]}}"#;
-    let scene = app::parse_line(line).expect("a scene");
-    assert_eq!(scene.percent, -1, "absent, not the card's 40");
-}
 
 /// A hosted app is a manifest and nothing else.
 ///
@@ -476,7 +187,6 @@ fn the_htop_app_is_a_manifest() {
     let apps = app::discover(&root);
     let htop = apps.iter().find(|a| a.name == "htop").expect("the htop app");
 
-    assert_eq!(htop.kind, app::Kind::Wayland);
     assert!(htop.wayland.contains("htop"), "the command runs htop");
     assert!(
         htop.wayland.starts_with("foot"),
@@ -504,56 +214,54 @@ fn the_htop_app_is_a_manifest() {
     );
 }
 
-/// Everything a console app's manifest can say, read back off disk.
-///
-/// Built here rather than asserted against a shipped app, because which app wants
-/// which font is a decision that changes: what has to keep working is that the
-/// manifest is read at all, since none of these have any other way to be set.
+
+/// Apps are found in folders at any depth, and a folder is only a folder until it
+/// has a manifest: an app's own directory stops the walk, so its `target` and
+/// `.venv` are never rummaged through. A symlinked directory is not followed, which
+/// is what keeps an unbounded walk from looping.
 #[test]
-fn a_console_manifest_carries_its_settings() {
-    let dir = std::env::temp_dir().join(format!("flipctl-manifest-{}", std::process::id()));
-    let app = dir.join("thing");
-    std::fs::create_dir_all(&app).expect("temp app dir");
+fn apps_are_found_in_folders() {
+    let tmp = tempdir("app-folders");
+    let write = |at: &std::path::Path, body: &str| {
+        std::fs::create_dir_all(at).expect("mkdir");
+        std::fs::write(at.join("app.toml"), body).expect("write");
+    };
+    write(&tmp.join("loose"), "name = \"Loose\"\nwayland = \"true\"\n");
+    write(&tmp.join("net/ping"), "name = \"Ping\"\nwayland = \"true\"\n");
+    write(&tmp.join("net/deeper/nmap"), "name = \"Nmap\"\nwayland = \"true\"\n");
+    // Build output inside an app, which must not be read as a folder of apps.
+    write(
+        &tmp.join("built/target/release/decoy"),
+        "name = \"Decoy\"\nwayland = \"true\"\n",
+    );
     std::fs::write(
-        app.join(app::MANIFEST),
-        concat!(
-            "# a comment, and a key that looks like one of ours: console = \"no\"\n",
-            "name = \"Thing\"\n",
-            "console = \"htop -d 10\"\n",
-            "apt = [\"htop\", \"procps\"]\n",
-            "font = \"7x14\"\n",
-            "draws = \"pixels\"\n",
-            "mirror = false\n",
-            "env = [\"QT_QPA_PLATFORM=offscreen\", \"TERM=dumb\"]\n",
-        ),
+        tmp.join("built/app.toml"),
+        "name = \"Built\"\nwayland = \"true\"\n",
     )
-    .expect("write manifest");
+    .expect("write");
 
-    let found = app::discover(&dir);
-    let entry = found.iter().find(|a| a.name == "Thing").expect("the app");
-    assert_eq!(entry.kind, app::Kind::Console);
-    assert_eq!(entry.console, "htop -d 10");
-    assert_eq!(entry.apt, ["htop", "procps"]);
-    assert_eq!(entry.font, "7x14");
-    assert!(entry.graphics, "draws = pixels");
-    assert!(!entry.mirror, "mirror = false");
-    assert_eq!(entry.env, ["QT_QPA_PLATFORM=offscreen", "TERM=dumb"]);
+    // A loop, which an unbounded walk has to survive.
+    std::os::unix::fs::symlink(&tmp, tmp.join("net/loop")).expect("symlink");
 
-    // A command line stays one command: the day one says "journalctl -f" it has to
-    // reach a shell whole.
-    let (program, args) = entry.command();
-    assert_eq!(program, std::path::Path::new("/bin/sh"));
-    assert_eq!(args.last().unwrap(), std::path::Path::new("htop -d 10"));
-
-    // And the defaults, for a manifest that says only what it must.
-    std::fs::write(app.join(app::MANIFEST), "console = \"mc\"\n").expect("write");
-    let found = app::discover(&dir);
-    let bare = found.first().expect("the app");
-    assert_eq!(bare.name, "thing", "the directory names it");
-    assert_eq!(bare.font, "", "the default cell");
-    assert!(!bare.graphics, "text unless it says otherwise");
-    assert!(bare.mirror, "readable unless it says otherwise");
-    assert!(bare.env.is_empty());
-
-    std::fs::remove_dir_all(&dir).ok();
+    let apps = app::discover(&tmp);
+    let found: Vec<(&str, Vec<&str>)> = apps
+        .iter()
+        .map(|a| {
+            (
+                a.name.as_str(),
+                a.group.iter().map(String::as_str).collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        found,
+        vec![
+            ("Built", vec![]),
+            ("Loose", vec![]),
+            ("Ping", vec!["net"]),
+            ("Nmap", vec!["net", "deeper"]),
+        ],
+        "sorted by folder then name, with the decoy behind an app's manifest unseen"
+    );
+    let _ = std::fs::remove_dir_all(&tmp);
 }

@@ -20,10 +20,11 @@ import { CardsBody, CardItem } from "card.slint";
 
 export { ListItem, IdleLink, DetailRow, EthLink, EthDetailRow, BootRow, BootPopupRow, KbCell, SwitchCard, CanvasText, CardItem }
 
-// Idle is the root. The menu opens over it, the app list over that, and an app's
-// own screens over that. `app_form` and `app_log` are the two scene types the app
-// protocol admits so far.
-export enum Screen { idle, menu, detail, ethernet, boot, apps, app_form, app_log, app_detail, app_canvas, app_cards, text_input, switcher }
+// Idle is the root. The menu opens over it and the app list over that. There are no
+// screens for an app to be shown on: an app draws its own, and what flipctl puts up
+// while one is running is the app's own frame. `app_log` is ours, the log of an
+// install.
+export enum Screen { idle, menu, detail, ethernet, boot, apps, app_log, text_input, switcher }
 
 export component Root inherits Window {
     width: 256px;
@@ -51,11 +52,16 @@ export component Root inherits Window {
     in property <int> power_mw: -32768;
     in property <string> hostname;
     in property <string> profile;
+    in property <bool> has_profile: true;
     in property <[IdleLink]> links;
+    in property <int> link_scroll;
+    // How many interface cards the idle screen has room for, so the keys that scroll
+    // them can clamp against the geometry rather than a guess.
+    out property <int> link_rows: idle.link_rows;
     in property <[string]> idle_buttons;
     in property <int> idle_pressed_slot: -1;
 
-    // App list and app scenes.
+    // The app list, and the log of an install.
     in property <[ListItem]> app_items;
     in property <int> app_selected;
     in property <int> app_total;
@@ -144,15 +150,6 @@ export component Root inherits Window {
     in property <int> kb_pressed_slot: -1;
     in property <int> kb_discard: -1;
 
-    // An app's own canvas: its bitmap, and the text it asked us to draw on it.
-    in property <[CardItem]> app_cards;
-    in property <string> app_note;
-    in property <bool> app_busy;
-    in property <int> app_percent: -1;
-    in property <int> app_slide;
-    in property <image> app_bitmap;
-    in property <[CanvasText]> app_texts;
-    in property <bool> app_status_bar;
 
     // The app switcher, over whatever was showing when it opened.
     in property <[SwitchCard]> switch_cards;
@@ -166,7 +163,8 @@ export component Root inherits Window {
     in property <string> modal_right;
     in property <int> modal_pressed_slot: -1;
 
-    if root.screen == Screen.idle: IdleBody {
+    idle := IdleBody {
+        visible: root.screen == Screen.idle;
         battery: root.battery;
         charging: root.charging;
         wifi_connected: root.wifi_connected;
@@ -180,14 +178,16 @@ export component Root inherits Window {
         power_mw: root.power_mw;
         hostname: root.hostname;
         profile: root.profile;
+        has_profile: root.has_profile;
         links: root.links;
+        link_scroll: root.link_scroll;
         buttons: root.idle_buttons;
         pressed_slot: root.idle_pressed_slot;
     }
 
     // The app list and an app's form are both lists of label/value rows, so they
     // reuse MenuBody rather than duplicating it. Only the model differs.
-    if root.screen == Screen.apps || root.screen == Screen.app_form: MenuBody {
+    if root.screen == Screen.apps: MenuBody {
         battery: root.battery;
         charging: root.charging;
         wifi_connected: root.wifi_connected;
@@ -228,7 +228,7 @@ export component Root inherits Window {
         pressed_slot: root.app_pressed_slot;
     }
 
-    if root.screen == Screen.detail || root.screen == Screen.app_detail: DetailBody {
+    if root.screen == Screen.detail: DetailBody {
         battery: root.battery;
         charging: root.charging;
         wifi_connected: root.wifi_connected;
@@ -242,10 +242,7 @@ export component Root inherits Window {
         breadcrumb: root.breadcrumb;
         offset: root.detail_offset;
         buttons: root.detail_buttons;
-        fit_gauges: root.screen == Screen.app_detail;
-        pressed_slot: root.screen == Screen.app_detail
-            ? root.app_pressed_slot
-            : root.detail_pressed_slot;
+        pressed_slot: root.detail_pressed_slot;
     }
 
     if root.screen == Screen.ethernet: EthernetBody {
@@ -295,46 +292,6 @@ export component Root inherits Window {
         buttons: root.kb_buttons;
         pressed_slot: root.kb_pressed_slot;
         discard: root.kb_discard;
-    }
-
-    if root.screen == Screen.app_cards: CardsBody {
-        title: root.app_title;
-        note: root.app_note;
-        cards: root.app_cards;
-        selected: root.app_selected;
-        scroll: root.app_scroll;
-        total: root.app_total;
-        busy: root.app_busy;
-        percent: root.app_percent;
-        slide: root.app_slide;
-        battery: root.battery;
-        charging: root.charging;
-        wifi_connected: root.wifi_connected;
-        wifi_quality: root.wifi_quality;
-        ethernet: root.ethernet;
-        recording: root.recording;
-        modem_available: root.modem_available;
-        access_tech: root.access_tech;
-        modem_quality: root.modem_quality;
-        buttons: root.app_buttons;
-        pressed_slot: root.app_pressed_slot;
-    }
-
-    if root.screen == Screen.app_canvas: CanvasBody {
-        bitmap: root.app_bitmap;
-        texts: root.app_texts;
-        status_bar: root.app_status_bar;
-        battery: root.battery;
-        charging: root.charging;
-        wifi_connected: root.wifi_connected;
-        wifi_quality: root.wifi_quality;
-        ethernet: root.ethernet;
-        recording: root.recording;
-        modem_available: root.modem_available;
-        access_tech: root.access_tech;
-        modem_quality: root.modem_quality;
-        buttons: root.app_buttons;
-        pressed_slot: root.app_pressed_slot;
     }
 
     if root.screen == Screen.switcher: SwitcherBody {
