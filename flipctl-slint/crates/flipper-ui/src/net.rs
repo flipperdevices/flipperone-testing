@@ -3,12 +3,18 @@
 //! Unlike `status`, this cannot come from sysfs. Airplane mode is not a kernel
 //! concept: the prototype defines it as "NetworkManager has both the wifi and the
 //! wwan radios disabled", and the only supported way to read or change that is
-//! `nmcli`. So this module does shell out, on a background thread, at the
-//! prototype's own 3-second cadence.
+//! `nmcli`. So this module does shell out, on a background thread.
+//!
+//! Told rather than asked. The prototype polls every three seconds, which is two
+//! `nmcli` processes every three seconds forever, and NetworkManager and dbus pay for
+//! each one: it was the last of our periodic wakeups. `nmcli monitor` is a process
+//! that says nothing until something changes, so the state is read once at startup
+//! and then only when NetworkManager reports a change, which also means a radio
+//! toggle shows up at once instead of up to three seconds later.
 //!
 //! Writes are optimistic exactly as they are in the prototype: the local value
 //! flips immediately so the row redraws on the same frame as the key press, and
-//! the next poll reconciles if the radio refused.
+//! the next read reconciles if the radio refused.
 
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,8 +22,21 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-/// The prototype's poll interval for `/api/airplane` and `/api/wifi`.
-const POLL: Duration = Duration::from_secs(3);
+/// How long to wait before starting the monitor again after it ends.
+///
+/// It ends when NetworkManager restarts, and it never starts at all on a machine
+/// without it: either way this is the interval between attempts, and a read goes with
+/// each one so the state is still refreshed on a machine where the monitor cannot run.
+const RETRY: Duration = Duration::from_secs(10);
+
+/// How long to leave a change of ours before checking that it took.
+const CONFIRM: Duration = Duration::from_millis(1500);
+
+/// How long to wait for a burst of changes to finish before reading.
+///
+/// One connection coming up prints several lines, and each read costs two processes,
+/// so they are coalesced into one.
+const SETTLE: Duration = Duration::from_millis(300);
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Net {
@@ -87,8 +106,20 @@ fn read_net() -> Net {
 }
 
 /// Polls nmcli on its own thread so the render loop never waits on a subprocess.
+/// Why the watcher woke: NetworkManager said something, or we changed something and
+/// want to see whether it took.
+enum Wake {
+    Told,
+    Ours,
+    /// The monitor's output ended, which is what NetworkManager restarting looks like.
+    Ended,
+}
+
 pub struct NetSource {
     state: Arc<Mutex<Net>>,
+    /// How a write asks the watcher to look again. A radio the hardware refuses
+    /// produces no event at all, so the optimistic flip has to be checked by us.
+    poke: std::sync::mpsc::Sender<Wake>,
     /// Set whenever the poller or a write changes the state, so the loop knows to
     /// repaint without diffing.
     dirty: Arc<AtomicBool>,
@@ -98,21 +129,94 @@ impl NetSource {
     pub fn spawn() -> Self {
         let state = Arc::new(Mutex::new(Net::default()));
         let dirty = Arc::new(AtomicBool::new(false));
+        // One channel for the life of the watcher: the monitor's lines and our own
+        // writes both arrive on it, and it is what the watcher blocks on.
+        let (poke, wakes) = std::sync::mpsc::channel::<Wake>();
+        let told = poke.clone();
         let (s, d) = (Arc::clone(&state), Arc::clone(&dirty));
         thread::Builder::new()
-            .name("net-poll".into())
-            .spawn(move || loop {
-                let fresh = read_net();
-                let mut cur = s.lock().unwrap();
-                if *cur != fresh {
-                    *cur = fresh;
-                    d.store(true, Ordering::Relaxed);
+            .name("net-watch".into())
+            .spawn(move || {
+                let publish = |fresh: Net| {
+                    let mut cur = s.lock().unwrap();
+                    if *cur != fresh {
+                        *cur = fresh;
+                        d.store(true, Ordering::Relaxed);
+                    }
+                };
+                loop {
+                    publish(read_net());
+                    let mut monitor = match Command::new("nmcli")
+                        .arg("monitor")
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::null())
+                        .spawn()
+                    {
+                        Ok(child) => child,
+                        // No NetworkManager here, or no nmcli: nothing to watch and
+                        // nothing to read, so wait rather than spin.
+                        Err(_) => {
+                            thread::sleep(RETRY);
+                            continue;
+                        }
+                    };
+                    if let Some(out) = monitor.stdout.take() {
+                        // The lines are read on a thread of their own and this one
+                        // waits: a burst then costs one read rather than one read per
+                        // line, and the read happens after the burst rather than in the
+                        // middle of it.
+                        let lines = told.clone();
+                        thread::Builder::new()
+                            .name("net-monitor".into())
+                            .spawn(move || {
+                                use std::io::{BufRead, BufReader};
+                                for line in BufReader::new(out).lines().map_while(Result::ok) {
+                                    let _ = line;
+                                    if lines.send(Wake::Told).is_err() {
+                                        return;
+                                    }
+                                }
+                                // The pipe closed. Said explicitly, because the channel
+                                // itself never closes: a write holds a sender for the
+                                // life of the source, so waiting for the receive to
+                                // fail would wait forever and nothing would ever be
+                                // read again.
+                                let _ = lines.send(Wake::Ended);
+                            })
+                            .ok();
+                        let mut ended = false;
+                        while let Ok(wake) = wakes.recv() {
+                            match wake {
+                                // NetworkManager talks in bursts: wait for quiet. The
+                                // burst is drained, but not the news that came with it:
+                                // NetworkManager stopping is a burst of events followed
+                                // by the pipe closing, and swallowing that last one left
+                                // the watcher blocked on a monitor that had gone.
+                                Wake::Told => {
+                                    while let Ok(next) = wakes.recv_timeout(SETTLE) {
+                                        ended |= matches!(next, Wake::Ended);
+                                    }
+                                }
+                                // Our own change: give the radio a moment to refuse it.
+                                Wake::Ours => thread::sleep(CONFIRM),
+                                Wake::Ended => ended = true,
+                            }
+                            // Read before leaving: the radios going with NetworkManager
+                            // is itself the state, and the screen should say so.
+                            publish(read_net());
+                            if ended {
+                                break;
+                            }
+                        }
+                    }
+                    // The monitor ended, which NetworkManager restarting does.
+                    let _ = monitor.wait();
+                    thread::sleep(RETRY);
                 }
-                drop(cur);
-                thread::sleep(POLL);
             })
-            .expect("spawn net poller");
-        Self { state, dirty }
+            .expect("spawn net watcher");
+        Self { state, dirty, poke }
     }
 
     pub fn get(&self) -> Net {
@@ -141,6 +245,9 @@ impl NetSource {
         }
         self.dirty.store(true, Ordering::Relaxed);
         spawn_detached(&["nmcli", "radio", "all", if on { "off" } else { "on" }]);
+        // The row is showing what we asked for, not what happened: have the watcher
+        // look again once the radio has had time to refuse.
+        let _ = self.poke.send(Wake::Ours);
     }
 }
 
