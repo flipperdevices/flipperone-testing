@@ -2,7 +2,7 @@
 //!
 //! Usage: wl_probe "<command>" [dir] [keys]
 //!
-//!     wl_probe "./target/release/resmon-app" apps/resmon v,b,down,down
+//!     wl_probe "./target/release/sysmon-app" apps/sysmon v,b,down,down
 //!
 //! Keys are the panel's own names, sent through the same virtual keyboard flipctl
 //! uses, which is the part a generic injector gets wrong: a tool that creates a

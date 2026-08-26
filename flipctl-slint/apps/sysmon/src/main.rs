@@ -188,7 +188,15 @@ fn processes() -> Vec<Proc> {
         let rest: Vec<&str> = stat[close + 1..].split_whitespace().collect();
         // stat's fields are 1-based and comm is field 2, so utime (14) and stime
         // (15) are the 11th and 12th of what follows, and rss (24) the 21st.
-        if rest.len() < 21 {
+        if rest.len() < 22 {
+            continue;
+        }
+        // Kernel threads out: sugov, kworker, ksoftirqd and the rest are the kernel's
+        // own business, they have no memory a person can read as theirs, and they push
+        // the processes somebody might actually recognise off a five-row page. The flag
+        // is field 9 of stat, so no second file has to be opened to ask.
+        const PF_KTHREAD: u64 = 0x0020_0000;
+        if rest[6].parse::<u64>().unwrap_or(0) & PF_KTHREAD != 0 {
             continue;
         }
         let utime: u64 = rest[11].parse().unwrap_or(0);
@@ -237,27 +245,35 @@ impl Page {
 
 struct Monitor {
     page: Page,
-    selected: usize,
+    /// How many rows the page last drew, so a key knows where the end is.
+    rows_last: usize,
+    /// First row shown. A detail page draws no selector, so the keys move the window
+    /// itself: a selection nobody can see meant seven presses did nothing at all and
+    /// the scrollbar sat still until the eighth.
+    scroll: usize,
     cpu: Cpu,
     /// Busy share per core, aggregate first, from the last two readings.
     loads: Vec<i32>,
     mem: Vec<(String, u64)>,
     temps: Vec<(String, i32)>,
     procs: Vec<Proc>,
-    /// Share of one core per process since the last reading, by pid.
+    /// Share of the whole machine per process since the last reading, by pid.
     proc_load: Vec<(u32, String, i32, u64)>,
     /// The graphs' columns, oldest first.
     cpu_history: Vec<i32>,
     mem_history: Vec<i32>,
     /// Ticks per second, for charging processes their share.
     hz: u64,
+    /// How many cores those ticks are spread across.
+    cores: u64,
 }
 
 impl Monitor {
     fn new() -> Self {
         Self {
             page: Page::Cpu,
-            selected: 0,
+            rows_last: 0,
+            scroll: 0,
             cpu: read_cpu(),
             loads: Vec::new(),
             mem: meminfo(),
@@ -269,6 +285,7 @@ impl Monitor {
             // USER_HZ, which the kernel fixes at 100 on every architecture Linux
             // reports jiffies in. sysconf would be a libc call for a constant.
             hz: 100,
+            cores: std::thread::available_parallelism().map_or(1, |n| n.get() as u64),
         }
     }
 
@@ -281,9 +298,12 @@ impl Monitor {
         self.temps = temperatures();
 
         let procs = processes();
-        // A process is charged the jiffies it gained, as a share of one core, so
-        // a thread-hungry process can read over 100 the way top reports it.
-        let span = (elapsed.as_secs_f64() * self.hz as f64).max(1.0);
+        // A process is charged the jiffies it gained as a share of the whole machine,
+        // so the column adds up to what the CPU page reports and nothing reads over
+        // 100. `top` divides by one core instead, which is why a busy thread there
+        // says 100% on a machine that is one eighth busy.
+        let span =
+            (elapsed.as_secs_f64() * self.hz as f64 * self.cores as f64).max(1.0);
         let mut charged: Vec<(u32, String, i32, u64)> = procs
             .iter()
             .filter_map(|p| {
@@ -531,7 +551,7 @@ fn graph_page(m: &Monitor) -> (slint::Image, Vec<CanvasText>) {
 }
 
 /// Put the current page on screen.
-fn draw(ui: &AppWindow, m: &Monitor) {
+fn draw(ui: &AppWindow, m: &mut Monitor) {
     ui.set_buttons(ModelRc::new(VecModel::from(buttons(m.page))));
     ui.set_graph(m.page == Page::Graph);
     if m.page == Page::Graph {
@@ -546,14 +566,10 @@ fn draw(ui: &AppWindow, m: &Monitor) {
         Page::Procs => procs_rows(m),
         Page::Graph => unreachable!("the picture is drawn above"),
     };
-    // The body shows a window of the rows and scrolls it, so the selection is what
-    // decides where that window sits.
-    let selected = m.selected.min(rows.len().saturating_sub(1));
-    let offset = if rows.len() <= WINDOW {
-        0
-    } else {
-        selected.saturating_sub(WINDOW - 1).min(rows.len() - WINDOW)
-    };
+    // The body shows a window of the rows, and the keys move it directly.
+    m.rows_last = rows.len();
+    m.scroll = m.scroll.min(rows.len().saturating_sub(WINDOW));
+    let offset = m.scroll;
     ui.set_heading(title.into());
     ui.set_offset(offset as i32);
     ui.set_rows(ModelRc::new(VecModel::from(
@@ -563,10 +579,10 @@ fn draw(ui: &AppWindow, m: &Monitor) {
 
 fn main() -> Result<(), slint::PlatformError> {
     let ui = AppWindow::new()?;
-    let m = Monitor::new();
+    let mut m = Monitor::new();
     // The first reading has nothing to be a difference from, so a load cannot be
     // stated yet: the page fills in on the first tick.
-    draw(&ui, &m);
+    draw(&ui, &mut m);
 
     let mut status = StatusSource::new(Duration::from_secs(2));
     flipctl_app::apply_status!(&ui, PanelStatus, status.current());
@@ -584,7 +600,7 @@ fn main() -> Result<(), slint::PlatformError> {
         last = Instant::now();
         let mut m = watched.borrow_mut();
         m.tick(elapsed);
-        draw(&ui, &m);
+        draw(&ui, &mut m);
         if let Some(now) = status.poll() {
             flipctl_app::apply_status!(&ui, PanelStatus, now);
         }
@@ -621,16 +637,21 @@ fn main() -> Result<(), slint::PlatformError> {
             // on the D-pad.
             Key::Right => m.page = m.page.next(),
             Key::Left => m.page = m.page.previous(),
-            Key::Down => m.selected += 1,
-            Key::Up => m.selected = m.selected.saturating_sub(1),
+            Key::Down => {
+                // Bounded here as well as when drawing: a scroll that ran past the end
+                // made Up look dead for as many presses as it had overshot.
+                let last = m.rows_last.saturating_sub(WINDOW);
+                m.scroll = (m.scroll + 1).min(last);
+            }
+            Key::Up => m.scroll = m.scroll.saturating_sub(1),
             _ => return,
         }
-        // Each page has its own list, so a selection carried across would land
-        // somewhere arbitrary.
+        // Each page has its own list, so a scroll carried across would land somewhere
+        // arbitrary.
         if m.page != was {
-            m.selected = 0;
+            m.scroll = 0;
         }
-        draw(&ui, &m);
+        draw(&ui, &mut m);
     });
 
     ui.run()

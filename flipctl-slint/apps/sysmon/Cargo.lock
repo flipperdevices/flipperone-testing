@@ -3677,14 +3677,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
-name = "resmon-app"
-version = "0.1.0"
-dependencies = [
- "flipctl-app",
- "slint",
-]
-
-[[package]]
 name = "resvg"
 version = "0.47.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4355,6 +4347,14 @@ dependencies = [
  "libc",
  "wasm-bindgen",
  "web-sys",
+]
+
+[[package]]
+name = "sysmon-app"
+version = "0.1.0"
+dependencies = [
+ "flipctl-app",
+ "slint",
 ]
 
 [[package]]

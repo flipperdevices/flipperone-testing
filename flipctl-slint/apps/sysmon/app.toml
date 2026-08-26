@@ -1,7 +1,7 @@
-# Resources, drawing its own four pages.
+# The system monitor, drawing its own four pages.
 #
 # A Wayland client on the compositor flipctl runs. The rows and the graphs are
 # flipctl's own widgets, from the framework in crates/flipctl-app, so the app looks
 # like the device without anything passing between them.
-name = "Resources"
-wayland = "./target/release/resmon-app"
+name = "System Monitor"
+wayland = "./target/release/sysmon-app"

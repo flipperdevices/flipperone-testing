@@ -4,15 +4,10 @@
 [workspace]
 
 [package]
-name = "resmon-app"
+name = "sysmon-app"
 version = "0.1.0"
 edition = "2021"
 publish = false
-
-# Read by flipctl without building this crate, so the app can be listed and
-# offered a build before a binary exists.
-[package.metadata.flipctl]
-name = "Resources"
 
 # Everything read here comes out of /proc and /sys. What is not free is the
 # drawing: flipctl-app is the framework, and through it the widgets, the panel's
