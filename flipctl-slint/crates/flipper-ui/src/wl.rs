@@ -14,7 +14,7 @@
 
 use std::ffi::CString;
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::os::fd::{AsFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::PermissionsExt;
@@ -160,7 +160,19 @@ struct Frames {
     latest: Mutex<Option<(u64, Arc<Vec<u8>>)>>,
     want: Mutex<Want>,
     woken: Condvar,
+    /// Notified when a new frame has been published, so a caller can wait for one
+    /// rather than asking on a timer.
+    ready: Condvar,
     stop: AtomicBool,
+    /// How many captures in a row have been the same picture.
+    ///
+    /// An app that is not drawing still costs a compositor repaint and a copy per
+    /// capture, and the panel a full SPI transfer per commit, for pixels nobody can
+    /// tell apart. Measured on the device with an idle terminal in front: sway at 11%
+    /// of a core and the reader at 6%, against 2% each once the rate came down. So a
+    /// still frame is not published, and the count says how long it has been still,
+    /// which is what lets the caller slow the app's output down.
+    still: AtomicU64,
 }
 
 /// What the reader has been asked for. Continuous while an app is on the panel, one
@@ -632,9 +644,18 @@ impl Session {
         conn.roundtrip().map_err(io::Error::other)?;
         queue.roundtrip(&mut state).map_err(io::Error::other)?;
 
+        // `exec` where the command allows it, so the shell is replaced by the program
+        // rather than waiting on it. Two things depend on that: the pid we hold is the
+        // one that owns the window, which is what lets the compositor be told where to
+        // put it, and a signal reaches the program rather than its shell.
+        let line = if command.contains([';', '&', '|']) {
+            command.to_string()
+        } else {
+            format!("exec {command}")
+        };
         let mut cmd = Command::new("/bin/sh");
         cmd.arg("-c")
-            .arg(command)
+            .arg(&line)
             .current_dir(dir_of_app)
             .env("XDG_RUNTIME_DIR", host_dir)
             .env("WAYLAND_DISPLAY", display)
@@ -691,7 +712,9 @@ impl Session {
             latest: Mutex::new(None),
             want: Mutex::new(Want::default()),
             woken: Condvar::new(),
+            ready: Condvar::new(),
             stop: AtomicBool::new(false),
+            still: AtomicU64::new(0),
         });
         let reader = std::thread::Builder::new()
             .name("flipctl-capture".into())
@@ -712,9 +735,35 @@ impl Session {
         })
     }
 
-    /// True while the app is still running.    /// True while the app is still running.
+    /// True while the app is still running.
     pub fn alive(&mut self) -> bool {
         matches!(self.app.try_wait(), Ok(None))
+    }
+
+    /// Say that something is about to change, whatever the last few frames looked
+    /// like.
+    ///
+    /// A key going to the app is the clearest case: the redraw it causes is the frame
+    /// the user is waiting for, so the app has to be quick again before it draws rather
+    /// than a tenth of a second afterwards.
+    pub fn stir(&self) {
+        self.frames.still.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// How many captures in a row have drawn the same picture.
+    ///
+    /// Zero while the app is animating. It climbs while nothing changes, which is what
+    /// says the app's output can be slowed down: at 63Hz a still app costs a repaint
+    /// and a copy sixty times a second for nothing.
+    pub fn still(&self) -> u64 {
+        self.frames.still.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The process this session started, which is also the one that owns the window:
+    /// the command is `exec`ed, so no shell sits between them. It is how the
+    /// compositor is told which window belongs to which app.
+    pub fn pid(&self) -> u32 {
+        self.app.id()
     }
 
     /// Press or release one key, by evdev code.
@@ -743,6 +792,29 @@ impl Session {
             want.once = true;
         }
         self.frames.woken.notify_all();
+    }
+
+    /// Wait until there is a frame this session has not handed out, up to `timeout`.
+    ///
+    /// Does not take it: the caller waits here and reads it on its next turn, so the
+    /// frame is committed by the one piece of code that knows how. The alternative is
+    /// asking on a timer, which is what the loop used to do: a fixed sleep meant a
+    /// frame could sit for that long before reaching the panel, and an app drawing
+    /// nothing woke the loop anyway.
+    pub fn wait_ready(&self, timeout: Duration) -> bool {
+        let unseen = |held: &Option<(u64, Arc<Vec<u8>>)>| {
+            held.as_ref().is_some_and(|(gen, _)| *gen != self.seen)
+        };
+        let Ok(held) = self.frames.latest.lock() else {
+            return false;
+        };
+        if unseen(&held) {
+            return true;
+        }
+        match self.frames.ready.wait_timeout(held, timeout) {
+            Ok((held, _)) => unseen(&held),
+            Err(_) => false,
+        }
     }
 
     /// The newest frame, if it is one this session has not handed out before.
@@ -949,7 +1021,6 @@ fn read_frames(mut grab: Grab, frames: Arc<Frames>) {
         };
         match taken {
             Ok(true) => {
-                generation += 1;
                 // Is there a picture in it at all? Counted only when asked for, since
                 // it is a pass over the frame: FLIPCTL_FRAMELOG=1.
                 if std::env::var_os("FLIPCTL_FRAMELOG").is_some() && generation % 10 == 1 {
@@ -959,9 +1030,23 @@ fn read_frames(mut grab: Grab, frames: Arc<Frames>) {
                         next.len()
                     );
                 }
-                let frame = Arc::new(next);
+                let mut published = true;
                 if let Ok(mut latest) = frames.latest.lock() {
-                    *latest = Some((generation, frame));
+                    // The comparison is a 36KB memcmp, which is nothing beside the
+                    // conversion that produced the frame and the transfer it saves.
+                    let same = latest.as_ref().is_some_and(|(_, held)| ***held == next);
+                    if same {
+                        published = false;
+                    } else {
+                        generation += 1;
+                        *latest = Some((generation, Arc::new(std::mem::take(&mut next))));
+                    }
+                }
+                if published {
+                    frames.ready.notify_all();
+                    frames.still.store(0, Ordering::Relaxed);
+                } else {
+                    frames.still.fetch_add(1, Ordering::Relaxed);
                 }
             }
             Ok(false) => {}
@@ -981,9 +1066,9 @@ fn read_frames(mut grab: Grab, frames: Arc<Frames>) {
 /// of the television while the panel is what the user is looking at; pinning also means
 /// unplugging a display cannot silence the panel's apps.
 ///
-/// `FLIPCTL_SINK` overrides it, for a machine whose speaker is something else.
+/// `FLIPCTL_AUDIO_SINK` overrides it, for a machine whose speaker is something else.
 fn speaker() -> String {
-    std::env::var("FLIPCTL_SINK")
+    std::env::var("FLIPCTL_AUDIO_SINK")
         .unwrap_or_else(|_| "alsa_output.platform-sound.stereo-fallback".into())
 }
 

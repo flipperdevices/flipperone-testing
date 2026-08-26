@@ -34,6 +34,13 @@ use std::time::{Duration, Instant};
 pub enum Attention {
     /// On the panel: as fast as the panel can take frames.
     Front,
+    /// On the panel and not drawing. A still app still costs a repaint and a copy per
+    /// frame, and the panel a full SPI transfer per commit, for pixels nobody can tell
+    /// apart: measured on the device with an idle terminal in front, the compositor at
+    /// 11% of a core and the reader at 6%, against 2% each at this rate. Fast enough
+    /// that the frame after something moves is on the panel within a tenth of a
+    /// second, and by then the app is back at `Front`.
+    Calm,
     /// Being shown as a card in the deck: fresh enough to look alive.
     Card,
     /// Running, nobody watching.
@@ -44,10 +51,25 @@ impl Attention {
     const fn hz(self) -> u32 {
         match self {
             Self::Front => 63,
+            Self::Calm => 10,
             Self::Card => 10,
             Self::Idle => 1,
         }
     }
+}
+
+/// Whether there is a compositor to host apps in.
+///
+/// A PATH lookup, not a run: the answer decides whether the Apps entry is offered at
+/// all, which is asked while a menu is being drawn. Answered once and remembered,
+/// because sway does not appear halfway through a session.
+pub fn available() -> bool {
+    static FOUND: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FOUND.get_or_init(|| {
+        std::env::var_os("PATH").is_some_and(|path| {
+            std::env::split_paths(&path).any(|dir| dir.join("sway").is_file())
+        })
+    })
 }
 
 /// The compositor the apps live in.
@@ -256,6 +278,26 @@ impl Host {
             .into_iter()
             .find(|w| w.num == Some(i64::from(at.workspace)))
             .is_some_and(|w| !w.focus.is_empty()))
+    }
+
+    /// Put the window belonging to `pid` on its own workspace.
+    ///
+    /// Placement cannot rest on focus. `place` focuses the new workspace before the
+    /// app starts, but an app takes a moment to draw its first frame, sway destroys an
+    /// empty workspace the instant focus leaves it, and anything that touches another
+    /// output in that window (the refresh rate a card is throttled to, for one) moves
+    /// focus. The window then maps wherever focus landed: two apps on one output, one
+    /// of them capturing the other's picture and the other capturing nothing. That is
+    /// exactly what "the clock is black but I can see it in htop's tile" was.
+    ///
+    /// So the window is moved by name after the fact. Returns whether it matched: the
+    /// app may not have drawn yet, and the caller asks again until it has.
+    pub fn claim(&mut self, at: &Placement, pid: u32) -> io::Result<bool> {
+        let reply = self.send(
+            RUN_COMMAND,
+            &format!("[pid={pid}] move container to workspace {}", at.workspace),
+        )?;
+        Ok(!reply.contains("\"success\": false") && !reply.contains("\"success\":false"))
     }
 
     fn run(&mut self, command: &str) -> io::Result<()> {
