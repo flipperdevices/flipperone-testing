@@ -549,17 +549,20 @@ impl Converter {
 /// Open the render node and load the handful of GBM functions this needs.
 fn load_gbm() -> io::Result<Gbm> {
     // By path rather than by number: card and render node numbers move between
-    // kernels, which has already cost this project a blank panel once.
-    let node = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("/dev/dri/by-path/platform-27800000.gpu-render")
-        .or_else(|_| {
-            std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open("/dev/dri/renderD128")
-        })?;
+    // kernels, which has already cost this project a blank panel once. On any other
+    // machine that path does not exist, so `--render-node` names the node to use and
+    // renderD128 is the last resort.
+    let open = |path: &str| {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+    };
+    let node = match std::env::var("FLIPCTL_RENDER_NODE") {
+        Ok(named) => open(&named)?,
+        Err(_) => open("/dev/dri/by-path/platform-27800000.gpu-render")
+            .or_else(|_| open("/dev/dri/renderD128"))?,
+    };
     let lib = unsafe { libloading::Library::new("libgbm.so.1") }
         .map_err(|e| io::Error::other(format!("no libgbm: {e}")))?;
     let create_device: unsafe extern "C" fn(i32) -> *mut c_void =

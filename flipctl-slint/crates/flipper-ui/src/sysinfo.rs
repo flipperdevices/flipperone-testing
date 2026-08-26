@@ -438,9 +438,59 @@ fn link_mbps(iface: &str) -> Option<f32> {
     read_i64(format!("/sys/class/net/{iface}/speed")).map(|v| v as f32)
 }
 
+/// The modem NetworkManager can see, as a ModemManager index.
+///
+/// Asked rather than assumed: the old code read modem 0, which is the only modem on
+/// this board and the wrong one, or none at all, anywhere else. NetworkManager is
+/// asked first because it is the answer to "is there a modem at all" and costs one
+/// call; the index comes from ModemManager, which is the only place it exists.
+fn modem_index() -> Option<String> {
+    use std::sync::{Mutex, OnceLock};
+    static HELD: OnceLock<Mutex<Option<(std::time::Instant, Option<String>)>>> = OnceLock::new();
+    let held = HELD.get_or_init(|| Mutex::new(None));
+    if let Ok(slot) = held.lock() {
+        if let Some((at, found)) = slot.as_ref() {
+            if at.elapsed() < NM_FRESH {
+                return found.clone();
+            }
+        }
+    }
+    let found = read_modem_index();
+    if let Ok(mut slot) = held.lock() {
+        *slot = Some((std::time::Instant::now(), found.clone()));
+    }
+    found
+}
+
+/// Which modem ModemManager has, asked of NetworkManager first.
+///
+/// Two subprocesses, so it is remembered for as long as the rest of what only NM
+/// knows: a modem does not appear twice a second, and the page that shows one polls
+/// twice a second.
+fn read_modem_index() -> Option<String> {
+    let devices = output(&["nmcli", "-t", "-f", "DEVICE,TYPE", "device"])?;
+    let present = devices
+        .lines()
+        .filter_map(|l| l.split_once(':'))
+        .any(|(_, kind)| matches!(kind, "gsm" | "cdma" | "wwan"));
+    if !present {
+        return None;
+    }
+    // `mmcli -L` lists object paths; the trailing number is what -m takes.
+    let listed = output(&["mmcli", "-L"])?;
+    listed
+        .split_whitespace()
+        .find(|w| w.contains("/Modem/"))
+        .and_then(|path| path.rsplit('/').next())
+        .map(str::to_string)
+}
+
 pub fn modem(qmi_dev: &str) -> Modem {
     let mut m = Modem::default();
-    let Some(mm) = output(&["mmcli", "-m", "0", "-J"]) else {
+    let Some(index) = modem_index() else {
+        return m;
+    };
+    let Some(mm) = output(&["mmcli", "-m", &index, "-J"]) else {
         return m;
     };
     m.available = true;
@@ -615,13 +665,45 @@ pub struct Iface {
     pub mtu: Option<i64>,
 }
 
-/// The interfaces the Ethernet page shows, in the prototype's own order.
+/// The wired interfaces this machine actually has, in name order.
 ///
-/// `ETH_IFACES` there is a fixed list rather than a scan, because the page is
-/// about the two physical ports and the USB gadget specifically: a scan would also
-/// pull in wlan, the modem's wwan and any bridge, none of which belong on this
-/// screen. Absent interfaces are skipped.
-pub const ETH_IFACES: [&str; 3] = ["end0", "end1", "flipusb0"];
+/// Found rather than listed. The prototype names `end0`, `end1` and `flipusb0`
+/// outright, which is right for one board and wrong everywhere else: on a desktop
+/// the port is `ens18` or `enp3s0`, and a fixed list shows an empty page.
+///
+/// What is wanted is the hardware, and `is_hardware` is exactly that question.
+/// Wireless is left out because it has a page of its own, and the modem's wwan
+/// because it is not an ethernet port.
+pub fn eth_ifaces() -> Vec<String> {
+    let mut names: Vec<String> = hardware_ifaces()
+        .into_iter()
+        .filter(|name| {
+            !Path::new(&format!("/sys/class/net/{name}/wireless")).is_dir()
+                && !name.starts_with("wwan")
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// Every interface with hardware behind it, in name order.
+///
+/// `/sys/class/net/<name>/device` is the test: a bridge, a veth, a docker interface,
+/// a VPN tun and loopback have no device, and a real port does. The idle screen and
+/// the Ethernet page both start here, so neither can drift into listing a machine's
+/// container plumbing as its network.
+pub fn hardware_ifaces() -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir("/sys/class/net") else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.path().join("device").exists())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    names.sort();
+    names
+}
 
 /// Display name, from `ifaceDisplayName`: `end0` reads as ETH0 and the USB gadget
 /// as USB ETH, because "flipusb0" means nothing to a person holding the device.
@@ -708,27 +790,62 @@ fn nmcli_device(name: &str) -> Option<(String, Vec<String>, Vec<String>, String,
     Some((state, v4, v6, gw4, dns))
 }
 
-pub fn ethernet() -> Vec<Iface> {
-    let methods = ipv4_methods();
-    let mut out = Vec::new();
-    for name in ETH_IFACES {
-        let dir = format!("/sys/class/net/{name}");
-        if !Path::new(&dir).exists() {
-            continue;
+/// What only NetworkManager knows, kept for a while.
+///
+/// The method, the gateway and the resolvers come from NM, and every question costs a
+/// process that NM and dbus answer: the Ethernet page polls twice a second, and with
+/// two interfaces and two connections that was five `nmcli` runs every two seconds,
+/// measured on the device as 8% of a core in NetworkManager and 9% in dbus.
+///
+/// None of those three changes on the timescale the page redraws at, so they are asked
+/// for at most this often and remembered in between. Everything else on that page is
+/// read from the kernel every tick, so addresses, counters and carrier stay live.
+const NM_FRESH: std::time::Duration = std::time::Duration::from_secs(10);
+
+type NmFacts = std::collections::HashMap<String, (String, String, Vec<String>)>;
+
+fn nm_facts() -> NmFacts {
+    use std::sync::{Mutex, OnceLock};
+    static HELD: OnceLock<Mutex<Option<(std::time::Instant, NmFacts)>>> = OnceLock::new();
+    let held = HELD.get_or_init(|| Mutex::new(None));
+    let Ok(mut slot) = held.lock() else {
+        return NmFacts::new();
+    };
+    if let Some((at, facts)) = slot.as_ref() {
+        if at.elapsed() < NM_FRESH {
+            return facts.clone();
         }
+    }
+    let methods = ipv4_methods();
+    let mut facts = NmFacts::new();
+    for name in eth_ifaces() {
+        let (_, _, _, gateway, dns) = nmcli_device(&name).unwrap_or_default();
+        let method = methods
+            .iter()
+            .find(|(dev, _)| *dev == name)
+            .map(|(_, m)| m.clone())
+            .unwrap_or_default();
+        facts.insert(name, (method, gateway, dns));
+    }
+    *slot = Some((std::time::Instant::now(), facts.clone()));
+    facts
+}
+
+pub fn ethernet() -> Vec<Iface> {
+    let facts = nm_facts();
+    let mut out = Vec::new();
+    for name in eth_ifaces() {
+        let name = name.as_str();
+        let dir = format!("/sys/class/net/{name}");
         // carrier is 1 only with a live link. operstate alone says "up" for a
         // configured-but-unplugged port.
         let connected = read_i64(format!("{dir}/carrier")) == Some(1);
-        let (_, mut ipv4, mut ipv6, gateway, dns) =
-            nmcli_device(name).unwrap_or_default();
-        // NetworkManager leaves an unmanaged interface out, which is the normal
-        // state for the USB gadget, so fall back to asking the kernel directly.
-        if ipv4.is_empty() {
-            ipv4 = crate::status::ipv4_all(name);
-        }
-        if ipv6.is_empty() {
-            ipv6 = crate::status::ipv6_all(name);
-        }
+        // Addresses from the kernel rather than from NM: they are the same addresses,
+        // they cost nothing to read, and an unmanaged interface has them either way,
+        // which is the normal state for the USB gadget.
+        let ipv4 = crate::status::ipv4_all(name);
+        let ipv6 = crate::status::ipv6_all(name);
+        let (method, gateway, dns) = facts.get(name).cloned().unwrap_or_default();
         out.push(Iface {
             connected,
             speed: connected.then(|| read_i64(format!("{dir}/speed"))).flatten(),
@@ -736,11 +853,7 @@ pub fn ethernet() -> Vec<Iface> {
             tx_bytes: read_i64(format!("{dir}/statistics/tx_bytes")).unwrap_or(0) as u64,
             ipv4,
             ipv6,
-            method: methods
-                .iter()
-                .find(|(dev, _)| dev == name)
-                .map(|(_, m)| m.clone())
-                .unwrap_or_default(),
+            method,
             gateway,
             dns,
             mac: read_str(format!("{dir}/address")).unwrap_or_default(),

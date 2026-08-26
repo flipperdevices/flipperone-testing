@@ -139,9 +139,14 @@ export component StatusBar inherits Rectangle {
     // Both are raised relative to the rest of the bar, as the prototype has them:
     // the glyph by 1px so its optical centre matches the bar's midline, and the
     // text by 2px so it sits level with the glyph.
+    //
+    // Nothing at all when there is no battery: a machine running on the mains has
+    // none to report, and an empty glyph beside "--%" reads as a flat pack rather
+    // than as an absent one. `battery` is negative when nothing was found.
     property <length> battery_x: root.width - 2px - 16px;
+    property <bool> has_battery: root.battery >= 0;
 
-    battery_text := Text {
+    if root.has_battery: Text {
     // Slint's `Text.width` is the sum of glyph advances. The prototype's
     // `textWidth()` returns that sum minus one, because the last glyph's trailing
     // spacing column carries no ink and should not push the text away from the
@@ -149,12 +154,12 @@ export component StatusBar inherits Rectangle {
     // subtracts 1px here.
         x: root.battery_x - 1px - (self.width - 1px);
         y: root.top - 2px;
-        text: root.battery >= 0 ? root.battery + "%" : "--%";
+        text: root.battery + "%";
         font-size: 16px;
         color: root.ink;
     }
 
-    Image {
+    if root.has_battery: Image {
         x: root.battery_x;
         y: root.top - 1px;
         width: 16px;
@@ -164,7 +169,7 @@ export component StatusBar inherits Rectangle {
     }
 
     // Charge level, drawn inside the glyph: 10px of travel starting 2px in.
-    Rectangle {
+    if root.has_battery: Rectangle {
         x: root.battery_x + 2px;
         y: root.top + 1px;
         width: Math.round(10 * Math.max(0, root.battery) / 100) * 1px;
@@ -174,7 +179,7 @@ export component StatusBar inherits Rectangle {
 
     // Three-tone bolt, flush with the glyph's top-left. Not colorized: dark stays
     // dark and light stays light so the battery shows through around it.
-    if root.charging: Image {
+    if root.has_battery && root.charging: Image {
         x: root.battery_x;
         y: root.top - 1px;
         width: 16px;

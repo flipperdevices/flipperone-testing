@@ -42,6 +42,25 @@ fn sudo(args: &[&str]) -> Option<String> {
     String::from_utf8(out.stdout).ok()
 }
 
+/// Whether this machine has a boot menu at all.
+///
+/// `list-profiles` is the Flipper's own helper; a machine without it has no btrfs
+/// profiles to boot into, so the menu entry and the idle screen's profile line are
+/// hidden rather than shown empty.
+///
+/// A PATH lookup, not a run: answering by executing the helper would cost a process
+/// and a sudo prompt on every screen that asks. Answered once and remembered, because
+/// a helper does not appear halfway through a session and the caller asks per frame.
+pub fn available() -> bool {
+    static FOUND: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FOUND.get_or_init(|| {
+        let Some(path) = std::env::var_os("PATH") else {
+            return false;
+        };
+        std::env::split_paths(&path).any(|dir| dir.join("list-profiles").is_file())
+    })
+}
+
 /// The bootable profiles, in the order `list-profiles` reports them.
 ///
 /// Columns are positional and separated by runs of two or more spaces:
@@ -54,6 +73,9 @@ fn sudo(args: &[&str]) -> Option<String> {
 /// which is why the offset is computed rather than fixed. Anything that is not a
 /// `profile` is skipped: `_old` backups are leftovers, not somewhere to boot.
 pub fn profiles() -> Vec<Profile> {
+    if !available() {
+        return Vec::new();
+    }
     // The marker is a subvolume id. Absent or unparseable means nothing is marked.
     let marked = sudo(&["flipmeta", "get", "boot"])
         .map(|s| s.trim().to_string())

@@ -191,20 +191,22 @@ fn wifi_quality(iface: &str) -> i32 {
 /// A real link wins over the USB gadget: if both are up the bar should say there
 /// is a network, not just a back channel.
 fn read_ethernet() -> Ethernet {
-    let Ok(entries) = std::fs::read_dir("/sys/class/net") else {
-        return Ethernet::Down;
-    };
     let mut usb = false;
-    for entry in entries.flatten() {
-        let dir = entry.path();
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name == "lo" || dir.join("wireless").is_dir() {
+    // Hardware only, the same test the Ethernet page and the idle screen use: a docker
+    // bridge, a VPN tun or a wireguard interface all carry, and none of them is a cable
+    // in a socket.
+    for name in crate::sysinfo::hardware_ifaces() {
+        let dir = std::path::Path::new("/sys/class/net").join(&name);
+        if dir.join("wireless").is_dir() {
             continue;
         }
         if read(dir.join("carrier")).as_deref() != Some("1") {
             continue;
         }
-        if name.starts_with("flipusb") || name.starts_with("usb") {
+        // A gadget rather than a port: this machine is the USB device, so the link
+        // goes to whatever it is plugged into. Asked of the interface rather than
+        // guessed from its name, which read a PC's USB dongle as a gadget.
+        if is_gadget(&name) {
             usb = true;
         } else {
             return Ethernet::Real;
@@ -215,6 +217,18 @@ fn read_ethernet() -> Ethernet {
     } else {
         Ethernet::Down
     }
+}
+
+/// Whether `name` is a USB gadget interface: this machine acting as a USB device.
+///
+/// The gadget's netdev hangs off the UDC's gadget device, so the resolved
+/// `/sys/class/net/<name>/device` path passes through a gadget node. A USB ethernet
+/// adapter plugged into a host resolves under a usb device instead, which is why the
+/// name is no help: both are called `usb0` about half the time.
+fn is_gadget(name: &str) -> bool {
+    std::fs::canonicalize(format!("/sys/class/net/{name}/device"))
+        .map(|path| path.to_string_lossy().contains("/gadget"))
+        .unwrap_or(false)
 }
 
 /// Whether a cellular modem exists at all.
@@ -407,41 +421,36 @@ fn booted_profile() -> String {
 /// shelling out to `ip`, which a UI process has no business doing.
 fn links() -> Vec<Link> {
     let mut out: Vec<Link> = Vec::new();
-
-    let Ok(entries) = std::fs::read_dir("/sys/class/net") else {
-        return out;
-    };
-    let mut names: Vec<String> = entries
-        .flatten()
-        .filter(|e| {
-            let dir = e.path();
-            let name = e.file_name().to_string_lossy().to_string();
-            name != "lo" && read(dir.join("carrier")).as_deref() == Some("1")
-        })
-        .map(|e| e.file_name().to_string_lossy().to_string())
-        .collect();
-    names.sort();
-
-    // Cards are labelled by role, not by kernel name: desktop.js shows ETH0, ETH1
-    // and WIFI, which stay stable across the udev-style names this board hands out
-    // (end0, wlxb06b11673af2).
     let v6 = ipv6_by_interface();
-    let mut eth = 0;
-    for name in names {
-        let wireless = std::path::Path::new("/sys/class/net")
-            .join(&name)
-            .join("wireless")
-            .is_dir();
-        let label = if wireless {
+    // The same interfaces the Ethernet page lists, plus wireless: hardware with a
+    // live link. A machine's bridges, veths and VPN tunnels are not its network, and
+    // a port with no address of its own has nothing to say on a screen that exists to
+    // show addresses.
+    for name in crate::sysinfo::hardware_ifaces() {
+        let dir = std::path::Path::new("/sys/class/net").join(&name);
+        if read(dir.join("carrier")).as_deref() != Some("1") {
+            continue;
+        }
+        let v4 = ipv4_all(&name);
+        if v4.is_empty() {
+            continue;
+        }
+        // Labelled from the port's own name, by the same function the Ethernet page
+        // uses, so the two screens agree about which port is which: end0 is ETH0 on
+        // both and the gadget is USB ETH on both. Numbering the rows here instead
+        // renamed every port below one that had no address yet, so a machine whose
+        // first socket was empty called its second one ETH0.
+        //
+        // Wireless is the exception, because its name carries nothing a person can
+        // use: wlxb06b11673af2 is one card, and what matters is that it is the wifi.
+        let label = if dir.join("wireless").is_dir() {
             "WIFI".to_string()
         } else {
-            let l = format!("ETH{eth}");
-            eth += 1;
-            l
+            crate::sysinfo::iface_display_name(&name)
         };
         out.push(Link {
             name: label,
-            v4: ipv4(&name).unwrap_or_default(),
+            v4: v4.first().cloned().unwrap_or_default(),
             v6: v6.get(&name).cloned().unwrap_or_default(),
         });
     }
@@ -490,11 +499,6 @@ pub fn ipv6_all(want: &str) -> Vec<String> {
         .filter(|(iface, _)| iface == want)
         .map(|(_, addr)| addr)
         .collect()
-}
-
-/// IPv4 for one interface, via `getifaddrs`. The first, for callers that show one.
-fn ipv4(want: &str) -> Option<String> {
-    ipv4_all(want).into_iter().next()
 }
 
 /// Every IPv4 address on one interface, via `getifaddrs`.

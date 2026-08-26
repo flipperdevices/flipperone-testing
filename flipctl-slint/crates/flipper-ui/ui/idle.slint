@@ -157,10 +157,24 @@ export component IdleBody inherits Rectangle {
     in property <string> hostname;
     in property <string> profile;
     in property <[IdleLink]> links;
+    // Whether this machine has profiles at all. Without them the row and the rule
+    // under it are not drawn and everything below moves up: an empty "Profile:" is
+    // a line that says nothing.
+    in property <bool> has_profile: true;
+    // First link shown. There is room for two or three cards and a machine can have
+    // more interfaces than that, so the list scrolls.
+    in property <int> link_scroll;
     in property <[string]> buttons;
     in property <int> pressed_slot: -1;
 
     property <length> bar: FlipperTheme.status_bar_h;
+    // What the missing profile row leaves behind: the same 14px the rules are spaced
+    // by, so the hostname lands where the profile was.
+    property <length> lift: root.has_profile ? 0px : 14px;
+    property <length> links_y: root.bar + 65px - root.lift;
+    // How many cards fit between the last rule and the soft buttons, from the
+    // geometry rather than from a count kept in step by hand.
+    out property <int> link_rows: Math.max(1, Math.floor((root.height - FlipperTheme.button_h - root.links_y) / 26px));
 
     StatusBar {
         x: 0; y: 0;
@@ -180,24 +194,29 @@ export component IdleBody inherits Rectangle {
         x: 0; y: root.bar + 34px; width: parent.width; height: 1px;
         background: FlipperTheme.divider;
     }
-    Rectangle {
+    if root.has_profile: Rectangle {
         x: 0; y: root.bar + 48px; width: parent.width; height: 1px;
         background: FlipperTheme.divider;
     }
     Rectangle {
-        x: 0; y: root.bar + 62px; width: parent.width; height: 1px;
+        x: 0; y: root.bar + 62px - root.lift; width: parent.width; height: 1px;
         background: FlipperTheme.divider;
     }
 
     // Battery temperature: label at x57, glyph at x36. The glyph is 9x16 and sits
     // 14px below the bar; the CPU and power glyphs sit one pixel lower so all
     // three bottom-align.
+    //
+    // The glyph goes with the battery. A machine on the mains has none to read, and a
+    // battery drawn beside no number reads as a pack at zero rather than as an absent
+    // one; the CPU keeps its own reading either way, so the label stays.
+    property <bool> has_battery: root.battery >= 0;
     Text {
         x: FlipperTheme.temp_label_x; y: root.bar + 3px;
         text: "Temperature";
         color: FlipperTheme.field_label;
     }
-    Image {
+    if root.has_battery: Image {
         x: FlipperTheme.battery_icon_x; y: root.bar + 14px; width: 9px; height: 16px;
         source: @image-url("../assets/icons/battery_vertical.png");
         colorize: FlipperTheme.black;
@@ -210,7 +229,7 @@ export component IdleBody inherits Rectangle {
     // numbers one pixel apart. The icons bottom-align, so the offset reads as a
     // misalignment rather than as intent. Both readings sit level here: +4 against
     // the battery icon and +3 against the CPU's puts both cap rows on 33..39.
-    Reading {
+    if root.has_battery: Reading {
         x: FlipperTheme.battery_icon_x + 9px + FlipperTheme.readout_gap;
         y: root.bar + 14px + 4px;
         tenths: root.battery_temp;
@@ -263,26 +282,28 @@ export component IdleBody inherits Rectangle {
     }
 
     // Profile and hostname rows, each a centred label/value pair.
-    CentredPair {
+    if root.has_profile: CentredPair {
         x: 0; y: root.bar + 36px; width: parent.width;
         label: "Profile:";
         value: root.profile;
     }
     CentredPair {
-        x: 0; y: root.bar + 49px; width: parent.width;
+        x: 0; y: root.bar + 49px - root.lift; width: parent.width;
         label: "Hostname:";
         value: root.hostname;
         label_dy: 1px;
         value_dy: 1px;
     }
 
-    // One card per link, two lines each.
+    // One card per link, two lines each. Only the window that fits is drawn, and
+    // the keys move it.
     for link[i] in root.links: Rectangle {
         x: 0;
-        y: root.bar + 65px + i * 26px;
+        y: root.links_y + (i - root.link_scroll) * 26px;
         width: parent.width;
         height: 24px;
         background: transparent;
+        visible: i >= root.link_scroll && i < root.link_scroll + root.link_rows;
         EthLine {
             x: 0; y: 0; width: parent.width;
             name: link.name;
