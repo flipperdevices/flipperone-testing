@@ -1,3 +1,7 @@
+# No [Install] on purpose. The image links this unit in so flipctl's Testing row can hand
+# the panel over on request, and nothing else should start it. A unit carrying an [Install]
+# section is enabled by the preset pass systemd makes on a profile's first boot, and this
+# one then took port 8899 before flipctl could bind its own browser view.
 [Unit]
 Description=fake-flipctl Node.js HTTP server (port 8899, serves web UI and JSON APIs)
 After=network.target
@@ -8,6 +12,3 @@ ExecStart=/usr/bin/node server.js
 WorkingDirectory=/flipperone-testing/active-flipctl
 Restart=on-failure
 RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
