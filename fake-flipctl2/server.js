@@ -723,6 +723,19 @@ var UPDATE_REPO = '/flipperone-testing';
 // the checkout's owner (root-owned tree, non-root node process).
 var GIT_CMD = 'git -c safe.directory=' + UPDATE_REPO + ' -C ' + UPDATE_REPO;
 
+// Make git fsync everything it writes (objects, refs, index) — the
+// device runs on btrfs and gets its power cut right after updates,
+// which is how 0-byte loose objects appeared. Idempotent, best-effort,
+// Linux only (the repo path exists nowhere else).
+if (process.platform === 'linux') {
+    try {
+        execSync(GIT_CMD + ' config core.fsync all', { timeout: 5000, stdio: 'ignore' });
+        execSync(GIT_CMD + ' config core.fsyncMethod fsync', { timeout: 5000, stdio: 'ignore' });
+    } catch (e) {
+        console.log('[update] could not set core.fsync: ' + e.message);
+    }
+}
+
 // Branch the working tree has checked out. '' on detached HEAD or
 // when git itself fails (missing repo, permissions).
 function currentBranch() {
@@ -753,24 +766,114 @@ function isSaneBranchName(b) {
 // for BRANCH_CACHE_MS; offline we fall back to the refs already on
 // disk (local heads + remote-tracking) and don't cache, so the next
 // call retries the network.
+// One point of truth for why a git command failed. `code` drives
+// decisions (repair / retry / hint), `text` is what the 256-px screen
+// shows (update.js trims it to 244 px). Everything the user sees used
+// to be a blanket 'No internet' — a damaged repo, a lock, a timeout
+// and a real outage all looked the same.
+function classifyGitError(e) {
+    var msg = ((e && (e.stderr || e.stdout || e.message)) || '').toString();
+    var m = msg.toLowerCase();
+    if (/object file .* is empty|unpack-objects failed|corrupt|failed to read delta-pack base|bad object|loose object .* is corrupt|index-pack failed/.test(m)) {
+        return { code: 'repo-corrupt', text: 'Repo damaged', detail: lastLine(msg) };
+    }
+    if (/could not resolve host|failed to connect|unable to access|network is unreachable|connection timed out|operation timed out|could not read from remote|ssl_|gnutls|temporary failure in name resolution/.test(m)) {
+        return { code: 'no-internet', text: 'No internet', detail: lastLine(msg) };
+    }
+    if (/insufficient permission|permission denied|unable to create .*lock|\.lock': file exists/.test(m)) {
+        return { code: 'permission', text: 'Repo locked or read-only', detail: lastLine(msg) };
+    }
+    if (e && (e.signal === 'SIGTERM' || e.killed)) {
+        return { code: 'timeout', text: 'Timeout', detail: lastLine(msg) };
+    }
+    var first = msg.split('\n').map(function(l) { return l.trim(); }).filter(Boolean)[0] || 'git failed';
+    return { code: 'other', text: first.replace(/^(fatal|error):\s*/i, '').substring(0, 60), detail: lastLine(msg) };
+}
+function lastLine(msg) {
+    var lines = String(msg || '').split('\n').map(function(l) { return l.trim(); }).filter(Boolean);
+    return lines.length ? lines[lines.length - 1].substring(0, 200) : '';
+}
+
+// Auto-repair for the one kind of damage a reboot leaves behind: a
+// fetch/pull was writing loose objects, the box lost power before
+// btrfs flushed them, and .git/objects/??/ now holds 0-byte files. A
+// valid zlib object is never empty, so deleting them is safe — git
+// re-downloads whatever is missing on the next fetch. Only 2-hex
+// object directories are touched (never pack/, info/ or the working
+// tree); stale *.lock files older than 10 min are the same story.
+// Anything else (truncated packs, a broken index) is left for a human.
+function repairEmptyObjects() {
+    var objDir = path.join(UPDATE_REPO, '.git', 'objects');
+    var removed = 0;
+    var dirs;
+    try { dirs = fs.readdirSync(objDir); } catch (e) { return 0; }
+    dirs.forEach(function(d) {
+        if (!/^[0-9a-f]{2}$/.test(d)) return;
+        var full = path.join(objDir, d);
+        var files;
+        try { files = fs.readdirSync(full); } catch (e) { return; }
+        files.forEach(function(f) {
+            var p = path.join(full, f);
+            try {
+                var st = fs.statSync(p);
+                if (st.isFile() && st.size === 0) { fs.unlinkSync(p); removed++; }
+            } catch (e) {}
+        });
+    });
+    ['index.lock', 'HEAD.lock', 'FETCH_HEAD.lock', 'ORIG_HEAD.lock'].forEach(function(l) {
+        var p = path.join(UPDATE_REPO, '.git', l);
+        try {
+            var st = fs.statSync(p);
+            if (Date.now() - st.mtimeMs > 10 * 60 * 1000) { fs.unlinkSync(p); removed++; }
+        } catch (e) {}
+    });
+    if (removed) logUpdate('repair: removed ' + removed + ' empty object/lock file(s)');
+    return removed;
+}
+
+// `git fetch origin +<br>:refs/remotes/origin/<br>` with one built-in
+// retry: if the failure classifies as repo damage and the repair
+// removed something, fetch again. Returns { ok, error, errorCode,
+// detail, output }. Explicit refspec because the device clone is
+// single-branch (no default mapping for other branches).
+function fetchBranch(br, timeoutMs) {
+    var cmd = GIT_CMD + ' fetch origin +' + br + ':refs/remotes/origin/' + br + ' 2>&1';
+    for (var attempt = 0; attempt < 2; attempt++) {
+        try {
+            var out = execSync(cmd, { encoding: 'utf8', timeout: timeoutMs || 15000 });
+            return { ok: true, error: null, errorCode: null, detail: '', output: out };
+        } catch (e) {
+            var c = classifyGitError(e);
+            logUpdate('fetch ' + br + ' failed (' + c.code + '): ' + c.detail);
+            if (attempt === 0 && c.code === 'repo-corrupt' && repairEmptyObjects() > 0) continue;
+            return { ok: false, error: c.text, errorCode: c.code, detail: c.detail, output: '' };
+        }
+    }
+    return { ok: false, error: 'git failed', errorCode: 'other', detail: '', output: '' };
+}
+
 var BRANCH_CACHE_MS = 60000;
 var _branchCache = { at: 0, list: null };
 function listBranches(force) {
     var now = Date.now();
     if (!force && _branchCache.list && (now - _branchCache.at) < BRANCH_CACHE_MS) {
-        return { branches: _branchCache.list, source: 'remote', error: null };
+        return { branches: _branchCache.list, source: 'remote', error: null, errorCode: null };
     }
-    var list = null, source = null, error = null;
+    var list = null, source = null, error = null, errorCode = null;
     try {
+        // stderr is piped (not dropped) so a failure can be classified.
         var out = execSync(GIT_CMD + ' ls-remote --heads origin',
-            { encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'pipe', 'ignore'] });
+            { encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'pipe', 'pipe'] });
         list = out.split('\n').map(function(l) {
             var m = l.match(/\trefs\/heads\/(.+)$/);
             return m ? m[1].trim() : null;
         }).filter(Boolean);
         source = 'remote';
     } catch (e) {
-        error = 'No internet';
+        var lsErr = classifyGitError(e);
+        error = lsErr.text;
+        errorCode = lsErr.code;
+        logUpdate('ls-remote failed (' + lsErr.code + '): ' + lsErr.detail);
     }
     if (!list || !list.length) {
         try {
@@ -788,7 +891,11 @@ function listBranches(force) {
             source = 'local';
         } catch (e2) {
             list = [];
-            error = error || 'Cannot read local repo';
+            if (!error) {
+                var locErr = classifyGitError(e2);
+                error = 'Cannot read local repo';
+                errorCode = locErr.code;
+            }
         }
     }
     // The checked-out branch is always offered, even if origin no
@@ -803,7 +910,7 @@ function listBranches(force) {
     if (source === 'remote') {
         _branchCache = { at: now, list: list };
     }
-    return { branches: list, source: source, error: error };
+    return { branches: list, source: source, error: error, errorCode: errorCode };
 }
 
 // A branch the update endpoints may act on: well-formed AND known to
@@ -820,35 +927,44 @@ function isValidBranch(b) {
 function getUpdateStatus(targetBranch) {
     var branch = targetBranch || currentBranch();
     var result = { available: false, currentCommit: null, commits: [],
-                   error: null, branch: currentBranch(), target: branch };
+                   error: null, errorCode: null, detail: '',
+                   branch: currentBranch(), target: branch };
     try {
-        result.currentCommit = execSync(GIT_CMD + ' log --oneline -1', { encoding: 'utf8', timeout: 5000 }).trim();
+        result.currentCommit = execSync(GIT_CMD + ' log --oneline -1',
+            { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
     } catch (e) {
-        result.error = 'Cannot read local repo';
+        var logErr = classifyGitError(e);
+        result.error     = 'Cannot read local repo';
+        result.errorCode = logErr.code;
+        result.detail    = logErr.detail;
         return result;
     }
     if (!branch) {
-        result.error = 'Detached HEAD';
+        result.error     = 'Detached HEAD';
+        result.errorCode = 'other';
+        return result;
+    }
+    // Fetch (with the built-in repair-and-retry) so the comparison
+    // below has a fresh remote-tracking ref to work against.
+    var f = fetchBranch(branch, 15000);
+    if (!f.ok) {
+        result.error     = f.error;
+        result.errorCode = f.errorCode;
+        result.detail    = f.detail;
         return result;
     }
     try {
-        // Explicit refspec: single-branch clones have no default
-        // fetch mapping for extra branches, and the comparison
-        // below needs the remote-tracking ref to exist.
-        execSync(GIT_CMD + ' fetch origin +' + branch
-            + ':refs/remotes/origin/' + branch + ' 2>&1', { encoding: 'utf8', timeout: 15000 });
-    } catch (e) {
-        result.error = 'No internet';
-        return result;
-    }
-    try {
-        var log = execSync(GIT_CMD + ' log --oneline HEAD..origin/' + branch, { encoding: 'utf8', timeout: 5000 }).trim();
+        var log = execSync(GIT_CMD + ' log --oneline HEAD..origin/' + branch,
+            { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
         if (log) {
             result.available = true;
             result.commits = log.split('\n');
         }
     } catch (e) {
-        result.error = 'Cannot compare branches';
+        var cmpErr = classifyGitError(e);
+        result.error     = 'Cannot compare branches';
+        result.errorCode = cmpErr.code;
+        result.detail    = cmpErr.detail;
     }
     return result;
 }
@@ -863,22 +979,27 @@ function logUpdate(msg) {
 // branch; -f drops stray local edits). Used by /api/update/apply
 // when the picker targets a branch other than the checked-out one.
 function doSwitch(br) {
-    var result = { success: false, error: null };
+    var result = { success: false, error: null, errorCode: null, detail: '' };
     logUpdate('Switching branch to ' + br);
+    // Cheap preventive sweep (a few hundred stats) before touching git.
+    repairEmptyObjects();
+    var f = fetchBranch(br, 30000);
+    if (!f.ok) {
+        result.error = f.error; result.errorCode = f.errorCode; result.detail = f.detail;
+        return result;
+    }
+    logUpdate('fetch: ' + f.output.trim().slice(-200));
     try {
-        var o1 = execSync(GIT_CMD + ' fetch origin +' + br
-            + ':refs/remotes/origin/' + br + ' 2>&1',
-            { encoding: 'utf8', timeout: 30000 });
-        logUpdate('fetch: ' + o1.trim().slice(-200));
         var o2 = execSync(GIT_CMD + ' checkout -f -B ' + br
             + ' refs/remotes/origin/' + br + ' 2>&1',
             { encoding: 'utf8', timeout: 15000 });
         logUpdate('checkout: ' + o2.trim().slice(-200));
         result.success = true;
     } catch (e) {
+        var c = classifyGitError(e);
         var msg = (e.stderr || e.stdout || e.message || 'Unknown error').toString();
-        logUpdate('switch failed: ' + msg.slice(-300));
-        result.error = msg.slice(-300);
+        logUpdate('switch failed (' + c.code + '): ' + msg.slice(-300));
+        result.error = c.text; result.errorCode = c.code; result.detail = c.detail;
     }
     return result;
 }
@@ -887,15 +1008,18 @@ function doSwitch(br) {
 // work — `reset --hard` + `clean -fd` throw away every uncommitted
 // change and untracked file in the repo before pulling.
 function doUpdate() {
-    var result = { success: false, error: null };
+    var result = { success: false, error: null, errorCode: null, detail: '' };
     logUpdate('Starting update');
+    // Cheap preventive sweep (a few hundred stats) before touching git.
+    repairEmptyObjects();
     try {
         logUpdate('git reset --hard HEAD');
         var r1 = execSync(GIT_CMD + ' reset --hard HEAD 2>&1', { encoding: 'utf8', timeout: 5000 });
         logUpdate('reset: ' + r1.trim());
     } catch (e) {
-        logUpdate('reset failed: ' + e.message);
-        result.error = 'reset failed';
+        var resetErr = classifyGitError(e);
+        logUpdate('reset failed (' + resetErr.code + '): ' + e.message);
+        result.error = 'reset failed'; result.errorCode = resetErr.code; result.detail = resetErr.detail;
         return result;
     }
     try {
@@ -905,17 +1029,25 @@ function doUpdate() {
     } catch (e) {
         logUpdate('clean failed: ' + e.message);
     }
-    try {
-        var upBranch = currentBranch();
-        logUpdate('git pull origin ' + upBranch);
-        var r3 = execSync(GIT_CMD + ' pull origin ' + upBranch + ' 2>&1', { encoding: 'utf8', timeout: 30000 });
-        logUpdate('pull: ' + r3.trim());
-        result.success = true;
-    } catch (e) {
-        var msg = (e.stderr || e.stdout || e.message || 'Unknown error').toString();
-        var lines = msg.split('\n').filter(function(l) { return l.trim(); });
-        result.error = (lines[0] || 'Unknown error').substring(0, 120);
-        logUpdate('pull failed: ' + msg);
+    var upBranch = currentBranch();
+    // One retry when the pull trips over repo damage that the repair
+    // sweep can fix (0-byte loose objects left by a power cut).
+    for (var attempt = 0; attempt < 2; attempt++) {
+        try {
+            logUpdate('git pull origin ' + upBranch);
+            var r3 = execSync(GIT_CMD + ' pull origin ' + upBranch + ' 2>&1', { encoding: 'utf8', timeout: 30000 });
+            logUpdate('pull: ' + r3.trim());
+            result.success = true;
+            result.error = null; result.errorCode = null; result.detail = '';
+            break;
+        } catch (e) {
+            var c = classifyGitError(e);
+            var msg = (e.stderr || e.stdout || e.message || 'Unknown error').toString();
+            logUpdate('pull failed (' + c.code + '): ' + msg);
+            result.error = c.text; result.errorCode = c.code; result.detail = c.detail;
+            if (attempt === 0 && c.code === 'repo-corrupt' && repairEmptyObjects() > 0) continue;
+            break;
+        }
     }
     logUpdate('Done, success=' + result.success);
     return result;
@@ -4322,7 +4454,8 @@ var server = http.createServer(function(req, res) {
         var brList  = listBranches(brForce);
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify({ branches: brList.branches, current: currentBranch(),
-                                 source: brList.source, error: brList.error }));
+                                 source: brList.source, error: brList.error,
+                                 errorCode: brList.errorCode || null }));
         return;
     }
     if (req.url.split('?')[0] === '/api/update/check' && req.method === 'GET') {
@@ -4337,6 +4470,24 @@ var server = http.createServer(function(req, res) {
         var update = getUpdateStatus(chkBranch);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(update));
+        return;
+    }
+    // Non-destructive repair: sweep 0-byte loose objects / stale locks,
+    // then fetch the checked-out branch to pull back whatever the sweep
+    // removed. Safe to call any time (never touches the working tree);
+    // the Update screen offers it when a check reports 'repo-corrupt'.
+    if (req.url === '/api/update/repair' && req.method === 'POST') {
+        var removed = repairEmptyObjects();
+        var rBranch = currentBranch();
+        var rf = rBranch ? fetchBranch(rBranch, 30000)
+                         : { ok: false, error: 'Detached HEAD', errorCode: 'other', detail: '' };
+        logUpdate('repair endpoint: removed=' + removed + ' fetchOk=' + rf.ok
+            + (rf.ok ? '' : ' error=' + rf.error));
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ removed: removed, fetchOk: rf.ok,
+                                 error: rf.ok ? null : rf.error,
+                                 errorCode: rf.ok ? null : rf.errorCode,
+                                 detail: rf.detail }));
         return;
     }
     // { branch }: same as checked-out → pull; other → checkout onto
@@ -4360,6 +4511,11 @@ var server = http.createServer(function(req, res) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(upResult));
         if (upResult.success) {
+            // Flush the fresh checkout to disk before restarting — users
+            // tend to power the device off right after "Done!", and an
+            // unflushed .git is exactly how the 0-byte-object damage
+            // happens.
+            try { execSync('sync', { timeout: 10000 }); } catch (e) { logUpdate('sync failed: ' + e.message); }
             // Restart the node service only. The client's /api/version watcher
             // will detect the new SERVER_ID and reload the page inside the
             // already-running cog — no cog restart needed. daemon-reload in

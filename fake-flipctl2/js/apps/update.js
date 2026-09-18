@@ -24,9 +24,15 @@
  * the server restarts itself and the page reloads via the /api/version
  * watcher. The button is drawn disabled while a check is in flight.
  *
- * Progress texts ("Checking", "Updating", "Restarting") animate a
- * trailing 1 → 2 → 3 dot suffix; the fonts have no ellipsis glyph, so
- * truncated lines end in '..' like the boot menu does.
+ * Progress texts ("Checking", "Updating", "Restarting", "Repairing")
+ * animate a trailing 1 → 2 → 3 dot suffix; the fonts have no ellipsis
+ * glyph, so truncated lines end in '..' like the boot menu does.
+ *
+ * Errors come with an `errorCode` from the server (classifyGitError):
+ * the body shows "Error: <text>" plus a one-line hint — 'no-internet'
+ * → check Wi-Fi, 'repo-corrupt' → press OK to run the non-destructive
+ * /api/update/repair (strip reads "Damaged"), anything else → see the
+ * update log. Repair re-checks the selected branch when it finishes.
  */
 var UpdateScene = (function() {
     var TITLE_H  = 16;
@@ -52,7 +58,7 @@ var UpdateScene = (function() {
         this.displayName     = 'Update';
         this.breadcrumbTitle = 'Update';
 
-        // 'checking' | 'ready' | 'updating' | 'done' | 'fail'
+        // 'checking' | 'ready' | 'updating' | 'done' | 'fail' | 'repairing'
         this._state     = 'checking';
         this._branches  = [];        // names from /api/update/branches
         this._branchIdx = 0;         // selection in _branches
@@ -61,7 +67,8 @@ var UpdateScene = (function() {
         this._current   = '';        // branch checked out on device
         this._commits   = [];
         this._commit    = '';        // current commit line
-        this._error     = null;
+        this._error     = null;      // human text from the server (or transport error)
+        this._errorCode = null;      // 'repo-corrupt' | 'no-internet' | 'permission' | 'timeout' | 'other'
         this._scroll    = 0;
 
         // Progress-dots ticker. Runs while the scene is on screen;
@@ -120,7 +127,7 @@ var UpdateScene = (function() {
 
     UpdateScene.prototype._isBusy = function() {
         return this._state === 'checking' || this._state === 'updating'
-            || this._state === 'done';
+            || this._state === 'done' || this._state === 'repairing';
     };
 
     // '.', '..', '...' — cycles with the ticker.
@@ -183,6 +190,7 @@ var UpdateScene = (function() {
         this._state   = 'checking';
         this._commits = [];
         this._error   = null;
+        this._errorCode = null;
         this._scroll  = 0;
         var url = '/api/update/check'
             + (branchName ? '?branch=' + encodeURIComponent(branchName) : '');
@@ -192,12 +200,14 @@ var UpdateScene = (function() {
         xhr.onload = function() {
             if (xhr.status !== 200) {
                 self._error = 'HTTP ' + xhr.status;
+                self._errorCode = 'other';
             } else {
                 try {
                     var d = JSON.parse(xhr.responseText);
                     self._current = d.branch || '';
                     self._commit  = d.currentCommit || '';
                     self._error   = d.error || null;
+                    self._errorCode = d.error ? (d.errorCode || 'other') : null;
                     self._commits = d.commits || [];
                     // First check: land the picker on the branch the
                     // device actually runs (if the list is here yet;
@@ -208,8 +218,8 @@ var UpdateScene = (function() {
             self._state = 'ready';
             rerender();
         };
-        xhr.onerror   = function() { self._error = 'Network error'; self._state = 'ready'; rerender(); };
-        xhr.ontimeout = function() { self._error = 'Timeout';       self._state = 'ready'; rerender(); };
+        xhr.onerror   = function() { self._error = 'Network error'; self._errorCode = 'other';   self._state = 'ready'; rerender(); };
+        xhr.ontimeout = function() { self._error = 'Timeout';       self._errorCode = 'timeout'; self._state = 'ready'; rerender(); };
         xhr.send();
         rerender();
     };
@@ -231,17 +241,55 @@ var UpdateScene = (function() {
                 try {
                     var d = JSON.parse(xhr.responseText);
                     if (d.success) { self._state = 'done'; }
-                    else { self._error = d.error || 'Unknown error'; self._state = 'fail'; }
-                } catch (e) { self._error = 'Bad response'; self._state = 'fail'; }
+                    else {
+                        self._error = d.error || 'Unknown error';
+                        self._errorCode = d.errorCode || 'other';
+                        self._state = 'fail';
+                    }
+                } catch (e) { self._error = 'Bad response'; self._errorCode = 'other'; self._state = 'fail'; }
             } else {
                 self._error = 'HTTP ' + xhr.status;
+                self._errorCode = 'other';
                 self._state = 'fail';
             }
             rerender();
         };
-        xhr.onerror   = function() { self._error = 'Network error'; self._state = 'fail'; rerender(); };
-        xhr.ontimeout = function() { self._error = 'Timeout';       self._state = 'fail'; rerender(); };
+        xhr.onerror   = function() { self._error = 'Network error'; self._errorCode = 'other';   self._state = 'fail'; rerender(); };
+        xhr.ontimeout = function() { self._error = 'Timeout';       self._errorCode = 'timeout'; self._state = 'fail'; rerender(); };
         xhr.send(JSON.stringify({ branch: branch }));
+        rerender();
+    };
+
+    // POST /api/update/repair — non-destructive: the server deletes
+    // 0-byte loose objects / stale locks and re-fetches the checked-out
+    // branch. Offered on OK when a check came back 'repo-corrupt';
+    // afterwards the delta is re-checked for the selected branch.
+    UpdateScene.prototype._repair = function() {
+        var self = this;
+        this._state = 'repairing';
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/update/repair', true);
+        xhr.setRequestHeader('Content-Type', 'application/json');
+        xhr.timeout = 60000;
+        var recheck = function() {
+            var sel = self._selectedBranch();
+            self._check(sel && sel !== self._current ? sel : null);
+        };
+        xhr.onload = function() {
+            var d = null;
+            try { d = JSON.parse(xhr.responseText); } catch (e) {}
+            if (xhr.status === 200 && d && d.fetchOk) {
+                recheck();
+                return;
+            }
+            self._error     = (d && d.error) || ('HTTP ' + xhr.status);
+            self._errorCode = (d && d.errorCode) || 'other';
+            self._state = 'ready';
+            rerender();
+        };
+        xhr.onerror   = function() { self._error = 'Network error'; self._errorCode = 'other';   self._state = 'ready'; rerender(); };
+        xhr.ontimeout = function() { self._error = 'Timeout';       self._errorCode = 'timeout'; self._state = 'ready'; rerender(); };
+        xhr.send('{}');
         rerender();
     };
 
@@ -325,7 +373,7 @@ var UpdateScene = (function() {
         }
 
         if (action === 'back' || action === 'esc') return 'pop';
-        if (this._state === 'checking') return;
+        if (this._state === 'checking' || this._state === 'repairing') return;
 
         if (action === 'left' || action === 'right') {
             // Inline cycle — no overlay, same re-check as a commit.
@@ -333,7 +381,13 @@ var UpdateScene = (function() {
             return;
         }
         if (action === 'ok') {
-            this._openDropdown();
+            // A damaged repo turns OK into "repair" (the body says so);
+            // otherwise OK opens the branch dropdown.
+            if (this._error && this._errorCode === 'repo-corrupt') {
+                this._repair();
+            } else {
+                this._openDropdown();
+            }
             return;
         }
         if (action === 'up' || action === 'down') {
@@ -355,6 +409,15 @@ var UpdateScene = (function() {
         var listTop = ROW_Y + MenuDropdownLine.HEIGHT + 4;
         return Math.floor((144 - 16 - listTop) / LINE_H);
     };
+
+    // Second line under an error: what the user can do about it, keyed
+    // by the server's errorCode (see classifyGitError in server.js).
+    function errorHint(code) {
+        if (code === 'no-internet')  return 'Check Wi-Fi and retry';
+        if (code === 'repo-corrupt') return 'Press OK to repair';
+        if (code === 'timeout')      return 'Retry in a moment';
+        return 'See update log';     // permission / other: /tmp/fake-flipctl-update.log
+    }
 
     // Truncate a line to fit `maxW` px of Haxrcorp, ending in '..'
     // (the fonts carry no ellipsis glyph).
@@ -383,10 +446,11 @@ var UpdateScene = (function() {
         // Right-aligned strip status: how far behind the selected
         // branch we are.
         var strip = '';
-        if (this._state === 'checking')      strip = 'Checking' + this._dots();
-        else if (this._state === 'updating') strip = 'Updating' + this._dots();
-        else if (this._state === 'done')     strip = 'Done';
-        else if (this._error)                strip = 'Error';
+        if (this._state === 'checking')       strip = 'Checking' + this._dots();
+        else if (this._state === 'repairing') strip = 'Repairing' + this._dots();
+        else if (this._state === 'updating')  strip = 'Updating' + this._dots();
+        else if (this._state === 'done')      strip = 'Done';
+        else if (this._error)                 strip = (this._errorCode === 'repo-corrupt') ? 'Damaged' : 'Error';
         else if (this._commits.length > 0) {
             strip = this._commits.length + ' commit'
                 + (this._commits.length !== 1 ? 's' : '') + ' back';
@@ -434,13 +498,17 @@ var UpdateScene = (function() {
 
         if (this._state === 'checking') {
             HaxrCorp4090FlipCTL.draw(ctx, 'Checking' + this._dots(), 6, listTop, '#666');
+        } else if (this._state === 'repairing') {
+            HaxrCorp4090FlipCTL.draw(ctx, 'Repairing' + this._dots(), 6, listTop, '#666');
         } else if (this._state === 'fail') {
             HaxrCorp4090FlipCTL.draw(ctx, 'Update failed', 6, listTop, '#000');
             HaxrCorp4090FlipCTL.draw(ctx,
                 fitLine(String(this._error || ''), 244), 6, listTop + LINE_H, '#666');
+            HaxrCorp4090FlipCTL.draw(ctx, errorHint(this._errorCode), 6, listTop + 2 * LINE_H, '#666');
         } else if (this._error) {
             HaxrCorp4090FlipCTL.draw(ctx,
                 fitLine('Error: ' + this._error, 244), 6, listTop, '#000');
+            HaxrCorp4090FlipCTL.draw(ctx, errorHint(this._errorCode), 6, listTop + LINE_H, '#666');
         } else if (this._commits.length === 0) {
             // Incoming commits for the selected branch — none.
             HaxrCorp4090FlipCTL.draw(ctx, 'No new commits', 6, listTop, '#666');
