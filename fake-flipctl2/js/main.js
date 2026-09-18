@@ -246,7 +246,10 @@
     // straight into the scene they're iterating on. The file
     // is gitignored — production loads never see this branch
     // because `typeof DEBUG_CONFIG` is `'undefined'` without
-    // the local override.
+    // the local override. The `<script>` tag that loads it is
+    // commented out in index.html (a gitignored copy left on a
+    // device survives updates and kept auto-launching a scene);
+    // uncomment it locally, and never commit that, to use this.
     //
     // Friendly names mirror the Testing / Apps submenu labels
     // (e.g. 'On screen keyboard' → KeyboardTestScene) so the

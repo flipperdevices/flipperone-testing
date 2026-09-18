@@ -69,7 +69,14 @@
          present, `main.js` checks `DEBUG_CONFIG.enabled` and
          pushes the named scene on top of Desktop on load. Safe
          to 404 — `main.js` guards on `typeof DEBUG_CONFIG`. -->
+    <!-- Developer boot shortcut (see DEBUG_SCENE_MAP in js/main.js).
+         Disabled on purpose: js/debug_config.js is gitignored, so a copy
+         left on a device would auto-launch a scene after every update.
+         To iterate on a scene locally, uncomment this line and set
+         `enabled: true` in js/debug_config.js; do not commit the change.
     <script src="js/debug_config.js"></script>
+    -->
+
     <script src="js/main.js"></script>
 </body>
 </html>
