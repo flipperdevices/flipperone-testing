@@ -263,7 +263,9 @@
             'Voice recorder':     function(sm) { return new VoiceRecorderScene(sm); },
             'Internet radio':     function(sm) { return new InternetRadioScene(sm); },
             'Wi-Fi':              function(sm) { return new WifiScene(sm); },
-            'Power menu - UI demo': function(sm) { return new PowerMenuUIDemoScene(sm); }
+            'Power menu - UI demo': function(sm) { return new PowerMenuUIDemoScene(sm); },
+            'Wi-Fi scanner':      function(sm) { return new WifiScannerDemoScene(sm); },
+            'Wi-Fi scanner v2':   function(sm) { return new WifiScannerV2DemoScene(sm); }
         };
         var debugFactory = DEBUG_SCENE_MAP[DEBUG_CONFIG.scene];
         if (typeof debugFactory === 'function') {

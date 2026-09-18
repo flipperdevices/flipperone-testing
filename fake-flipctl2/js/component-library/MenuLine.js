@@ -44,14 +44,12 @@ var MenuLine = (function() {
         // Optional per-instance override for the vertical nudge
         // applied to the ACTIVE (selected / pressed) label so it
         // optically aligns with the Busy9pxFlipCTL default underneath.
-        // Stock value is +1 to compensate for Born2bSporty's
-        // high cap line — consumers whose selector frame sits
-        // higher (e.g. file-list scenes that use the smaller
-        // y-offset of -1) can pass 0 to keep the label tight to
-        // the cap.
+        // Stock value is 0 (was +1; lifted 1 px on request so the
+        // Born2bSporty label sits higher in the selector). The main
+        // menu passes its own -1; file-list scenes pass 0 explicitly.
         this.activeLabelYNudge = (typeof options.activeLabelYNudge === 'number')
             ? options.activeLabelYNudge
-            : 1;
+            : 0;
         // Optional fixed icon-column width. When set, the icon is centered
         // in a slot of this width and the label always starts past it, so
         // rows with differently-sized icons keep their labels aligned.
@@ -175,10 +173,8 @@ var MenuLine = (function() {
         // in SELECTED/PRESSED. Status text is different — it always
         // stays on Busy9pxFlipCTL so the row's right-side info keeps the
         // same typographic weight across states; only its *colour*
-        // changes with the state. The active font also nudges 1 px
-        // down — Born2bSporty's cap baseline sits visually high
-        // against the selector frame, so + 1 puts it on the same
-        // optical row as the Busy9pxFlipCTL default.
+        // changes with the state. The active font can be nudged
+        // vertically per instance via activeLabelYNudge (stock 0).
         var font       = this.font || (active ? Born2bSportyV2FlipCTL : Busy9pxFlipCTL);
         var statusFont = this.font || Busy9pxFlipCTL;
         var textY = y + TEXT_DRAW_Y + this.labelYOffset;

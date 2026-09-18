@@ -247,11 +247,15 @@ var MenuScene = (function() {
         return new SubMenuScene(sm, 'UI Demos', [
             'Boot menu - UI demo',
             'Boot Menu v3',
-            'Power menu - UI demo'
+            'Power menu - UI demo',
+            'Wi-Fi scanner',
+            'Wi-Fi scanner v2'
         ], {
             'Boot menu - UI demo':  function() { return new UIDemoScene(sm); },
             'Boot Menu v3':         function() { return new BootMenuV2DemoScene(sm); },
-            'Power menu - UI demo': function() { return new PowerMenuUIDemoScene(sm); }
+            'Power menu - UI demo': function() { return new PowerMenuUIDemoScene(sm); },
+            'Wi-Fi scanner':        function() { return new WifiScannerDemoScene(sm); },
+            'Wi-Fi scanner v2':     function() { return new WifiScannerV2DemoScene(sm); }
         });
     }
 

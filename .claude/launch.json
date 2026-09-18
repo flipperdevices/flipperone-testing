@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "fake-flipctl2",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["fake-flipctl2/server.js"],
+      "port": 8899
+    }
+  ]
+}
