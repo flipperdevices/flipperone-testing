@@ -24,3 +24,7 @@ fake-flipctl2/.claude/settings.local.json
 # hook in .githooks/pre-commit refuses to commit when the file
 # is staged OR when it has `enabled: true` on disk.
 fake-flipctl2/js/debug_config.js
+
+# Local Claude Code / desktop-app config (preview launcher etc.) —
+# per-developer, never part of the repo.
+.claude/
