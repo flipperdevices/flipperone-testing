@@ -208,6 +208,7 @@ var MenuScene = (function() {
             'Screen',
             'Screen for photos',
             'UI Demos',
+            'Kickstarter demo',
             'Input',
             'Touchpad',
             'Touchpad ABS',
@@ -224,6 +225,7 @@ var MenuScene = (function() {
             'Screen': function() { return new ScreenTestScene(); },
             'Screen for photos': function() { return new ScreenForPhotosScene(sm); },
             'UI Demos': function() { return demoMenu(sm); },
+            'Kickstarter demo': function() { return kickstarterMenu(sm); },
             'Touchpad': function() { return new TouchpadTestScene(); },
             'Touchpad ABS': function() { return new TouchpadAbsScene(); },
             'Screen Keyboard': function() { return new KeyboardTestScene(); },
@@ -247,15 +249,34 @@ var MenuScene = (function() {
         return new SubMenuScene(sm, 'UI Demos', [
             'Boot menu - UI demo',
             'Boot Menu v3',
-            'Power menu - UI demo',
-            'Wi-Fi scanner',
-            'Wi-Fi scanner v2'
+            'Power menu - UI demo'
         ], {
             'Boot menu - UI demo':  function() { return new UIDemoScene(sm); },
             'Boot Menu v3':         function() { return new BootMenuV2DemoScene(sm); },
-            'Power menu - UI demo': function() { return new PowerMenuUIDemoScene(sm); },
-            'Wi-Fi scanner':        function() { return new WifiScannerDemoScene(sm); },
-            'Wi-Fi scanner v2':     function() { return new WifiScannerV2DemoScene(sm); }
+            'Power menu - UI demo': function() { return new PowerMenuUIDemoScene(sm); }
+        });
+    }
+
+    // Testing → Kickstarter demo. Demo flows shown in the campaign
+    // material, grouped per app; each app row opens a list of its
+    // design iterations so they can be compared side by side.
+    function kickstarterMenu(sm) {
+        return new SubMenuScene(sm, 'Kickstarter demo', [
+            'Wi-Fi scanner'
+        ], {
+            'Wi-Fi scanner': function() { return wifiScannerVersionsMenu(sm); }
+        });
+    }
+
+    function wifiScannerVersionsMenu(sm) {
+        return new SubMenuScene(sm, 'Wi-Fi scanner', [
+            'Version 1',
+            'Version 2',
+            'Version 3'
+        ], {
+            'Version 1': function() { return new WifiScannerDemoScene(sm); },
+            'Version 2': function() { return new WifiScannerV2DemoScene(sm); },
+            'Version 3': function() { return new WifiScannerV3DemoScene(sm); }
         });
     }
 

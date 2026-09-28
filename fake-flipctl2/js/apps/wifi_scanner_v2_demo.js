@@ -64,7 +64,71 @@ var WifiScannerV2DemoScene = (function() {
     var HELP_PULSE_MAX_BLACK = 0.5;
     var HELP_PULSE_MS  = 1600;
     var BTN_H          = 14;                         // bottom-button height (canvas.js)
-    var WARNING_IMG_SRC = 'assets/wifi_scanner/wifi_scan_warning.png';
+    // Help's warning is composed from layers — 256×144 PNGs with
+    // transparent backgrounds — drawn over a 50 % white wash:
+    //   1. dolphin, mouth closed / open, flipped at random intervals so
+    //      it reads as talking (cartoon lip-sync);
+    //   2. overlay — speech bubble, frame and the Close / ? buttons;
+    //   3. pulsing triangle (frame sequence, see TRIANGLE_*);
+    //   4. exclamation mark on top (static, kept separate so it can
+    //      blink later).
+    var WARNING_LAYERS = {
+        dolphinClosed: 'assets/wifi_scanner/wifi_scan_warning_doplhin_close.png',
+        dolphinOpen:   'assets/wifi_scanner/wifi_scan_warning_doplhin_open.png',
+        exclamation:   'assets/wifi_scanner/wifi_scan_warning_exlamation.png',
+        overlay:       'assets/wifi_scanner/wifi_scan_warning_overlay.png'
+    };
+    var TALK_OPEN_MS   = [70, 180];      // how long the mouth stays open
+    var TALK_CLOSED_MS = [60, 260];      // ... and closed
+    // Pulsing triangle behind the exclamation mark: eight filled frames
+    // (70 → 84 px), played ping-pong (1..8..1) at TRIANGLE_FRAME_MS. The
+    // frames grow around their own centre, (128, 77) on the 256×144
+    // sheet; the offset moves that centre onto the mark's centre
+    // (181, 58) — 2 px above the mark's centre, by eye.
+    var TRIANGLE_FRAMES = [
+        'assets/wifi_scanner/pulse_tirangle/frame_01_70px.png',
+        'assets/wifi_scanner/pulse_tirangle/frame_02_72px.png',
+        'assets/wifi_scanner/pulse_tirangle/frame_03_74px.png',
+        'assets/wifi_scanner/pulse_tirangle/frame_04_76px.png',
+        'assets/wifi_scanner/pulse_tirangle/frame_05_78px.png',
+        'assets/wifi_scanner/pulse_tirangle/frame_06_80px.png',
+        'assets/wifi_scanner/pulse_tirangle/frame_07_82px.png',
+        'assets/wifi_scanner/pulse_tirangle/frame_08_84px.png'
+    ];
+    var TRIANGLE_SEQ      = [0, 1, 2, 3, 4, 5, 6, 7, 6, 5, 4, 3, 2, 1];
+    var TRIANGLE_FRAME_MS = 50;
+    var TRIANGLE_DX = 53;
+    var TRIANGLE_DY = -19;
+    function preloadWarning() {
+        for (var k in WARNING_LAYERS) loadImage(WARNING_LAYERS[k]);
+        for (var i = 0; i < TRIANGLE_FRAMES.length; i++) loadImage(TRIANGLE_FRAMES[i]);
+    }
+    function randBetween(range) {
+        return range[0] + Math.random() * (range[1] - range[0]);
+    }
+    // Advance the mouth state machine (called every frame while the
+    // warning is up) and paint the layers. `talk` = { open, nextAt }.
+    function drawWarning(canvas, talk, wash) {
+        var ctx = canvas.ctx;
+        var now = Date.now();
+        if (now >= talk.nextAt) {
+            talk.open   = !talk.open;
+            talk.nextAt = now + randBetween(talk.open ? TALK_OPEN_MS : TALK_CLOSED_MS);
+        }
+        var dolphin = loadImage(talk.open ? WARNING_LAYERS.dolphinOpen : WARNING_LAYERS.dolphinClosed);
+        var excl    = loadImage(WARNING_LAYERS.exclamation);
+        var overlay = loadImage(WARNING_LAYERS.overlay);
+        ctx.fillStyle = wash;
+        ctx.fillRect(0, 0, canvas.w, canvas.h);
+        // Overlay (bubble fill included) goes over the dolphin; the
+        // exclamation mark sits on top of everything so it stays visible
+        // — and can blink on its own later.
+        if (imageReady(dolphin)) ctx.drawImage(dolphin, 0, 0);
+        if (imageReady(overlay)) ctx.drawImage(overlay, 0, 0);
+        var tri = loadImage(TRIANGLE_FRAMES[TRIANGLE_SEQ[Math.floor(now / TRIANGLE_FRAME_MS) % TRIANGLE_SEQ.length]]);
+        if (imageReady(tri))     ctx.drawImage(tri, TRIANGLE_DX, TRIANGLE_DY);
+        if (imageReady(excl))    ctx.drawImage(excl, 0, 0);
+    }
 
     // Lazy image cache — each asset loads once, repaint on arrival.
     var imageCache = {};
@@ -332,7 +396,8 @@ var WifiScannerV2DemoScene = (function() {
 
         this._popup   = null;    // network shown in the details pop-up, or null
         this._warning = false;   // Help's full-screen warning mock is up
-        loadImage(WARNING_IMG_SRC);   // so the first show is instant
+        this._talk    = { open: false, nextAt: 0 };   // dolphin mouth state
+        preloadWarning();        // so the first show is instant
     }
 
     WifiScannerV2DemoScene.prototype._closePopup = function() {
@@ -636,14 +701,7 @@ var WifiScannerV2DemoScene = (function() {
                         'rgb(' + lv + ',' + lv + ',' + lv + ')');
                 }
             }
-            if (this._warning) {
-                var wimg = loadImage(WARNING_IMG_SRC);
-                if (imageReady(wimg)) {
-                    ctx.fillStyle = POPUP_WASH;
-                    ctx.fillRect(0, 0, canvas.w, canvas.h);
-                    ctx.drawImage(wimg, 0, 0, canvas.w, canvas.h);
-                }
-            }
+            if (this._warning) drawWarning(canvas, this._talk, POPUP_WASH);
         }
 
         // Keep hopping while on screen.
