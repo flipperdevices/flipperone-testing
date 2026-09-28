@@ -322,9 +322,13 @@ var MenuScene = (function() {
                                  // app's title bar + App Switcher card.
                                  icon:         (typeof Icons !== 'undefined')
                                      ? Icons.media : null,
+                                 iconAnimated: null },
+            'Browser':         { factory:      function(sm) { return new BrowserScene(sm); },
+                                 // Work in progress — no icon yet.
+                                 icon:         null,
                                  iconAnimated: null }
         };
-        var order = ['Internet radio', 'Voice recorder', 'Walkie Talkie', 'TV Media Box'];
+        var order = ['Internet radio', 'Voice recorder', 'Walkie Talkie', 'TV Media Box', 'Browser'];
         // With the TV Media Box target active, that app lives in the
         // main menu's first slot — drop it from Apps to avoid showing
         // it twice.
