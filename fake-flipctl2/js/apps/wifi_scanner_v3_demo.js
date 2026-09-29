@@ -12,23 +12,68 @@
  *      Apps list, plus 'Wi-Fi scanner' (Icons.wi_fi_scanner) as the
  *      second row. The first row is selected on entry, like the real
  *      list. Only the scanner row opens; the rest press-flash.
- *   3. Wi-Fi scanner — an empty white screen for now (to be filled).
+ *   3. Wi-Fi scanner — the scan clip, full screen, looped.
  *
  * Back pops one level at a time, like the real thing.
  */
 var WifiScannerV3DemoScene = (function() {
 
-    // ── 3. Scanner screen (empty for now) ────────────────────────
+    // ── 3. Scanner screen ────────────────────────────────────────
+    // Plays assets/wifi_scanner/wifi_scan_256x144_h264.mp4 full screen
+    // in a seamless loop. Same technique as the UI PNG viewer: no
+    // <video> (the device's WPE/GStreamer loop wrap freezes for
+    // ~66 ms), but a sprite sheet with every frame in a grid, blitted
+    // one rect per tick, so the wrap is just index arithmetic.
+    //
+    // The sheet is pre-rendered and shipped next to the clip, so the
+    // device needs no ffmpeg. Rebuild it after changing the clip:
+    //   ffmpeg -i wifi_scan_256x144_h264.mp4 -vf format=gray,tile=16x15 \
+    //          -frames:v 1 -update 1 wifi_scan_256x144_sheet.png
+    // (the clip is pure grayscale; FRAMES/COLS/FPS below must match).
+    var CLIP = {
+        src:    'assets/wifi_scanner/wifi_scan_256x144_sheet.png',
+        frames: 240,
+        cols:   16,
+        fps:    60,
+        w:      256,
+        h:      144
+    };
+    var clipImg = null;   // loaded once, shared by every screen instance
+
+    function clipImage() {
+        if (!clipImg) {
+            clipImg = new Image();
+            clipImg.onload = function() { if (window.requestRender) window.requestRender(); };
+            clipImg.src = CLIP.src;
+        }
+        return clipImg;
+    }
+
     function ScannerScreen(sceneManager) {
         this.sceneManager    = sceneManager || null;
         this.displayName     = 'Wi-Fi scanner';
         this.breadcrumbTitle = 'Wi-Fi scanner';
+        this._t0 = 0;       // playback start, set once the sheet is ready
+        clipImage();
     }
     ScannerScreen.prototype.handleInput = function(action) {
         if (action === 'back' || action === 'esc') return 'pop';
     };
     ScannerScreen.prototype.render = function(canvas) {
-        canvas.clear('#fff');
+        var img = clipImage();
+        if (img.complete && img.naturalWidth > 0) {
+            if (!this._t0) this._t0 = Date.now();
+            // Wall-clock frame index; the modulo is the loop.
+            var fi = Math.floor((Date.now() - this._t0) * CLIP.fps / 1000) % CLIP.frames;
+            canvas.ctx.drawImage(img,
+                (fi % CLIP.cols) * CLIP.w, Math.floor(fi / CLIP.cols) * CLIP.h,
+                CLIP.w, CLIP.h,
+                0, 0, canvas.w, canvas.h);
+        } else {
+            canvas.clear('#fff');
+        }
+        // Keep the render loop running while the clip is on screen.
+        if (window.requestRender) window.requestRender();
     };
 
     // ── 2. Fake Apps list ────────────────────────────────────────
