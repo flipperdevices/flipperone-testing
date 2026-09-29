@@ -387,6 +387,7 @@
             // (so each scene gets to decide what Back means).
             if (key === 'appsw'
                 && !(active instanceof FigmaLivePreviewScene)
+                && !(active instanceof UiBuilderLivePreviewScene)
                 && !(active instanceof AppSwitcherScene)) {
 
                 // Capture a "transient" focused card whenever Tab is
