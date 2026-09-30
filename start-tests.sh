@@ -64,14 +64,29 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --time)
+            if [ -z "$2" ]; then
+                echo "Missing value for $1"
+                echo "Use -h or --help for usage information"
+                exit 1
+            fi
             TEST_DURATION="$2"
             shift 2
             ;;
         --name)
+            if [ -z "$2" ]; then
+                echo "Missing value for $1"
+                echo "Use -h or --help for usage information"
+                exit 1
+            fi
             TEST_NAME="$2"
             shift 2
             ;;
         --interval)
+            if [ -z "$2" ]; then
+                echo "Missing value for $1"
+                echo "Use -h or --help for usage information"
+                exit 1
+            fi
             TEST_INTERVAL="$2"
             shift 2
             ;;
