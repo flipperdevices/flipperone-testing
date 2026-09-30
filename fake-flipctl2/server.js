@@ -40,6 +40,72 @@ function startRefreshLoop(name, fn, ms) {
     tick();
 }
 
+// ── LCD backlight (via the MCU over I2C) ─────────────────────────
+// The backlight PWM lives on the MCU (RP2350, I2C slave 0x69); Linux
+// drives it through three MCU registers. scripts/mcu-backlight.py does
+// the I2C_RDWR transfers (stdlib only, no i2c-tools) and prints one
+// JSON line; /dev/i2c-N is root-owned, hence sudo.
+//
+//   GET  /api/backlight                      -> {ok, bus, level, timeout, control}
+//   POST /api/backlight {action:'off'}       -> off now (clears always-on)
+//   POST /api/backlight {action:'on'}        -> on, MCU idle timer restarts
+//   POST /api/backlight {action:'always-on'} -> on, MCU idle timer ignored
+//   POST /api/backlight {level:1..255}       -> brightness (MCU flash write)
+//   POST /api/backlight {timeout:0..65535}   -> auto-off, 100 ms steps, 0 = never
+//                                              (MCU flash write)
+//
+// level and timeout are written to the MCU's flash on every call, so
+// clients must debounce sliders and send only the final value. Level 0
+// is refused (it would persist a dark screen across reboots); blank
+// with action 'off' instead. Any key press or touchpad touch wakes the
+// screen on the MCU side regardless of what Linux wrote.
+//
+// Calls are serialised so two transfers never overlap on the bus.
+var BACKLIGHT_SCRIPT = path.join(__dirname, '..', 'scripts', 'mcu-backlight.py');
+var backlightQueue = Promise.resolve();
+function backlightRun(args, cb) {
+    backlightQueue = backlightQueue.then(function() {
+        return new Promise(function(resolve) {
+            var out = '', errOut = '';
+            var done = false;
+            var child;
+            function finish(result) {
+                if (done) return;
+                done = true;
+                clearTimeout(killer);
+                resolve();
+                cb(result);
+            }
+            try {
+                child = spawn('sudo', ['-n', 'python3', BACKLIGHT_SCRIPT].concat(args),
+                              { stdio: ['ignore', 'pipe', 'pipe'] });
+            } catch (e) {
+                done = true;
+                resolve();
+                cb({ ok: false, error: 'spawn failed: ' + e.message });
+                return;
+            }
+            var killer = setTimeout(function() {
+                try { child.kill('SIGKILL'); } catch (e) {}
+                finish({ ok: false, error: 'timeout' });
+            }, 5000);
+            child.stdout.on('data', function(d) { out += d; });
+            child.stderr.on('data', function(d) { errOut += d; });
+            child.on('error', function(e) { finish({ ok: false, error: e.message }); });
+            child.on('close', function() {
+                var line = out.trim().split('\n').pop() || '';
+                var result;
+                try { result = JSON.parse(line); }
+                catch (e) {
+                    // No JSON: sudo / python failed before the script ran.
+                    result = { ok: false, error: line || errOut.trim().split('\n').pop() || 'no output' };
+                }
+                finish(result);
+            });
+        });
+    });
+}
+
 // ── Network LEDs ─────────────────────────────────────────────────
 // "Network LEDs" — the four RGB LEDs along the top of the Flipper
 // One that surface networking state: wifi, eth0, eth1, link.
@@ -4286,6 +4352,37 @@ var server = http.createServer(function(req, res) {
     if (req.url === '/api/airplane' && req.method === 'GET') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(airplaneCache));
+        return;
+    }
+    if (req.url === '/api/backlight' && req.method === 'GET') {
+        backlightRun(['get'], function(result) {
+            res.writeHead(result.ok ? 200 : 500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(result));
+        });
+        return;
+    }
+    if (req.url === '/api/backlight' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            var args = null;
+            if (!err && data) {
+                if (data.action === 'off' || data.action === 'on' || data.action === 'always-on') {
+                    args = [data.action];
+                } else if (typeof data.level === 'number') {
+                    args = ['level', String(Math.round(data.level))];
+                } else if (typeof data.timeout === 'number') {
+                    args = ['timeout', String(Math.round(data.timeout))];
+                }
+            }
+            if (!args) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Invalid request' }));
+                return;
+            }
+            backlightRun(args, function(result) {
+                res.writeHead(result.ok ? 200 : 500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(result));
+            });
+        });
         return;
     }
     if (req.url === '/api/led/manual' && req.method === 'POST') {

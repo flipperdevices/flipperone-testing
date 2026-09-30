@@ -207,6 +207,7 @@ var MenuScene = (function() {
         return new SubMenuScene(sm, 'Testing', [
             'Screen',
             'Screen for photos',
+            'Screen backlight',
             'UI Demos',
             'Kickstarter demo',
             'Input',
@@ -225,6 +226,7 @@ var MenuScene = (function() {
         ], {
             'Screen': function() { return new ScreenTestScene(); },
             'Screen for photos': function() { return new ScreenForPhotosScene(sm); },
+            'Screen backlight': function() { return BacklightTestScene(sm); },
             'UI Demos': function() { return demoMenu(sm); },
             'Kickstarter demo': function() { return kickstarterMenu(sm); },
             'Touchpad': function() { return new TouchpadTestScene(); },
@@ -264,9 +266,11 @@ var MenuScene = (function() {
     // design iterations so they can be compared side by side.
     function kickstarterMenu(sm) {
         return new SubMenuScene(sm, 'Kickstarter demo', [
-            'Wi-Fi scanner'
+            'Wi-Fi scanner',
+            'Walkie Talkie'
         ], {
-            'Wi-Fi scanner': function() { return wifiScannerVersionsMenu(sm); }
+            'Wi-Fi scanner': function() { return wifiScannerVersionsMenu(sm); },
+            'Walkie Talkie': function() { return new WalkieTalkieDemoScene(sm); }
         });
     }
 
