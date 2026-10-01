@@ -40,6 +40,96 @@ function startRefreshLoop(name, fn, ms) {
     tick();
 }
 
+// ── USB devices (sysfs) + hub port presence ──────────────────────
+// GET /api/usb/devices -> {ok, devices:[{id, path, vid, pid, cls, product}],
+//                          ports:[name, …], portsOk}
+// `devices`: every enumerated USB device (not root hubs, not
+// interfaces) from /sys/bus/usb/devices. `id` = path + vid:pid, stable
+// across a re-enumeration of the same device on the same port, so
+// clients can diff snapshots to spot "something new was plugged in".
+// World-readable sysfs, no sudo. Off-device (no /sys) ok is false.
+//
+// `ports`: hub ports whose CONNECTION bit is set, from
+// scripts/usb-port-watch.py (sudo, polls every hub at 50 ms). This
+// reacts as soon as a device is electrically present, before the
+// kernel has enumerated it, so it is the faster signal. The watcher is
+// started by the first request and stopped after USB_WATCH_IDLE_MS
+// without requests; `portsOk` is false until it has reported.
+var USB_SYSFS = '/sys/bus/usb/devices';
+var USB_WATCH_SCRIPT  = path.join(__dirname, '..', 'scripts', 'usb-port-watch.py');
+var USB_WATCH_IDLE_MS = 5000;
+var USB_WATCH_RETRY_MS = 5000;
+var usbWatch = { child: null, ports: [], ok: false, lastAsk: 0, lastFail: 0, idleTimer: null };
+
+function usbWatchStop() {
+    if (usbWatch.idleTimer) { clearInterval(usbWatch.idleTimer); usbWatch.idleTimer = null; }
+    if (usbWatch.child) { try { usbWatch.child.kill('SIGTERM'); } catch (e) {} }
+    usbWatch.child = null;
+    usbWatch.ok = false;
+    usbWatch.ports = [];
+}
+
+function usbWatchEnsure() {
+    usbWatch.lastAsk = Date.now();
+    if (usbWatch.child) return;
+    if (Date.now() - usbWatch.lastFail < USB_WATCH_RETRY_MS) return;
+    var child;
+    try {
+        child = spawn('sudo', ['-n', 'python3', '-u', USB_WATCH_SCRIPT],
+                      { stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch (e) { usbWatch.lastFail = Date.now(); return; }
+    usbWatch.child = child;
+    var buf = '';
+    child.stdout.on('data', function(d) {
+        buf += d;
+        var lines = buf.split('\n');
+        buf = lines.pop();
+        lines.forEach(function(line) {
+            var msg;
+            try { msg = JSON.parse(line); } catch (e) { return; }
+            if (msg && msg.ok && Array.isArray(msg.ports)) {
+                usbWatch.ports = msg.ports;
+                usbWatch.ok = true;
+            }
+        });
+    });
+    function gone() {
+        if (usbWatch.child !== child) return;
+        usbWatch.child = null;
+        usbWatch.ok = false;
+        usbWatch.ports = [];
+        usbWatch.lastFail = Date.now();
+    }
+    child.on('error', gone);
+    child.on('exit', gone);
+    if (!usbWatch.idleTimer) {
+        usbWatch.idleTimer = setInterval(function() {
+            if (Date.now() - usbWatch.lastAsk > USB_WATCH_IDLE_MS) usbWatchStop();
+        }, 1000);
+    }
+}
+function listUsbDevices() {
+    var names;
+    try { names = fs.readdirSync(USB_SYSFS); }
+    catch (e) { return { ok: false, error: 'no ' + USB_SYSFS, devices: [] }; }
+    function attr(dir, file) {
+        try { return fs.readFileSync(USB_SYSFS + '/' + dir + '/' + file, 'utf8').trim(); }
+        catch (e) { return ''; }
+    }
+    var devices = [];
+    names.forEach(function(n) {
+        // Devices are "<bus>-<port>[.<port>…]"; "usbN" are root hubs,
+        // names with ':' are interfaces.
+        if (!/^\d+-[\d.]+$/.test(n)) return;
+        var vid = attr(n, 'idVendor'), pid = attr(n, 'idProduct');
+        if (!vid) return;
+        devices.push({ id: n + ' ' + vid + ':' + pid, path: n, vid: vid, pid: pid,
+                       cls: attr(n, 'bDeviceClass'), product: attr(n, 'product') });
+    });
+    devices.sort(function(a, b) { return a.path < b.path ? -1 : a.path > b.path ? 1 : 0; });
+    return { ok: true, devices: devices };
+}
+
 // ── LCD backlight (via the MCU over I2C) ─────────────────────────
 // The backlight PWM lives on the MCU (RP2350, I2C slave 0x69); Linux
 // drives it through three MCU registers. scripts/mcu-backlight.py does
@@ -4352,6 +4442,15 @@ var server = http.createServer(function(req, res) {
     if (req.url === '/api/airplane' && req.method === 'GET') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(airplaneCache));
+        return;
+    }
+    if (req.url === '/api/usb/devices' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        usbWatchEnsure();
+        var usb = listUsbDevices();
+        usb.ports   = usbWatch.ports;
+        usb.portsOk = usbWatch.ok;
+        res.end(JSON.stringify(usb));
         return;
     }
     if (req.url === '/api/backlight' && req.method === 'GET') {

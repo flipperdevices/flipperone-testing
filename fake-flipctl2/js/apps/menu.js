@@ -267,10 +267,12 @@ var MenuScene = (function() {
     function kickstarterMenu(sm) {
         return new SubMenuScene(sm, 'Kickstarter demo', [
             'Wi-Fi scanner',
-            'Walkie Talkie'
+            'Walkie Talkie',
+            'SDR connected'
         ], {
             'Wi-Fi scanner': function() { return wifiScannerVersionsMenu(sm); },
-            'Walkie Talkie': function() { return new WalkieTalkieDemoScene(sm); }
+            'Walkie Talkie': function() { return new WalkieTalkieDemoScene(sm); },
+            'SDR connected': function() { return new SdrConnectedDemoScene(sm); }
         });
     }
 
