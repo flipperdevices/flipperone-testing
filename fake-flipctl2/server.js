@@ -130,6 +130,80 @@ function listUsbDevices() {
     return { ok: true, devices: devices };
 }
 
+// ── USB-C / display connectors (sysfs) ─────────────────────────────
+// GET /api/usbc -> {ok, typec:[{port, partner, dataRole, powerRole}],
+//                   drm:[{connector, status}], udc:[{name, state}],
+//                   power:[{name, type, online}]}
+// typec: every /sys/class/typec/portN; `partner` is true while
+//   portN-partner exists, i.e. from the moment the Type-C controller
+//   sees anything attached (CC: display, PC, charger, USB device, hub),
+//   before alt modes / USB / PD come up. Roles are the bracketed value
+//   of data_role / power_role.
+// drm: every display connector with a status file
+//   (/sys/class/drm/cardN-<type>-<n>/status: connected / disconnected),
+//   e.g. DP over USB-C alt mode.
+// udc: USB device controllers (/sys/class/udc/<name>/state); anything
+//   but "not attached" means a host (PC) is on the gadget port.
+// power: external supplies (/sys/class/power_supply, type USB* / Mains;
+//   batteries skipped) with their `online` flag, e.g. a charger.
+// World-readable sysfs, no sudo. ok is false only when none of these
+// classes exist (off-device).
+var TYPEC_SYSFS = '/sys/class/typec';
+var DRM_SYSFS   = '/sys/class/drm';
+var UDC_SYSFS   = '/sys/class/udc';
+var PSU_SYSFS   = '/sys/class/power_supply';
+function readSysfs(file) {
+    try { return fs.readFileSync(file, 'utf8').trim(); } catch (e) { return ''; }
+}
+function bracketed(v) {
+    var m = /\[([^\]]+)\]/.exec(v || '');
+    return m ? m[1] : (v || '');
+}
+function listUsbc() {
+    var out = { ok: false, typec: [], drm: [], udc: [], power: [] };
+    var names;
+    try {
+        names = fs.readdirSync(TYPEC_SYSFS);
+        out.ok = true;
+        names.forEach(function(n) {
+            if (!/^port\d+$/.test(n)) return;
+            out.typec.push({
+                port:      n,
+                partner:   names.indexOf(n + '-partner') !== -1,
+                dataRole:  bracketed(readSysfs(TYPEC_SYSFS + '/' + n + '/data_role')),
+                powerRole: bracketed(readSysfs(TYPEC_SYSFS + '/' + n + '/power_role'))
+            });
+        });
+        out.typec.sort(function(a, b) { return a.port < b.port ? -1 : 1; });
+    } catch (e) {}
+    try {
+        names = fs.readdirSync(DRM_SYSFS);
+        out.ok = true;
+        names.forEach(function(n) {
+            if (!/^card\d+-/.test(n)) return;
+            var st = readSysfs(DRM_SYSFS + '/' + n + '/status');
+            if (st) out.drm.push({ connector: n, status: st });
+        });
+        out.drm.sort(function(a, b) { return a.connector < b.connector ? -1 : 1; });
+    } catch (e) {}
+    try {
+        fs.readdirSync(UDC_SYSFS).forEach(function(n) {
+            out.ok = true;
+            out.udc.push({ name: n, state: readSysfs(UDC_SYSFS + '/' + n + '/state') });
+        });
+    } catch (e) {}
+    try {
+        fs.readdirSync(PSU_SYSFS).forEach(function(n) {
+            var type = readSysfs(PSU_SYSFS + '/' + n + '/type');
+            if (!/^USB|^Mains$/.test(type)) return;
+            out.ok = true;
+            out.power.push({ name: n, type: type,
+                             online: readSysfs(PSU_SYSFS + '/' + n + '/online') === '1' });
+        });
+    } catch (e) {}
+    return out;
+}
+
 // ── LCD backlight (via the MCU over I2C) ─────────────────────────
 // The backlight PWM lives on the MCU (RP2350, I2C slave 0x69); Linux
 // drives it through three MCU registers. scripts/mcu-backlight.py does
@@ -4442,6 +4516,11 @@ var server = http.createServer(function(req, res) {
     if (req.url === '/api/airplane' && req.method === 'GET') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(airplaneCache));
+        return;
+    }
+    if (req.url === '/api/usbc' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(listUsbc()));
         return;
     }
     if (req.url === '/api/usb/devices' && req.method === 'GET') {

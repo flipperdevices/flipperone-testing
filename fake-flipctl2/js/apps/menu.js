@@ -268,11 +268,13 @@ var MenuScene = (function() {
         return new SubMenuScene(sm, 'Kickstarter demo', [
             'Wi-Fi scanner',
             'Walkie Talkie',
-            'SDR connected'
+            'SDR connected',
+            'Desktop computer'
         ], {
             'Wi-Fi scanner': function() { return wifiScannerVersionsMenu(sm); },
             'Walkie Talkie': function() { return new WalkieTalkieDemoScene(sm); },
-            'SDR connected': function() { return new SdrConnectedDemoScene(sm); }
+            'SDR connected': function() { return new SdrConnectedDemoScene(sm); },
+            'Desktop computer': function() { return new DesktopComputerDemoScene(sm); }
         });
     }
 
