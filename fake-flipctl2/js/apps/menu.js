@@ -269,12 +269,24 @@ var MenuScene = (function() {
             'Wi-Fi scanner',
             'Walkie Talkie',
             'SDR connected',
-            'Desktop computer'
+            'Desktop computer',
+            'FlipSDR'
         ], {
             'Wi-Fi scanner': function() { return wifiScannerVersionsMenu(sm); },
-            'Walkie Talkie': function() { return new WalkieTalkieDemoScene(sm); },
+            'Walkie Talkie': function() { return walkieVersionsMenu(sm); },
             'SDR connected': function() { return new SdrConnectedDemoScene(sm); },
-            'Desktop computer': function() { return new DesktopComputerDemoScene(sm); }
+            'Desktop computer': function() { return new DesktopComputerDemoScene(sm); },
+            'FlipSDR': function() { return FlipSdrBandsMenu(sm); }
+        });
+    }
+
+    function walkieVersionsMenu(sm) {
+        return new SubMenuScene(sm, 'Walkie Talkie', [
+            'Version 1',
+            'Version 2'
+        ], {
+            'Version 1': function() { return new WalkieTalkieDemoScene(sm); },
+            'Version 2': function() { return new WalkieTalkieDemoScene(sm, { v2: true }); }
         });
     }
 

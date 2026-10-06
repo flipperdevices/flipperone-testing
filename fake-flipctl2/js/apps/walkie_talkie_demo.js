@@ -9,8 +9,10 @@
  *   • No sound at all: no server-side playback loop, no output
  *     routing, no mixer reads or writes.
  *   • Channel 0 runs a fixed loop: nobody talks for SILENT_MS, then
- *     someone talks for TALK_MS (bar and waterfall active). Channels 1
- *     and 2 behave as in the real app.
+ *     someone talks for TALK_MS. Order at the start of a phrase: the
+ *     screen lights, RX_DELAY_MS later reception begins (bar, waterfall /
+ *     waveform) and the Link LED turns solid red until it ends. Channels
+ *     1 and 2 behave as in the real app.
  *   • The LCD backlight follows that loop (commercial footage): off
  *     while silent, on while someone talks. 'always-on' is used for the
  *     talk window so the MCU's own idle timer can't blank it mid-way;
@@ -25,14 +27,45 @@
  *
  * Not registered with RunningApps, so it never shadows the real
  * Walkie Talkie in the App Switcher.
+ *
+ * Version 2 (new WalkieTalkieDemoScene(sm, { v2: true })), same logic
+ * on the idle_kickstarter.png background:
+ *   • no waterfall / channel slivers;
+ *   • on the upper block only (VFO A, channel 0, the 10 s / 10 s
+ *     talker; VFO B stays idle): a wide RSSI bar along its scale and,
+ *     right of the scale, a bar-chart waveform of what it receives: one
+ *     bar per WAVE_MS, its length the voice amplitude at that moment
+ *     (mirrored around a centre line, mono), a dot when silent; newest at
+ *     the top, which is "right" in the rotated UI.
+ *   • the PTT "pressed" art is not drawn: it was made for the narrower
+ *     VFO box of version 1 and needs a version-2 redraw.
  */
 var WalkieTalkieDemoScene = (function() {
     var IDLE_PATH    = '/assets/apps/walkie_talkie/idle.png';
+    var IDLE_V2_PATH = '/assets/apps/walkie_talkie/idle_kickstarter.png';
     var PRESSED_PATH = '/assets/apps/walkie_talkie/pressed.png';
+
+    // Version 2 layout (screen coordinates; the UI is rotated 90° CCW).
+    // Per VFO: RSSI bar left of its scale line (A: line x = 70, B: x = 161),
+    // filling upward from the scale base (y = 113); waveform right of the
+    // scale (A: inside the VFO A box, B: the free strip before Volume).
+    // Only the upper block (VFO A) shows reception; VFO B stays idle.
+    var VFOS_V2 = [
+        { sig: 0, rxX: 63,  waveCx: 88 }     // VFO A
+    ];
+    var RX2_W = 7, RX2_BOTTOM = 113, RX2_MAX_H = 102;
+    // Waveform fills the VFO A box lengthwise (inside rows 5..138, 2 px in)
+    // and stops 1 px short of its right wall (x 104).
+    var WAVE_HALF = 14;                               // x 74..102 around 88
+    var WAVE_TOP = 7, WAVE_PITCH = 2, WAVE_N = 65;    // rows 7..135
+    var WAVE_MS = 40;
 
     // Channel 0 loop: silence first, then talking.
     var SILENT_MS = 10000;
     var TALK_MS   = 10000;
+    // The screen lights at the start of the talk window; reception (bar,
+    // waveform, red Link LED) follows RX_DELAY_MS later.
+    var RX_DELAY_MS = 500;
 
     // Sampler tape cadence, same as the real app.
     var SAMPLE_INTERVAL_MS = 500;
@@ -49,8 +82,9 @@ var WalkieTalkieDemoScene = (function() {
             ? window.input.isHeld('ptt') : false;
     }
 
-    function WalkieTalkieDemoScene(sceneManager) {
+    function WalkieTalkieDemoScene(sceneManager, opts) {
         this.sceneManager    = sceneManager || null;
+        this._v2             = !!(opts && opts.v2);
         this.displayName     = 'Walkie Talkie';
         this.breadcrumbTitle = 'Walkie Talkie';
         this._idleImg    = null;
@@ -71,7 +105,9 @@ var WalkieTalkieDemoScene = (function() {
             img.src = src;
             self[slot] = img;
         }
-        load(IDLE_PATH,    '_idleImg');
+        load(this._v2 ? IDLE_V2_PATH : IDLE_PATH, '_idleImg');
+        this._waves = [[]];          // v2 waveform per active VFO, newest first (0..1)
+        this._waveAt = 0;
         load(PRESSED_PATH, '_pressedImg');
 
         this._lastPttHeld = false;
@@ -86,7 +122,7 @@ var WalkieTalkieDemoScene = (function() {
             // voice (80..100, breathing), forever.
             { y: 69, level: 0, samples: [], lastSampleAt: 0,
               compute: function(t) {
-                  if (!self._isTalking(t)) return 0;
+                  if (!self._isReceiving(t)) return 0;
                   var v = 90 + 7 * Math.sin(t / 70) + 4 * Math.sin(t / 25);
                   return Math.round(Math.max(80, Math.min(100, v)));
               } },
@@ -133,16 +169,34 @@ var WalkieTalkieDemoScene = (function() {
             self._updatePttLed();
             self._updateAllSignalLevels();
             self._maybeCaptureSamples();
+            self._updateRxLed();
+            if (self._v2) self._updateWave();
             self._syncScreen(false);
             if (window.requestRender) window.requestRender();
         }, 33);
     };
 
-    // Position in the silence → talk loop.
-    WalkieTalkieDemoScene.prototype._isTalking = function(t) {
+    // Position in the silence → talk loop. _isTalking drives the screen,
+    // _isReceiving (RX_DELAY_MS later) the reception itself.
+    WalkieTalkieDemoScene.prototype._loopPos = function(t) {
         var pos = (t - this._talkStart) % (SILENT_MS + TALK_MS);
-        if (pos < 0) pos += SILENT_MS + TALK_MS;
-        return pos >= SILENT_MS;
+        return pos < 0 ? pos + SILENT_MS + TALK_MS : pos;
+    };
+    WalkieTalkieDemoScene.prototype._isTalking = function(t) {
+        return this._loopPos(t) >= SILENT_MS;
+    };
+    WalkieTalkieDemoScene.prototype._isReceiving = function(t) {
+        return this._loopPos(t) >= SILENT_MS + RX_DELAY_MS;
+    };
+
+    // Solid red Link LED while VFO A receives; PTT owns the LED (blink)
+    // while held. Posts only on change.
+    WalkieTalkieDemoScene.prototype._updateRxLed = function() {
+        if (isPttHeld()) { this._rxLedOn = null; return; }
+        var on = !!(this._signals && this._signals[0] && this._signals[0].level > 0);
+        if (on === this._rxLedOn) return;
+        this._rxLedOn = on;
+        this._sendLinkLed(on);
     };
 
     // Send the backlight on/off state for the current phase. `force`
@@ -318,18 +372,32 @@ var WalkieTalkieDemoScene = (function() {
         if (this._idleImg && this._idleImg.complete && this._idleImg.naturalWidth > 0) {
             ctx.drawImage(this._idleImg, 0, 0);
         }
-        if (isPttHeld() && this._pressedImg
+        if (!this._v2 && isPttHeld() && this._pressedImg
                 && this._pressedImg.complete && this._pressedImg.naturalWidth > 0) {
             ctx.drawImage(this._pressedImg, 0, 0);
         }
 
-        // Big vertical receive bar, driven by channel 0.
-        var RX_BAR_X = 63, RX_BAR_Y = 29, RX_BAR_W = 3, RX_BAR_MAX_H = 85;
         var ch0lvl = (this._signals && this._signals[0] && this._signals[0].level) || 0;
-        var h = Math.round(ch0lvl * RX_BAR_MAX_H / 100);
-        if (h > 0) {
-            ctx.fillStyle = '#000';
-            ctx.fillRect(RX_BAR_X, RX_BAR_Y + RX_BAR_MAX_H - h, RX_BAR_W, h);
+        if (this._v2) {
+            // Per VFO: wide RSSI bar along its scale, waveform beside it.
+            for (var vi = 0; vi < VFOS_V2.length; vi++) {
+                var vf = VFOS_V2[vi];
+                var sig = this._signals && this._signals[vf.sig];
+                var h2 = Math.round(((sig && sig.level) || 0) * RX2_MAX_H / 100);
+                if (h2 > 0) {
+                    ctx.fillStyle = '#000';
+                    ctx.fillRect(vf.rxX, RX2_BOTTOM - h2 + 1, RX2_W, h2);
+                }
+                this._drawWave(ctx, this._waves[vi], vf.waveCx);
+            }
+        } else {
+            // Big vertical receive bar, driven by channel 0.
+            var RX_BAR_X = 63, RX_BAR_Y = 29, RX_BAR_W = 3, RX_BAR_MAX_H = 85;
+            var h = Math.round(ch0lvl * RX_BAR_MAX_H / 100);
+            if (h > 0) {
+                ctx.fillStyle = '#000';
+                ctx.fillRect(RX_BAR_X, RX_BAR_Y + RX_BAR_MAX_H - h, RX_BAR_W, h);
+            }
         }
 
         // Volume chip: gray base, black fill from the bottom, value
@@ -381,6 +449,8 @@ var WalkieTalkieDemoScene = (function() {
             ctx.restore();
         }
 
+        if (this._v2) return;            // no waterfall in version 2
+
         // Per-channel sliver (right-anchored) + sampler tape
         // (1×2 grey per sample, newest on the left).
         var HBAR_X = 145, HBAR_H = 2, HBAR_MAX_W = 12, SAMPLER_X = 160, SAMPLER_H = 2;
@@ -398,6 +468,40 @@ var WalkieTalkieDemoScene = (function() {
                 ctx.fillStyle = 'rgb(' + sg + ',' + sg + ',' + sg + ')';
                 ctx.fillRect(SAMPLER_X + si, ch.y, 1, SAMPLER_H);
             }
+        }
+    };
+
+    // v2: one waveform bar every WAVE_MS while channel 0 is received —
+    // a syllabic envelope with per-bar jitter, like a voice-message
+    // waveform; 0 when nothing is received (or while transmitting).
+    WalkieTalkieDemoScene.prototype._updateWave = function() {
+        var now = Date.now();
+        if (now - this._waveAt < WAVE_MS) return;
+        this._waveAt = now;
+        for (var vi = 0; vi < VFOS_V2.length; vi++) {
+            var sig = this._signals && this._signals[VFOS_V2[vi].sig];
+            var amp = 0;
+            if (sig && sig.level > 0) {
+                var ph = vi * 1.7;               // each talker its own rhythm
+                var env = 0.5 + 0.3 * Math.sin(now / 90 + ph) + 0.2 * Math.sin(now / 37 + 1.3 + ph)
+                        + 0.25 * Math.sin(now / 410 + ph);
+                env = Math.max(0.08, Math.min(1, env));
+                amp = env * (0.35 + 0.65 * Math.random());
+            }
+            var w = this._waves[vi];
+            w.unshift(amp);
+            if (w.length > WAVE_N) w.length = WAVE_N;
+        }
+    };
+
+    // v2: bars mirrored around `cx`, newest on top (UI-right in the
+    // rotated layout); a single centre dot for a silent slot.
+    WalkieTalkieDemoScene.prototype._drawWave = function(ctx, wave, cx) {
+        ctx.fillStyle = '#000';
+        for (var i = 0; i < wave.length; i++) {
+            var y = WAVE_TOP + i * WAVE_PITCH;
+            var half = Math.round(wave[i] * WAVE_HALF);
+            ctx.fillRect(cx - half, y, 2 * half + 1, 1);
         }
     };
 
