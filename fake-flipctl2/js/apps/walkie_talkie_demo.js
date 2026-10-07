@@ -28,21 +28,58 @@
  * Not registered with RunningApps, so it never shadows the real
  * Walkie Talkie in the App Switcher.
  *
- * Version 2 (new WalkieTalkieDemoScene(sm, { v2: true })), same logic
- * on the idle_kickstarter.png background:
+ * Version 2 layout (new WalkieTalkieDemoScene(sm, { v2: true, mode })),
+ * on the idle_kickstarter.png background, split into two demo apps:
+ *   • mode 'receive' — the incoming loop with the screen cycle (screen
+ *     on, 0.5 s, reception + red LED, roger + tail, screen off); PTT and
+ *     the microphone are not used;
+ *   • mode 'transmit' — screen kept on, nothing incoming; PTT transmits
+ *     from the device microphone (below);
+ *   • mode 'transmit-fake' — the same without any codec / microphone
+ *     calls: on PTT the waveform stays near silent for FAKE_TX_DELAY_MS,
+ *     then shows a synthetic voice.
+ * Shared v2 details:
  *   • no waterfall / channel slivers;
  *   • on the upper block only (VFO A, channel 0, the 10 s / 10 s
  *     talker; VFO B stays idle): a wide RSSI bar along its scale and,
  *     right of the scale, a bar-chart waveform of what it receives: one
- *     bar per WAVE_MS, its length the voice amplitude at that moment
- *     (mirrored around a centre line, mono), a dot when silent; newest at
- *     the top, which is "right" in the rotated UI.
- *   • the PTT "pressed" art is not drawn: it was made for the narrower
- *     VFO box of version 1 and needs a version-2 redraw.
+ *     2 px black bar per WAVE_MS standing on a single base line (mono,
+ *     not mirrored), its length the voice amplitude at that moment, a
+ *     short stub when silent; newest at the top, which is "right" in the
+ *     rotated UI. Each transmission opens with the PTT key-up click and a
+ *     short breath, and closes with a roger beep (steady tone) and the
+ *     squelch tail (noise burst).
+ *   • transmit (PTT held): pressed_kickstarter.png (the VFO A box
+ *     inverted) on top; instead of the RSSI column a thin white TX
+ *     power strip (TX_STRIP_*, full scale — the power is fixed); the
+ *     waveform keeps scrolling, now from the device microphone (the
+ *     Voice recorder's arecord monitor, /api/mic/level/stream, L/R
+ *     folded to mono by max) and drawn white on the black box. The
+ *     codec's input gain is set to MIC_GAIN_DB on enter and restored on
+ *     exit.
  */
 var WalkieTalkieDemoScene = (function() {
     var IDLE_PATH    = '/assets/apps/walkie_talkie/idle.png';
     var IDLE_V2_PATH = '/assets/apps/walkie_talkie/idle_kickstarter.png';
+    var PRESSED_V2_PATH = '/assets/apps/walkie_talkie/pressed_kickstarter.png';
+    // v2 transmit: thin white power strip where the RSSI column was, and
+    // the microphone's input gain while the app is open.
+    var TX_STRIP_X = 63, TX_STRIP_W = 3;           // centred on x = 64
+    // Codec input gain while transmitting (range -20..40 dB). Below
+    // MIC_FLOOR % it reads as silence; at MIC_FULL % a bar is full length.
+    var MIC_GAIN_DB = 20;
+    var MIC_FLOOR = 2, MIC_FULL = 50;
+    // Transmit fake: pause after the PTT press before the synthetic voice.
+    var FAKE_TX_DELAY_MS = 300;
+
+    // Synthetic voice amplitude 0..1 at time t: syllabic envelope with
+    // per-bar jitter (the same shape the received voice uses).
+    function voiceAmp(t, ph) {
+        var env = 0.5 + 0.3 * Math.sin(t / 90 + ph) + 0.2 * Math.sin(t / 37 + 1.3 + ph)
+                + 0.25 * Math.sin(t / 410 + ph);
+        env = Math.max(0.08, Math.min(1, env));
+        return env * (0.35 + 0.65 * Math.random());
+    }
     var PRESSED_PATH = '/assets/apps/walkie_talkie/pressed.png';
 
     // Version 2 layout (screen coordinates; the UI is rotated 90° CCW).
@@ -51,14 +88,26 @@ var WalkieTalkieDemoScene = (function() {
     // scale (A: inside the VFO A box, B: the free strip before Volume).
     // Only the upper block (VFO A) shows reception; VFO B stays idle.
     var VFOS_V2 = [
-        { sig: 0, rxX: 63,  waveCx: 88 }     // VFO A
+        { sig: 0, rxX: 59 }                  // VFO A
     ];
-    var RX2_W = 7, RX2_BOTTOM = 113, RX2_MAX_H = 102;
-    // Waveform fills the VFO A box lengthwise (inside rows 5..138, 2 px in)
-    // and stops 1 px short of its right wall (x 104).
-    var WAVE_HALF = 14;                               // x 74..102 around 88
-    var WAVE_TOP = 7, WAVE_PITCH = 2, WAVE_N = 65;    // rows 7..135
+    // The art's RSSI scale is a bracket: lines at y = 8 and y = 114 from
+    // x 59 to 70, upright at x = 70. The bar fills it: x 59..69, rows
+    // 9..113 — centred on x = 64 like the "RSSI" label under it.
+    var RX2_W = 11, RX2_BOTTOM = 113, RX2_MAX_H = 105;
+    // Waveform fills the VFO A box lengthwise (inside rows 5..138, 2 px in).
+    // Mono bar chart: every bar stands on one base line — the UI "floor",
+    // x = 102 on screen, 1 px short of the box's right wall — and grows
+    // toward the UI "top" (screen left) up to WAVE_LEN px.
+    var WAVE_BASE = 102, WAVE_LEN = 29;               // bars span x 74..102
+    var WAVE_TOP = 7, WAVE_BAR = 2, WAVE_PITCH = 3;   // 2 px bars, 1 px gaps
+    var WAVE_N = 43;                                  // rows 7..135
     var WAVE_MS = 40;
+    // Shape of one received transmission on the waveform (ms from the
+    // start / to the end of reception): PTT key-up click, a breath before
+    // speech, then the voice; at the end a roger beep (steady tone) and
+    // the squelch tail (noise once the carrier drops).
+    var KEYUP_MS = 80, LEADIN_MS = 250;
+    var ROGER_MS = 300, TAIL_MS = 150;
 
     // Channel 0 loop: silence first, then talking.
     var SILENT_MS = 10000;
@@ -85,8 +134,15 @@ var WalkieTalkieDemoScene = (function() {
     function WalkieTalkieDemoScene(sceneManager, opts) {
         this.sceneManager    = sceneManager || null;
         this._v2             = !!(opts && opts.v2);
+        // v2 split into two demo apps: 'receive' (incoming loop + screen
+        // cycle, PTT ignored) and 'transmit' (screen on, nothing incoming,
+        // PTT sends from the microphone). null = version 1 behaviour.
+        this._mode           = (opts && opts.mode) || null;
         this.displayName     = 'Walkie Talkie';
         this.breadcrumbTitle = 'Walkie Talkie';
+        if (this._mode === 'receive')  this.displayName = this.breadcrumbTitle = 'Receive';
+        if (this._mode === 'transmit') this.displayName = this.breadcrumbTitle = 'Transmit';
+        if (this._mode === 'transmit-fake') this.displayName = this.breadcrumbTitle = 'Transmit fake';
         this._idleImg    = null;
         this._pressedImg = null;
         this._volume     = 50;
@@ -107,8 +163,12 @@ var WalkieTalkieDemoScene = (function() {
         }
         load(this._v2 ? IDLE_V2_PATH : IDLE_PATH, '_idleImg');
         this._waves = [[]];          // v2 waveform per active VFO, newest first (0..1)
+        if (this._v2 && this._mode === 'transmit') {
+            this._micLevel = 0;
+            this._startMic();
+        }
         this._waveAt = 0;
-        load(PRESSED_PATH, '_pressedImg');
+        load(this._v2 ? PRESSED_V2_PATH : PRESSED_PATH, '_pressedImg');
 
         this._lastPttHeld = false;
         this._linkBlinkOn = false;
@@ -186,13 +246,24 @@ var WalkieTalkieDemoScene = (function() {
         return this._loopPos(t) >= SILENT_MS;
     };
     WalkieTalkieDemoScene.prototype._isReceiving = function(t) {
+        if (this._isSendApp()) return false;               // send-only apps
         return this._loopPos(t) >= SILENT_MS + RX_DELAY_MS;
+    };
+
+    // Transmit and Transmit fake: screen on, nothing incoming.
+    WalkieTalkieDemoScene.prototype._isSendApp = function() {
+        return this._mode === 'transmit' || this._mode === 'transmit-fake';
+    };
+
+    // PTT as this app sees it: ignored in the receive-only app.
+    WalkieTalkieDemoScene.prototype._ptt = function() {
+        return this._mode === 'receive' ? false : isPttHeld();
     };
 
     // Solid red Link LED while VFO A receives; PTT owns the LED (blink)
     // while held. Posts only on change.
     WalkieTalkieDemoScene.prototype._updateRxLed = function() {
-        if (isPttHeld()) { this._rxLedOn = null; return; }
+        if (this._ptt()) { this._rxLedOn = null; return; }
         var on = !!(this._signals && this._signals[0] && this._signals[0].level > 0);
         if (on === this._rxLedOn) return;
         this._rxLedOn = on;
@@ -203,7 +274,8 @@ var WalkieTalkieDemoScene = (function() {
     // re-sends it even if unchanged (after a key press or level write
     // that may have woken the screen on the MCU side).
     WalkieTalkieDemoScene.prototype._syncScreen = function(force) {
-        var on = this._isTalking(Date.now());
+        // Receive follows the talk loop; transmit keeps the screen on.
+        var on = this._isSendApp() ? true : this._isTalking(Date.now());
         if (!force && on === this._screenOn) return;
         this._screenOn = on;
         this._backlight('POST', { action: on ? 'always-on' : 'off' });
@@ -256,6 +328,7 @@ var WalkieTalkieDemoScene = (function() {
     };
 
     WalkieTalkieDemoScene.prototype.exit = function() {
+        if (this._v2 && this._mode === 'transmit') this._stopMic();
         if (this._tickTimer) {
             clearInterval(this._tickTimer);
             this._tickTimer = null;
@@ -298,7 +371,7 @@ var WalkieTalkieDemoScene = (function() {
     WalkieTalkieDemoScene.prototype._updateAllSignalLevels = function() {
         var t = Date.now();
         var elapsed = t - (this._rxAnimEpoch || t);
-        var held = isPttHeld();
+        var held = this._ptt();
         for (var i = 0; i < this._signals.length; i++) {
             var s = this._signals[i];
             s.level = (held || elapsed < 0) ? 0 : s.compute(t, elapsed);
@@ -307,7 +380,7 @@ var WalkieTalkieDemoScene = (function() {
 
     // Red blinking Link LED while PTT is held; only posts on change.
     WalkieTalkieDemoScene.prototype._updatePttLed = function() {
-        var held = isPttHeld();
+        var held = this._ptt();
         if (held === this._lastPttHeld) return;
         this._lastPttHeld = held;
         var self = this;
@@ -372,7 +445,8 @@ var WalkieTalkieDemoScene = (function() {
         if (this._idleImg && this._idleImg.complete && this._idleImg.naturalWidth > 0) {
             ctx.drawImage(this._idleImg, 0, 0);
         }
-        if (!this._v2 && isPttHeld() && this._pressedImg
+        var tx = this._ptt();
+        if (tx && this._pressedImg
                 && this._pressedImg.complete && this._pressedImg.naturalWidth > 0) {
             ctx.drawImage(this._pressedImg, 0, 0);
         }
@@ -382,13 +456,19 @@ var WalkieTalkieDemoScene = (function() {
             // Per VFO: wide RSSI bar along its scale, waveform beside it.
             for (var vi = 0; vi < VFOS_V2.length; vi++) {
                 var vf = VFOS_V2[vi];
-                var sig = this._signals && this._signals[vf.sig];
-                var h2 = Math.round(((sig && sig.level) || 0) * RX2_MAX_H / 100);
-                if (h2 > 0) {
-                    ctx.fillStyle = '#000';
-                    ctx.fillRect(vf.rxX, RX2_BOTTOM - h2 + 1, RX2_W, h2);
+                if (tx) {
+                    // Transmitting: fixed-power strip, white on the black box.
+                    ctx.fillStyle = '#fff';
+                    ctx.fillRect(TX_STRIP_X, RX2_BOTTOM - RX2_MAX_H + 1, TX_STRIP_W, RX2_MAX_H);
+                } else {
+                    var sig = this._signals && this._signals[vf.sig];
+                    var h2 = Math.round(((sig && sig.level) || 0) * RX2_MAX_H / 100);
+                    if (h2 > 0) {
+                        ctx.fillStyle = '#000';
+                        ctx.fillRect(vf.rxX, RX2_BOTTOM - h2 + 1, RX2_W, h2);
+                    }
                 }
-                this._drawWave(ctx, this._waves[vi], vf.waveCx);
+                this._drawWave(ctx, this._waves[vi], tx ? '#fff' : '#000');
             }
         } else {
             // Big vertical receive bar, driven by channel 0.
@@ -478,15 +558,40 @@ var WalkieTalkieDemoScene = (function() {
         var now = Date.now();
         if (now - this._waveAt < WAVE_MS) return;
         this._waveAt = now;
+        // Where we are inside the current reception (channel 0's window).
+        var rxPos = this._loopPos(now) - (SILENT_MS + RX_DELAY_MS);
+        var rxLen = TALK_MS - RX_DELAY_MS;
+        var tx = this._ptt();
+        if (tx && !this._txWas) this._txSince = now;     // press moment
+        this._txWas = tx;
         for (var vi = 0; vi < VFOS_V2.length; vi++) {
             var sig = this._signals && this._signals[VFOS_V2[vi].sig];
             var amp = 0;
-            if (sig && sig.level > 0) {
-                var ph = vi * 1.7;               // each talker its own rhythm
-                var env = 0.5 + 0.3 * Math.sin(now / 90 + ph) + 0.2 * Math.sin(now / 37 + 1.3 + ph)
-                        + 0.25 * Math.sin(now / 410 + ph);
-                env = Math.max(0.08, Math.min(1, env));
-                amp = env * (0.35 + 0.65 * Math.random());
+            if (tx && this._mode === 'transmit-fake') {
+                // Synthetic own voice: a short pause after the press (the
+                // speaker hasn't started yet), then the voice envelope.
+                var since = now - (this._txSince || now);
+                amp = since < FAKE_TX_DELAY_MS ? 0.03 * Math.random() : voiceAmp(now, 0.9);
+            } else if (tx) {
+                // Own voice: noise floor gated, scaled so speech fills bars.
+                amp = Math.max(0, Math.min(1, ((this._micLevel || 0) - MIC_FLOOR) / (MIC_FULL - MIC_FLOOR)));
+            } else if (sig && sig.level > 0) {
+                var toEnd = rxLen - rxPos;
+                if (rxPos < KEYUP_MS) {
+                    amp = 0.85 + 0.15 * Math.random();             // key-up click
+                } else if (rxPos < LEADIN_MS) {
+                    amp = 0.04 + 0.06 * Math.random();             // breath before speech
+                } else if (toEnd <= TAIL_MS) {
+                    amp = 0.55 + 0.45 * Math.random();             // squelch tail noise
+                } else if (toEnd <= TAIL_MS + ROGER_MS) {
+                    amp = 0.68 + 0.04 * Math.random();             // roger beep tone
+                } else {
+                    var ph = vi * 1.7;                            // the voice
+                    var env = 0.5 + 0.3 * Math.sin(now / 90 + ph) + 0.2 * Math.sin(now / 37 + 1.3 + ph)
+                            + 0.25 * Math.sin(now / 410 + ph);
+                    env = Math.max(0.08, Math.min(1, env));
+                    amp = env * (0.35 + 0.65 * Math.random());
+                }
             }
             var w = this._waves[vi];
             w.unshift(amp);
@@ -494,15 +599,68 @@ var WalkieTalkieDemoScene = (function() {
         }
     };
 
-    // v2: bars mirrored around `cx`, newest on top (UI-right in the
+    // v2: mono bars on the base line, newest on top (UI-right in the
     // rotated layout); a single centre dot for a silent slot.
-    WalkieTalkieDemoScene.prototype._drawWave = function(ctx, wave, cx) {
-        ctx.fillStyle = '#000';
+    WalkieTalkieDemoScene.prototype._drawWave = function(ctx, wave, color) {
+        ctx.fillStyle = color || '#000';
         for (var i = 0; i < wave.length; i++) {
             var y = WAVE_TOP + i * WAVE_PITCH;
-            var half = Math.round(wave[i] * WAVE_HALF);
-            ctx.fillRect(cx - half, y, 2 * half + 1, 1);
+            // At least a 2 px stub so the base line reads in silence.
+            var len = Math.max(2, Math.round(wave[i] * WAVE_LEN));
+            ctx.fillRect(WAVE_BASE - len + 1, y, len, WAVE_BAR);
         }
+    };
+
+    // ── v2 microphone (same path as the Voice recorder) ──────────
+    // arecord monitor on the codec + SSE peak levels (0..100 per
+    // channel, ~20 Hz); input gain set to MIC_GAIN_DB, the previous
+    // value restored on exit.
+    function post(url, body) {
+        try {
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', url, true);
+            if (body) xhr.setRequestHeader('Content-Type', 'application/json');
+            xhr.timeout = 1500;
+            xhr.send(body ? JSON.stringify(body) : null);
+        } catch (e) { /* offline, ignore */ }
+    }
+    WalkieTalkieDemoScene.prototype._startMic = function() {
+        var self = this;
+        this._gainBefore = null;
+        try {
+            var xhr = new XMLHttpRequest();
+            xhr.open('GET', '/api/sound/input/gain', true);
+            xhr.timeout = 1500;
+            xhr.onload = function() {
+                try {
+                    var d = JSON.parse(xhr.responseText || '{}');
+                    if (typeof d.db === 'number') self._gainBefore = d.db;
+                } catch (e) {}
+                post('/api/sound/input/gain', { db: MIC_GAIN_DB });
+            };
+            xhr.onerror = xhr.ontimeout = function() { post('/api/sound/input/gain', { db: MIC_GAIN_DB }); };
+            xhr.send();
+        } catch (e) {}
+        post('/api/mic/level/start');
+        if (typeof EventSource === 'undefined') return;
+        try {
+            this._micES = new EventSource('/api/mic/level/stream');
+            this._micES.onmessage = function(ev) {
+                try {
+                    var d = JSON.parse(ev.data);
+                    self._micLevel = Math.max(d.left || 0, d.right || 0);   // mono
+                } catch (e) {}
+            };
+            this._micES.onerror = function() { /* auto-reconnects */ };
+        } catch (e) { this._micES = null; }
+    };
+    WalkieTalkieDemoScene.prototype._stopMic = function() {
+        if (this._micES) { try { this._micES.close(); } catch (e) {} this._micES = null; }
+        post('/api/mic/level/stop');
+        if (this._gainBefore !== null && this._gainBefore !== undefined) {
+            post('/api/sound/input/gain', { db: this._gainBefore });
+        }
+        this._micLevel = 0;
     };
 
     return WalkieTalkieDemoScene;

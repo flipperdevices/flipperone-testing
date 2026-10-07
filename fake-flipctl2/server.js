@@ -1872,7 +1872,9 @@ function stopWalkieLoop() {
 }
 
 // ── Microphone level monitor ─────────────────────────────────────
-// Spawns arecord against hw:1,0 in S16_LE stereo 48 kHz, reads the
+// Spawns arecord against the NAU8822 card (hw:<card>,0, card number from
+// /proc/asound/cards via getNau8822Card — it is not always card 1) in
+// S16_LE stereo 48 kHz, reads the
 // raw PCM stream off stdout, and tracks the peak amplitude per
 // channel as integer percentages 0..100. Clients poll
 // /api/mic/level for the latest values to drive on-screen meters.
@@ -1943,7 +1945,8 @@ function startMicLevelMonitorLowLevel() {
     // reflect whatever the slider was last set to, not whatever
     // mixer state the codec happens to be in.
     var gainCard = getNau8822Card();
-    if (gainCard) applyInputGain(gainCard, inputGainDb);
+    if (!gainCard) return { success: false, error: 'NAU8822 not found' };
+    applyInputGain(gainCard, inputGainDb);
     var spawn = require('child_process').spawn;
     try {
         // --buffer-size=4096 caps mic buffer at ~85 ms (2 periods
@@ -1952,7 +1955,7 @@ function startMicLevelMonitorLowLevel() {
         // codec — a gain change would fire instantly but the
         // bars would only react half a second later.
         micChild = spawn('arecord', [
-            '-D', 'hw:1,0',
+            '-D', 'hw:' + gainCard + ',0',     // same device as the recorder
             '-f', 'S16_LE',
             '-r', '48000',
             '-c', '2',
@@ -2903,7 +2906,7 @@ function startRecording(format, name) {
     // exercised on this build so the safer bet is one-at-a-time.
     stopSound();
     // Same problem on the capture side: the mic-level monitor
-    // holds hw:1,0 exclusively (ALSA hw: devices are single-
+    // holds the codec's hw device exclusively (ALSA hw: devices are single-
     // reader), so sox's open would fail silently and we'd get
     // a 44-byte header-only WAV. Release it at the LOW level
     // so the client-intent flag stays true — the finalize
@@ -5691,7 +5694,7 @@ var server = http.createServer(function(req, res) {
         return;
     }
     // ── /api/mic/level/start ─────────────────────────────────────
-    // Spawns arecord on hw:1,0 so subsequent /api/mic/level GETs
+    // Spawns arecord on the NAU8822 card so subsequent /api/mic/level GETs
     // return live peak values for both channels. Idempotent.
     if (req.url === '/api/mic/level/start' && req.method === 'POST') {
         var mlsResult = startMicLevelMonitor();

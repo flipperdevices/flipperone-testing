@@ -283,10 +283,14 @@ var MenuScene = (function() {
     function walkieVersionsMenu(sm) {
         return new SubMenuScene(sm, 'Walkie Talkie', [
             'Version 1',
-            'Version 2'
+            'Receive',
+            'Transmit',
+            'Transmit fake'
         ], {
             'Version 1': function() { return new WalkieTalkieDemoScene(sm); },
-            'Version 2': function() { return new WalkieTalkieDemoScene(sm, { v2: true }); }
+            'Receive':   function() { return new WalkieTalkieDemoScene(sm, { v2: true, mode: 'receive' }); },
+            'Transmit':  function() { return new WalkieTalkieDemoScene(sm, { v2: true, mode: 'transmit' }); },
+            'Transmit fake': function() { return new WalkieTalkieDemoScene(sm, { v2: true, mode: 'transmit-fake' }); }
         });
     }
 
