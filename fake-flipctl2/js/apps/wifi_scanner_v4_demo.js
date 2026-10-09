@@ -5,13 +5,13 @@
  * standalone copy of Version 1 (wifi_scanner_demo.js) — no code is
  * shared, so either can change without breaking the other.
  *
- *   1. Entry: a copy of the Settings → Network submenu; OK on 'Wi-Fi'
- *      opens the page below, other rows press-flash only.
- *   2. 'Wi-Fi': a copy of the real Wi-Fi page; 'Scan' opens the list.
- *   3. Scan list — same cards as Version 1, but My_Home is first and
+ *   1. Opens straight on the scan list (Version 1's Network submenu →
+ *      Wi-Fi page → Scan walkthrough is still in the file as
+ *      networkEntry, unused).
+ *   2. Scan list — same cards as Version 1, but My_Home is first and
  *      the only full-strength network, the rest sorted by signal, and
  *      each card's info line also shows the channel width.
- *   4. More opens a Wi-Fi scanner v2-style text pop-up for any network
+ *   3. More opens a Wi-Fi scanner v2-style text pop-up for any network
  *      (signal, band / channel / width, Security, Protocol, BSSID,
  *      Vendor, Clients); Help is there only for WEP (My_Home). Help
  *      shows the dolphin typing an explanation into a speech bubble
@@ -1011,7 +1011,15 @@ var WifiScannerV4DemoScene = (function() {
     };
 
     // ── Network submenu copy (demo entry point) ──────────────────
+    // Entry: straight into the network list (ScanPageDemo); Back returns
+    // to the menu that opened the demo. The Network / Wi-Fi page copies
+    // below are kept for the longer walkthrough (networkEntry).
     function WifiScannerV4DemoScene(sceneManager) {
+        return new ScanPageDemo(sceneManager);
+    }
+
+    // The Version 1 walkthrough: Network submenu → Wi-Fi page → Scan.
+    function networkEntry(sceneManager) {
         var subMenu = new SubMenuScene(sceneManager, 'Network', [
             'Wi-Fi',
             'Ethernet',

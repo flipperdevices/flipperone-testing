@@ -40,3 +40,6 @@ fake-flipctl2/assets/tv_media_box/hdmi_port_bg.png
 fake-flipctl2/assets/tv_media_box/hdmi_port_bg_narrow.png
 fake-flipctl2/assets/tv_media_box/hdmi_port_fg.png
 fake-flipctl2/assets/tv_media_box/hdmi_port_fg_narrow.png
+
+# Rendered frame sequences for the campaign footage (generated, large).
+fake-flipctl2/exports/

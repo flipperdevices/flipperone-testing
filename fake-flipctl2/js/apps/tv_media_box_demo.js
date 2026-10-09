@@ -21,8 +21,9 @@
  *     'Running Kodi' fade in, then a white diagonal glare sweeps the
  *     screen once. A selected 'Settings' row (Helvb08) and the
  *     Keyboard + TV remote buttons appear.
- *   - B toggles a manual "connected" override (preview without
- *     hardware), like the other Kickstarter connect demos.
+ *   - OK toggles a manual "connected" override (preview without
+ *     hardware, or a backup during a shoot), like the other Kickstarter
+ *     connect demos.
  *   - Remote / Keyboard: press flashes only, nothing sent.
  * Not registered in RunningApps (no App Switcher card / snapshot).
  *
@@ -151,7 +152,7 @@ var TvMediaBoxDemoScene = (function() {
         this._fakeStarted = true;
         this._hdmiReal    = false;   // last real plug state (debounced)
         this._hdmiMisses  = 0;
-        this._manual      = false;   // B override
+        this._manual      = false;   // OK override
         this._connectAt   = 0;       // 0 = no connect animation
         this._loopStart   = Date.now();
         if (!this._bgImg) {
@@ -274,7 +275,7 @@ var TvMediaBoxDemoScene = (function() {
         if (this._view !== 'main') {
             return TVMediaBoxScene.prototype.handleInput.call(this, action);
         }
-        if (action === 'run') {
+        if (action === 'ok') {
             this._manual = !this._manual;
             this._applyHdmi();
             return;

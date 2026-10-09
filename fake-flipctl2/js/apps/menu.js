@@ -263,9 +263,12 @@ var MenuScene = (function() {
 
     // Testing → Kickstarter demo. Demo flows shown in the campaign
     // material, grouped per app; each app row opens a list of its
-    // design iterations so they can be compared side by side.
+    // design iterations so they can be compared side by side. The
+    // first row, "Selected", is a shortlist of the versions picked for
+    // the shoot, each opening straight away.
     function kickstarterMenu(sm) {
-        return new SubMenuScene(sm, 'Kickstarter demo', [
+        var menu = new SubMenuScene(sm, 'Kickstarter demo', [
+            'Selected',
             'Wi-Fi scanner',
             'Walkie Talkie',
             'SDR connected',
@@ -273,12 +276,53 @@ var MenuScene = (function() {
             'FlipSDR',
             'TV Media Box'
         ], {
+            'Selected': function() { return kickstarterSelectedMenu(sm); },
             'Wi-Fi scanner': function() { return wifiScannerVersionsMenu(sm); },
             'Walkie Talkie': function() { return walkieVersionsMenu(sm); },
             'SDR connected': function() { return new SdrConnectedDemoScene(sm); },
-            'Desktop computer': function() { return new DesktopComputerDemoScene(sm); },
-            'FlipSDR': function() { return FlipSdrBandsMenu(sm); },
+            'Desktop computer': function() { return desktopComputerVersionsMenu(sm); },
+            'FlipSDR': function() { return flipSdrVersionsMenu(sm); },
             'TV Media Box': function() { return new TvMediaBoxDemoScene(sm); }
+        });
+        return menu;
+    }
+
+    // Kickstarter demo → Selected: the versions picked for the shoot.
+    function kickstarterSelectedMenu(sm) {
+        return new SubMenuScene(sm, 'Selected', [
+            'TV Media Box',
+            'Desktop Computer',
+            'Wi-Fi Scanner v4',
+            'Walkie Talkie Receive',
+            'Walkie Talkie Transmit',
+            'FlipSDR v1'
+        ], {
+            'TV Media Box': function() { return new TvMediaBoxDemoScene(sm); },
+            'Desktop Computer': function() { return new DesktopComputerV2DemoScene(sm); },
+            'Wi-Fi Scanner v4': function() { return new WifiScannerV4DemoScene(sm); },
+            'Walkie Talkie Receive': function() { return new WalkieTalkieDemoScene(sm, { v2: true, mode: 'receive' }); },
+            'Walkie Talkie Transmit': function() { return new WalkieTalkieDemoScene(sm, { v2: true, mode: 'transmit' }); },
+            'FlipSDR v1': function() { return FlipSdrBandsMenu(sm); }
+        });
+    }
+
+    function desktopComputerVersionsMenu(sm) {
+        return new SubMenuScene(sm, 'Desktop computer', [
+            'Version 1',
+            'Version 2'
+        ], {
+            'Version 1': function() { return new DesktopComputerDemoScene(sm); },
+            'Version 2': function() { return new DesktopComputerV2DemoScene(sm); }
+        });
+    }
+
+    function flipSdrVersionsMenu(sm) {
+        return new SubMenuScene(sm, 'FlipSDR', [
+            'Version 1',
+            'Version 2'
+        ], {
+            'Version 1': function() { return FlipSdrBandsMenu(sm); },
+            'Version 2': function() { return new FlipSdrV2DemoScene(sm); }
         });
     }
 
