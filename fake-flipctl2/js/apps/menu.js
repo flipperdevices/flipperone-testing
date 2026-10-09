@@ -270,13 +270,15 @@ var MenuScene = (function() {
             'Walkie Talkie',
             'SDR connected',
             'Desktop computer',
-            'FlipSDR'
+            'FlipSDR',
+            'TV Media Box'
         ], {
             'Wi-Fi scanner': function() { return wifiScannerVersionsMenu(sm); },
             'Walkie Talkie': function() { return walkieVersionsMenu(sm); },
             'SDR connected': function() { return new SdrConnectedDemoScene(sm); },
             'Desktop computer': function() { return new DesktopComputerDemoScene(sm); },
-            'FlipSDR': function() { return FlipSdrBandsMenu(sm); }
+            'FlipSDR': function() { return FlipSdrBandsMenu(sm); },
+            'TV Media Box': function() { return new TvMediaBoxDemoScene(sm); }
         });
     }
 
@@ -298,11 +300,13 @@ var MenuScene = (function() {
         return new SubMenuScene(sm, 'Wi-Fi scanner', [
             'Version 1',
             'Version 2',
-            'Version 3'
+            'Version 3',
+            'Version 4'
         ], {
             'Version 1': function() { return new WifiScannerDemoScene(sm); },
             'Version 2': function() { return new WifiScannerV2DemoScene(sm); },
-            'Version 3': function() { return new WifiScannerV3DemoScene(sm); }
+            'Version 3': function() { return new WifiScannerV3DemoScene(sm); },
+            'Version 4': function() { return new WifiScannerV4DemoScene(sm); }
         });
     }
 

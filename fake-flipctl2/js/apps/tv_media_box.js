@@ -1607,7 +1607,7 @@ var TVMediaBoxScene = (function() {
         var hl  = 'Kodi remote';
         var hlW = Born2bSportyV2FlipCTL.textWidth(hl);
         Born2bSportyV2FlipCTL.draw(canvas.ctx, hl,
-            r.x + Math.floor((r.w - hlW) / 2), r.y + 4, '#000');
+            r.x + Math.floor((r.w - hlW) / 2), r.y + 3, '#000');
 
         if (typeof Icons === 'undefined' || !Icons.d_pad_tv_remote) return;
         // D-pad centred inside the panel (its parent), nudged 9px left.
