@@ -262,13 +262,24 @@ var MenuScene = (function() {
     }
 
     // Testing → Kickstarter demo. Demo flows shown in the campaign
-    // material, grouped per app; each app row opens a list of its
-    // design iterations so they can be compared side by side. The
-    // first row, "Selected", is a shortlist of the versions picked for
-    // the shoot, each opening straight away.
+    // material, in two sections:
+    //   Selected — a shortlist of the versions picked for the shoot,
+    //              each opening straight away;
+    //   All      — every app, each row opening a list of its design
+    //              iterations so they can be compared side by side.
     function kickstarterMenu(sm) {
-        var menu = new SubMenuScene(sm, 'Kickstarter demo', [
+        return new SubMenuScene(sm, 'Kickstarter demo', [
             'Selected',
+            'All'
+        ], {
+            'Selected': function() { return kickstarterSelectedMenu(sm); },
+            'All': function() { return kickstarterAllMenu(sm); }
+        });
+    }
+
+    // Kickstarter demo → All.
+    function kickstarterAllMenu(sm) {
+        return new SubMenuScene(sm, 'All', [
             'Wi-Fi scanner',
             'Walkie Talkie',
             'SDR connected',
@@ -277,7 +288,6 @@ var MenuScene = (function() {
             'TV Media Box',
             '5G Modem'
         ], {
-            'Selected': function() { return kickstarterSelectedMenu(sm); },
             'Wi-Fi scanner': function() { return wifiScannerVersionsMenu(sm); },
             'Walkie Talkie': function() { return walkieVersionsMenu(sm); },
             'SDR connected': function() { return new SdrConnectedDemoScene(sm); },
@@ -286,22 +296,19 @@ var MenuScene = (function() {
             'TV Media Box': function() { return new TvMediaBoxDemoScene(sm); },
             '5G Modem': function() { return new Modem5gDemoScene(sm); }
         });
-        return menu;
     }
 
     // Kickstarter demo → Selected: the versions picked for the shoot.
     function kickstarterSelectedMenu(sm) {
         return new SubMenuScene(sm, 'Selected', [
-            'TV Media Box',
-            'Desktop Computer',
             'Wi-Fi Scanner v4',
+            '5G Modem',
             'Walkie Talkie Receive',
             'Walkie Talkie Transmit',
             'FlipSDR v1'
         ], {
-            'TV Media Box': function() { return new TvMediaBoxDemoScene(sm); },
-            'Desktop Computer': function() { return new DesktopComputerV2DemoScene(sm); },
             'Wi-Fi Scanner v4': function() { return new WifiScannerV4DemoScene(sm); },
+            '5G Modem': function() { return new Modem5gDemoScene(sm); },
             'Walkie Talkie Receive': function() { return new WalkieTalkieDemoScene(sm, { v2: true, mode: 'receive' }); },
             'Walkie Talkie Transmit': function() { return new WalkieTalkieDemoScene(sm, { v2: true, mode: 'transmit' }); },
             'FlipSDR v1': function() { return FlipSdrBandsMenu(sm); }
