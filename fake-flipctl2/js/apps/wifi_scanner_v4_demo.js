@@ -8,14 +8,17 @@
  *   1. Opens straight on the scan list (Version 1's Network submenu →
  *      Wi-Fi page → Scan walkthrough is still in the file as
  *      networkEntry, unused).
- *   2. Scan list — same cards as Version 1, but My_Home is first and
- *      the only full-strength network, the rest sorted by signal, and
- *      each card's info line also shows the channel width.
+ *   2. Scan list — Version 1's cards, but My_Home is first and the
+ *      only full-strength network, the rest sorted by signal. Top line:
+ *      SSID, then right-aligned the lock, security pills and the warning
+ *      icon; info line: band / channel / width, and right-aligned the
+ *      auth method (SAE), the cipher (RC4 / TKIP/AES / AES) and "WPS"
+ *      when it's on.
  *   3. More opens a Wi-Fi scanner v2-style text pop-up for any network
  *      (signal, band / channel / width, Security, Protocol, BSSID,
  *      Vendor, Clients); Help is there only for WEP (My_Home). Help
- *      shows the dolphin typing an explanation into a speech bubble
- *      sized to the text.
+ *      shows the dolphin typing into a speech bubble sized to the text,
+ *      topped by a gray band with a router icon + the network name.
  */
 var WifiScannerV4DemoScene = (function() {
 
@@ -81,7 +84,8 @@ var WifiScannerV4DemoScene = (function() {
     var PILL_PAD = 4;                             // text inset each side
     var PILL_FILL = '#696969';                    // pill background (text stays white)
     var PILL_GAP = 3;                             // between pills (and before the warning icon)
-    var LOCK_GAP = 3;                             // SSID text → lock icon
+    var LOCK_GAP = 3;                             // lock icon → first security pill
+    var WPS_TAG  = 'WPS';                         // info-line flag when WPS is on
     var LOCK_DY  = 4;                             // lock (8×10) top, 1 px above the SSID ink rows (y+4)
     // Inactive signal arcs are drawn as a translucent ghost of the
     // black icon.
@@ -122,28 +126,32 @@ var WifiScannerV4DemoScene = (function() {
     // edge on rows TAIL_Y..TAIL_Y+TAIL_H-1 (at the mouth) and never
     // moves. The bubble is sized to the text — as wide as the longest
     // line (wrap at BUBBLE_MAX_TEXT_W), as tall as the line count — and
-    // grows right and up from its fixed bottom edge.
+    // centred on the tail.
     var BUBBLE_X      = 119;
-    var BUBBLE_BOTTOM = 91;              // last row of the frame (tail ~mid-height)
     var BUBBLE_PAD    = 6;
     var BUBBLE_MAX_TEXT_W = 112;
-    var BUBBLE_TITLE_TO_BODY = 13;       // Helvb08 draw y → first Haxrcorp draw y
+    var BUBBLE_TITLE_TO_BODY = 12;       // Helvb08 draw y → first Haxrcorp draw y
+    var BUBBLE_PAD_BOTTOM    = 8;        // last descender row → frame bottom
     var BUBBLE_LINE_H = 10;
     var TAIL_Y = 56;                     // tail rows 56..64, fixed at the mouth
     var TAIL_H = 9;
+    // Header band: a gray strip across the top of the bubble (inside
+    // its outline, top corners rounded to match) with big_router_icon +
+    // the network's name (Born2bSporty, caps centred on the icon) in
+    // black; the title starts HEAD_GAP rows under it.
+    var HEAD_FILL     = '#D9D9D9';
+    var HEAD_PAD_Y    = 2;                // band top → icon top
+    var HEAD_PAD_BOTTOM = 4;              // icon bottom → band bottom
+    var HEAD_ICON_GAP = 4;                // icon → name
+    var HEAD_NAME_DY  = 3;                // name draw y below the icon top (caps 6..15 of 19)
+    var HEAD_GAP      = 7;                // band bottom → title caps
     var HELP_TITLE = 'Weak security!';
-    // Body paragraphs, separated by an empty line.
-    var HELP_BODY  = ['WEP is outdated and easy to hack.', 'Switch to WPA3.'];
+    var HELP_BODY  = 'WEP is outdated and easy to hack. Switch to WPA3.';
     // Wash behind the dolphin + bubble: more opaque than the pop-up's,
     // so the page behind fades out and the dolphin / bubble stand out.
     var HELP_WASH  = 'rgba(255, 255, 255, 0.85)';
     var TYPE_CHAR_MS  = 30;              // typing speed
     var TYPE_START_MS = 250;             // pause before the first letter
-    // OK on the Help screen toggles blinking of the last paragraph (the
-    // call to action): while on it alternates between a black pill
-    // with white text and plain text, BLINK_MS each, until OK again.
-    var BLINK_MS    = 300;
-    var PILL_PAD_X  = 4;                 // pill edge → Haxrcorp ink, left / right
 
     // Greedy word wrap for Haxrcorp at `width` px.
     function wrapText(text, width) {
@@ -162,29 +170,39 @@ var WifiScannerV4DemoScene = (function() {
         if (line) lines.push(line);
         return lines;
     }
-    var HELP_LINES = [];
-    for (var hp = 0; hp < HELP_BODY.length; hp++) {
-        if (hp > 0) HELP_LINES.push('');
-        HELP_LINES = HELP_LINES.concat(wrapText(HELP_BODY[hp], BUBBLE_MAX_TEXT_W));
+    var HELP_LINES = wrapText(HELP_BODY, BUBBLE_MAX_TEXT_W);
+    var HELP_TEXT_CHARS = HELP_TITLE.length;
+    for (var hl = 0; hl < HELP_LINES.length; hl++) HELP_TEXT_CHARS += HELP_LINES[hl].length;
+    // Letters typed in total for network `name`: the name (in the tab),
+    // then the title, then the body.
+    function helpChars(name) {
+        return name.length + HELP_TEXT_CHARS;
     }
-    // First line of the last paragraph — the part OK blinks.
-    var HELP_BLINK_FROM = HELP_LINES.lastIndexOf('') + 1;
-    var HELP_CHARS = HELP_TITLE.length;
-    for (var hl = 0; hl < HELP_LINES.length; hl++) HELP_CHARS += HELP_LINES[hl].length;
 
-    // Bubble geometry from the full text (fixed while typing). Helvb08
-    // caps sit at y+1..y+8, Haxrcorp ink at y+2..y+8 (+2 descender
-    // rows); BUBBLE_PAD - 1 rows of air above the caps and below the
-    // descenders.
-    var HELP_BUBBLE = (function() {
-        var textW = Helvb08Regular.textWidth(HELP_TITLE);
+    // Header band height (inside the bubble's 1 px outline).
+    function headH() {
+        return HEAD_PAD_Y + Icons.big_router_icon.h + HEAD_PAD_BOTTOM;
+    }
+
+    // Bubble geometry for network `name` from the full text (fixed
+    // while typing): the header band, then the Helvb08 title (caps
+    // y+1..y+8) over the Haxrcorp body (ink y+2..y+8, +2 descender
+    // rows), BUBBLE_PAD_BOTTOM rows of air below the descenders; wide
+    // enough for the longest of header / title / body lines; centred
+    // on the tail (kept under the status bar).
+    function helpBubble(name) {
+        var textW = Icons.big_router_icon.w + HEAD_ICON_GAP + Born2bSportyV2FlipCTL.textWidth(name);
+        textW = Math.max(textW, Helvb08Regular.textWidth(HELP_TITLE));
         for (var i = 0; i < HELP_LINES.length; i++) {
             textW = Math.max(textW, HaxrCorp4090FlipCTL.textWidth(HELP_LINES[i]));
         }
+        var titleDy = 1 + headH() + HEAD_GAP - 1;   // bubble top → title draw y
         var textH = BUBBLE_TITLE_TO_BODY + (HELP_LINES.length - 1) * BUBBLE_LINE_H + 10;
-        var h = textH + 2 * BUBBLE_PAD - 1;
-        return { x: BUBBLE_X, y: BUBBLE_BOTTOM - h + 1, w: textW + 2 * BUBBLE_PAD, h: h };
-    })();
+        var h = titleDy + textH + BUBBLE_PAD_BOTTOM + 1;
+        var y = TAIL_Y + Math.floor(TAIL_H / 2) - Math.floor(h / 2);
+        y = Math.max(y, UI.STATUS_BAR_H + 2);
+        return { x: BUBBLE_X, y: y, w: textW + 2 * BUBBLE_PAD, h: h, titleDy: titleDy };
+    }
 
     function preloadWarning() {
         loadImage(DOLPHIN_OPEN);
@@ -193,15 +211,16 @@ var WifiScannerV4DemoScene = (function() {
     function randBetween(range) {
         return range[0] + Math.random() * (range[1] - range[0]);
     }
-    // Paint the Help screen: the dolphin (talking while letters are still
-    // coming), the bubble with its tail, and as much of the title + body
-    // as has been typed `typeStart` ms-epoch after it opened.
-    // `talk` = { open, nextAt }.
-    function drawWarning(canvas, talk, typeStart, blinkAt) {
+    // Paint the Help screen for network `net`: the dolphin (talking while
+    // letters are still coming), the name tab, the bubble with its tail,
+    // and as much of the network name + title + body as has been typed
+    // `typeStart` ms-epoch after it opened. `talk` = { open, nextAt }.
+    function drawWarning(canvas, talk, typeStart, net) {
         var ctx = canvas.ctx;
         var now = Date.now();
+        var name = net.ssid;
         var typed = Math.max(0, Math.floor((now - typeStart - TYPE_START_MS) / TYPE_CHAR_MS));
-        if (typed >= HELP_CHARS) {
+        if (typed >= helpChars(name)) {
             talk.open = false;
         } else if (now >= talk.nextAt) {
             talk.open   = !talk.open;
@@ -212,7 +231,9 @@ var WifiScannerV4DemoScene = (function() {
         var dolphin = loadImage(talk.open ? DOLPHIN_OPEN : DOLPHIN_CLOSE);
         if (imageReady(dolphin)) ctx.drawImage(dolphin, 0, 0);
 
-        var b = HELP_BUBBLE;
+        var b = helpBubble(name);
+        var left = typed;
+
         new ResponsiveFrame({
             x: b.x, y: b.y, width: b.w, height: b.h,
             anchorH: 'left', anchorV: 'top',
@@ -232,33 +253,33 @@ var WifiScannerV4DemoScene = (function() {
         ctx.fillStyle = '#000';
         ctx.fillRect(b.x - TAIL_H, TAIL_Y + TAIL_H - 1, TAIL_H + 1, 1);
 
-        // Typed text.
+        // Header band (inside the outline, top corners following the
+        // frame's), router icon from the start, then the typed name.
+        new ResponsiveFrame({
+            x: b.x + 1, y: b.y + 1, width: b.w - 2, height: headH(),
+            anchorH: 'left', anchorV: 'top',
+            showStroke: false,
+            showFill: true, fillColor: HEAD_FILL,
+            cornerRadius: 3,
+            corners: { tl: true, tr: true, bl: false, br: false }
+        }).render(canvas);
         var tx = b.x + BUBBLE_PAD;
-        var titleY = b.y + BUBBLE_PAD - 1;
-        var left = typed;
+        var iconY = b.y + 1 + HEAD_PAD_Y;
+        canvas.drawSprite(Icons.big_router_icon, tx, iconY, '#000');
+        var shownName = name.slice(0, left);
+        Born2bSportyV2FlipCTL.draw(ctx, shownName,
+            tx + Icons.big_router_icon.w + HEAD_ICON_GAP, iconY + HEAD_NAME_DY, '#000');
+        left -= shownName.length;
+
+        // Typed title + body.
+        var titleY = b.y + b.titleDy;
         var title = HELP_TITLE.slice(0, left);
         Helvb08Regular.draw(ctx, title, tx, titleY, '#000');
         left -= title.length;
-        // Blink (while toggled on): pill on the first half of each
-        // BLINK_MS * 2 cycle.
-        var pillOn = !!blinkAt && Math.floor((now - blinkAt) / BLINK_MS) % 2 === 0;
-        for (var i = 0; i < HELP_LINES.length && left > 0; i++) {   // '' = paragraph gap
+        for (var i = 0; i < HELP_LINES.length && left > 0; i++) {
             var part = HELP_LINES[i].slice(0, left);
-            var ly = titleY + BUBBLE_TITLE_TO_BODY + i * BUBBLE_LINE_H;
-            var inPill = pillOn && i >= HELP_BLINK_FROM && part;
-            if (inPill) {
-                // Haxrcorp ink spans x+1..x+w-1, rows y+2..y+8: PILL_PAD_X
-                // px of black left / right, 2 px above / below.
-                new ResponsiveFrame({
-                    x: tx + 1 - PILL_PAD_X, y: ly,
-                    width: HaxrCorp4090FlipCTL.textWidth(part) - 1 + 2 * PILL_PAD_X, height: 11,
-                    anchorH: 'left', anchorV: 'top',
-                    showStroke: false,
-                    showFill: true, fillColor: '#000',
-                    cornerRadius: 3
-                }).render(canvas);
-            }
-            HaxrCorp4090FlipCTL.draw(ctx, part, tx, ly, inPill ? '#fff' : '#000');
+            HaxrCorp4090FlipCTL.draw(ctx, part, tx,
+                titleY + BUBBLE_TITLE_TO_BODY + i * BUBBLE_LINE_H, '#000');
             left -= part.length;
         }
     }
@@ -289,6 +310,8 @@ var WifiScannerV4DemoScene = (function() {
     // Fake scan results. `level` = active arcs 0..3 (dot always on),
     // `security` = pills left→right (anything but OPEN also gets the
     // lock after the SSID), `warn` = warning icon after the pills.
+    // 2.4 GHz networks sit on 1 / 6 / 11, the non-overlapping channels
+    // almost every router uses.
     // Plus what the cards / More pop-up show (all passively observable, no association needed):
     //   width   — channel width (beacon HT/VHT/HE operation IEs);
     //             WEP and the 2.4 GHz crowd stay at 20 MHz;
@@ -297,21 +320,27 @@ var WifiScannerV4DemoScene = (function() {
     //   bssid   — AP MAC; `vendor` is its OUI owner (first 3 bytes);
     //   clients — stations seen exchanging data frames with the BSSID.
     var NETWORKS = [
-        { ssid: 'My_Home',      band: '2.4GHz', channel: 8,   width: '20MHz', security: ['WEP'],         level: 3, warn: true,
+        { ssid: 'My_Home',      band: '2.4GHz', channel: 6,   width: '20MHz', security: ['WEP'],         level: 3, warn: true,
+          cipher: 'RC4', wps: true,
           rssi: -45, proto: '802.11g',  bssid: '50:c7:bf:1f:b8:02', vendor: 'TP-Link',      clients: 3 },
-        { ssid: 'Cafe-WiFi',    band: '2.4GHz', channel: 4,   width: '20MHz', security: ['OPEN'],        level: 2,
+        { ssid: 'Cafe-WiFi',    band: '2.4GHz', channel: 1,   width: '20MHz', security: ['OPEN'],        level: 2,
           rssi: -58, proto: '802.11n',  bssid: '24:a4:3c:90:27:21', vendor: 'Ubiquiti',     clients: 7 },
+        { ssid: 'YourMomGuest', band: '5GHz',   channel: 120, width: '80MHz', security: ['WPA3'],        level: 2,
+          auth: 'SAE', cipher: 'AES',
+          rssi: -61, proto: '802.11ac', bssid: 'a0:40:a0:8e:33:d5', vendor: 'Netgear',      clients: 1 },
         { ssid: 'Office_Guest', band: '5GHz',   channel: 44,  width: '80MHz', security: ['WPA3'],        level: 2,
+          cipher: 'AES',
           rssi: -63, proto: '802.11ax', bssid: 'e0:55:3d:6b:c1:40', vendor: 'Cisco Meraki', clients: 5 },
         { ssid: 'TP-Link_5F2A', band: '2.4GHz', channel: 1,   width: '40MHz', security: ['WPA2'],        level: 2,
+          cipher: 'TKIP/AES', wps: true,          // mixed mode, TP-Link's default
           rssi: -67, proto: '802.11n',  bssid: 'c0:25:e9:4b:12:7a', vendor: 'TP-Link',      clients: 2 },
-        { ssid: 'YourMomGuest', band: '5GHz',   channel: 120, width: '80MHz', security: ['WPA3', 'SAE'], level: 1,
-          rssi: -74, proto: '802.11ac', bssid: 'a0:40:a0:8e:33:d5', vendor: 'Netgear',      clients: 1 },
         { ssid: 'DIRECT-7A-HP', band: '5GHz',   channel: 36,  width: '20MHz', security: ['WPA2'],        level: 1,
+          cipher: 'AES', wps: true,
           rssi: -78, proto: '802.11n',  bssid: '9c:b6:54:7a:02:e1', vendor: 'HP',           clients: 0 },
-        { ssid: 'xfinitywifi',  band: '2.4GHz', channel: 6,   width: '20MHz', security: ['OPEN'],        level: 1,
+        { ssid: 'xfinitywifi',  band: '2.4GHz', channel: 11,  width: '20MHz', security: ['OPEN'],        level: 1,
           rssi: -81, proto: '802.11n',  bssid: '58:90:43:a1:0e:c4', vendor: 'Sagemcom',     clients: 4 },
-        { ssid: 'home_iot_2G',  band: '2.4GHz', channel: 11,  width: '20MHz', security: ['WPA2'],        level: 0,
+        { ssid: 'home_iot_2G',  band: '2.4GHz', channel: 6,   width: '20MHz', security: ['WPA2'],        level: 0,
+          cipher: 'AES',
           rssi: -88, proto: '802.11n',  bssid: '24:0a:c4:e5:0a:9c', vendor: 'Espressif',    clients: 6 }
     ];
 
@@ -380,28 +409,29 @@ var WifiScannerV4DemoScene = (function() {
 
         var ssidX = CARD_X + CARD_TEXT_DX;
         Born2bSportyV2FlipCTL.draw(ctx, net.ssid, ssidX, y + CARD_SSID_DY, '#000');
-        // Secured networks carry a lock right after the name.
-        if (net.security.indexOf('OPEN') === -1) {
-            canvas.drawSprite(Icons.lock_icon_8px,
-                ssidX + Born2bSportyV2FlipCTL.textWidth(net.ssid) + LOCK_GAP,
-                y + LOCK_DY, '#000');
-        }
 
-        // Security pills — solid black rounded boxes with the tag in
-        // white, each sized to its tag. The whole cluster (pills,
-        // gaps, and the warning icon of a `warn` network — 11 px
-        // tall, flush with the pill's top) is right-aligned to the
-        // card's right edge minus PILL_RIGHT_PAD, keeping the
-        // left→right order.
+        // Right cluster, right-aligned to the card's right edge minus
+        // PILL_RIGHT_PAD, left → right: the lock (secured networks),
+        // the security pills (solid gray, white tag, each sized to its
+        // tag) and the warning icon of a `warn` network (11 px tall,
+        // flush with the pills).
+        var secured = net.security.indexOf('OPEN') === -1;
         var widths = [];
         var cluster = 0;
         for (var m = 0; m < net.security.length; m++) {
             widths[m] = HaxrCorp4090FlipCTL.textWidth(net.security[m]) + 2 * PILL_PAD;
             cluster += widths[m] + (m > 0 ? PILL_GAP : 0);
         }
+        if (secured) cluster += Icons.lock_icon_8px.w + LOCK_GAP;
         if (net.warn) cluster += PILL_GAP + Icons.warning_icon.w;
-        var px = CARD_X + CARD_W - PILL_RIGHT_PAD - cluster;
+        var right = CARD_X + CARD_W - PILL_RIGHT_PAD;
+        var px = right - cluster;
         var py = y + PILL_DY;
+        if (secured) {
+            // 8×10 lock, bottom flush with the pills' bottom row.
+            canvas.drawSprite(Icons.lock_icon_8px, px, py + PILL_H - 10, '#000');
+            px += Icons.lock_icon_8px.w + LOCK_GAP;
+        }
         for (var t = 0; t < net.security.length; t++) {
             var tag = net.security[t];
             var pw  = widths[t];
@@ -430,6 +460,20 @@ var WifiScannerV4DemoScene = (function() {
         if (net.width) {
             x += HaxrCorp4090FlipCTL.textWidth(chText) + CARD_INFO_GAP_CHANNEL;
             HaxrCorp4090FlipCTL.draw(ctx, net.width, x, iy, CARD_DIM);
+        }
+        // Extras, right-aligned under the cluster (Haxrcorp ink ends
+        // 1 px before x + width, i.e. on the cluster's last column):
+        // the auth method (e.g. SAE), the cipher, then "WPS" when it's
+        // on, CARD_INFO_GAP_CHANNEL apart — laid out right to left.
+        var extras = [];
+        if (net.auth) extras.push(net.auth);
+        if (net.cipher) extras.push(net.cipher);
+        if (net.wps) extras.push(WPS_TAG);
+        var ex = right;
+        for (var e = extras.length - 1; e >= 0; e--) {
+            ex -= HaxrCorp4090FlipCTL.textWidth(extras[e]);
+            HaxrCorp4090FlipCTL.draw(ctx, extras[e], ex, iy, CARD_DIM);
+            ex -= CARD_INFO_GAP_CHANNEL;
         }
     }
 
@@ -535,15 +579,9 @@ var WifiScannerV4DemoScene = (function() {
                     this._warning = false;
                     if (window.requestRender) window.requestRender();
                 } else if (action === 'ok') {
-                    // Toggle blinking of the call to action ("Switch to
-                    // WPA3."); turning it on also finishes the typing.
-                    if (this._blinkAt) {
-                        this._blinkAt = 0;
-                    } else {
-                        this._typeStart = Math.min(this._typeStart,
-                            Date.now() - TYPE_START_MS - HELP_CHARS * TYPE_CHAR_MS);
-                        this._blinkAt = Date.now();
-                    }
+                    // Finish the typing at once.
+                    this._typeStart = Math.min(this._typeStart,
+                        Date.now() - TYPE_START_MS - helpChars(this._popup.ssid) * TYPE_CHAR_MS);
                     if (window.requestRender) window.requestRender();
                 }
                 return;
@@ -555,7 +593,6 @@ var WifiScannerV4DemoScene = (function() {
                 this._pressButton(this._helpBtn, function() {
                     closeSelf._warning   = true;
                     closeSelf._typeStart = Date.now();
-                    closeSelf._blinkAt   = 0;
                 });
             } else if (action === 'back' || action === 'esc') {
                 this._closePopup();
@@ -691,7 +728,7 @@ var WifiScannerV4DemoScene = (function() {
             // Help's full-screen warning mock is an overlay too: the
             // transparent PNG goes over another 50 % white wash, so
             // the pop-up stays visible (dimmed) behind it.
-            if (this._warning) drawWarning(canvas, this._talk, this._typeStart, this._blinkAt);
+            if (this._warning) drawWarning(canvas, this._talk, this._typeStart, this._popup);
             if (window.requestRender) window.requestRender();
         }
     };
@@ -702,18 +739,22 @@ var WifiScannerV4DemoScene = (function() {
     // Sporty) hanging off the top-left corner of a white frame, then
     // in Haxrcorp (labels dimmed, values black) the router icon +
     // "Signal level: <rssi> dBm" / "<band>  Channel <n>  <width>",
-    // and a label / value column. Rows are tighter than v2's (12 px
-    // pitch) to fit Vendor and Clients above the bottom buttons, and
-    // sit on zebra stripes (gray / white, one stripe per row) so each
-    // line reads as its own field.
+    // and a label / value column (Security, Cipher, WPS, Protocol,
+    // BSSID, Vendor, Clients). Rows are tighter than v2's (11 px pitch)
+    // and the window sits right under the status bar to fit them all
+    // above the bottom buttons; they sit on zebra stripes (gray /
+    // white, one stripe per row) so each line reads as its own field.
     var TP_W        = 156;
-    var TP_H        = 103;                       // bottom edge at 125, above the buttons
+    // Frame rows 19..127 (2 rows of air above the buttons at 130); the
+    // tab sits on rows 1..24 (1 row under the screen top), its bottom 6
+    // behind the frame.
+    var TP_H        = 109;
     var TP_X        = Math.floor((256 - TP_W) / 2);   // 50
-    var TP_Y        = 23;
+    var TP_Y        = 19;
     var TP_RADIUS   = 4;
     var TP_TAB_H    = 24;
     var TP_TAB_OVERLAP = 6;                      // tab rows hidden behind the frame
-    var TP_TAB_Y    = TP_Y - (TP_TAB_H - TP_TAB_OVERLAP);   // 5
+    var TP_TAB_Y    = TP_Y - (TP_TAB_H - TP_TAB_OVERLAP);   // 1
     var TP_TAB_PAD_X   = 6;
     var TP_TAB_TEXT_DY = 1;
     var TP_TAB_LOCK_DY = 4;
@@ -723,11 +764,11 @@ var WifiScannerV4DemoScene = (function() {
     // so the band line has ~10 px of air above the table.
     // big_router_icon (20×19): 2 px right of the old 22-px icon column's centre
     // and vertically on the two header lines (ink rows 10..29).
-    var TP_ICON_DX  = 11, TP_ICON_DY  = 10;
+    var TP_ICON_DX  = 11, TP_ICON_DY  = 5;       // icon rows 5..23 = the header's ink
     var TP_TEXT_DX  = 39;
-    var TP_SIGNAL_DY = 8,  TP_BAND_DY = 21;
+    var TP_SIGNAL_DY = 3,  TP_BAND_DY = 15;      // ink 5..11 / 17..23
     var TP_LABEL_DX = 8,  TP_VALUE_DX = 52;
-    var TP_ROW_DY0  = 40, TP_ROW_PITCH = 12;     // Security … Clients
+    var TP_ROW_DY0  = 29, TP_ROW_PITCH = 11;     // 7 rows: Security … Clients
     // Zebra stripes: one TP_ROW_PITCH band per row starting at the
     // row's draw y (Haxrcorp ink y+2..y+8, descenders below), inset
     // TP_STRIPE_INSET px from the frame edge; even rows are gray.
@@ -800,7 +841,9 @@ var WifiScannerV4DemoScene = (function() {
         HaxrCorp4090FlipCTL.draw(ctx, bandLine, cx, TP_Y + TP_BAND_DY, TP_DIM);
 
         var rows = [
-            ['Security:', net.security.join(' ')],
+            ['Security:', net.security.concat(net.auth ? [net.auth] : []).join(' ')],
+            ['Cipher:',   net.cipher || 'None'],
+            ['WPS:',      net.wps ? 'Yes' : 'No'],
             ['Protocol:', net.proto],
             ['BSSID:',    net.bssid],
             ['Vendor:',   net.vendor],

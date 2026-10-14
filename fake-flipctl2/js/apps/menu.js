@@ -274,7 +274,8 @@ var MenuScene = (function() {
             'SDR connected',
             'Desktop computer',
             'FlipSDR',
-            'TV Media Box'
+            'TV Media Box',
+            '5G Modem'
         ], {
             'Selected': function() { return kickstarterSelectedMenu(sm); },
             'Wi-Fi scanner': function() { return wifiScannerVersionsMenu(sm); },
@@ -282,7 +283,8 @@ var MenuScene = (function() {
             'SDR connected': function() { return new SdrConnectedDemoScene(sm); },
             'Desktop computer': function() { return desktopComputerVersionsMenu(sm); },
             'FlipSDR': function() { return flipSdrVersionsMenu(sm); },
-            'TV Media Box': function() { return new TvMediaBoxDemoScene(sm); }
+            'TV Media Box': function() { return new TvMediaBoxDemoScene(sm); },
+            '5G Modem': function() { return new Modem5gDemoScene(sm); }
         });
         return menu;
     }
