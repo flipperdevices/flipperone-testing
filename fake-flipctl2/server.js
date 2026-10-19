@@ -224,11 +224,15 @@ function listUsbc() {
 // with action 'off' instead. Any key press or touchpad touch wakes the
 // screen on the MCU side regardless of what Linux wrote.
 //
-// Calls are serialised so two transfers never overlap on the bus.
+// Calls are serialised so two transfers never overlap on the bus
+// (one queue for every MCU script: backlight and LEDs share the bus).
 var BACKLIGHT_SCRIPT = path.join(__dirname, '..', 'scripts', 'mcu-backlight.py');
-var backlightQueue = Promise.resolve();
+var mcuQueue = Promise.resolve();
 function backlightRun(args, cb) {
-    backlightQueue = backlightQueue.then(function() {
+    mcuScriptRun(BACKLIGHT_SCRIPT, args, cb);
+}
+function mcuScriptRun(script, args, cb) {
+    mcuQueue = mcuQueue.then(function() {
         return new Promise(function(resolve) {
             var out = '', errOut = '';
             var done = false;
@@ -241,7 +245,7 @@ function backlightRun(args, cb) {
                 cb(result);
             }
             try {
-                child = spawn('sudo', ['-n', 'python3', BACKLIGHT_SCRIPT].concat(args),
+                child = spawn('sudo', ['-n', 'python3', script].concat(args),
                               { stdio: ['ignore', 'pipe', 'pipe'] });
             } catch (e) {
                 done = true;
@@ -267,6 +271,118 @@ function backlightRun(args, cb) {
                 finish(result);
             });
         });
+    });
+}
+
+// ── Power / wattmeter LEDs (via the MCU over I2C) ────────────────
+// The battery / USB-C LED cluster is driven by the MCU: one RGB565
+// register per LED (scripts/mcu-leds.py has the map).
+//
+//   GET  /api/mcu/leds                         -> {ok, bus, leds: {name: rgb565}}
+//   POST /api/mcu/leds {leds: {name: rgb565}}  -> write those LEDs
+//   POST /api/mcu/leds {action: 'off'}         -> every wattmeter LED off
+//
+// Writes are coalesced: while one is on the bus, newer requests merge
+// into a single pending set (the latest colour per LED wins), so a
+// blinking UI never builds a backlog. POST answers at once with the
+// result of the previous write (`last`), for diagnostics.
+var MCU_LEDS_SCRIPT = path.join(__dirname, '..', 'scripts', 'mcu-leds.py');
+var MCU_LED_NAMES = ['power', 'bat_outline', 'bat_watt1', 'bat_watt2', 'bat_watt3',
+                     'bat_watt4', 'usb_charging', 'usb_watt1', 'usb_watt2',
+                     'usb_watt3', 'usb_watt4', 'bat_center'];
+var mcuLedsPending = null;     // {name: value} not yet written, or null
+var mcuLedsBusy = false;
+var mcuLedsLast = null;        // result of the last finished write
+function mcuLedsFlush() {
+    if (mcuLedsBusy || !mcuLedsPending) return;
+    var set = mcuLedsPending;
+    mcuLedsPending = null;
+    mcuLedsBusy = true;
+    var args = set === 'off' ? ['off'] : ['set'].concat(Object.keys(set).map(function(n) {
+        return n + '=' + set[n];
+    }));
+    mcuScriptRun(MCU_LEDS_SCRIPT, args, function(result) {
+        mcuLedsLast = result;
+        mcuLedsBusy = false;
+        mcuLedsFlush();
+    });
+}
+function mcuLedsQueue(leds) {
+    if (leds === 'off') {
+        mcuLedsPending = 'off';
+    } else {
+        if (!mcuLedsPending || mcuLedsPending === 'off') {
+            // An 'off' still waiting is superseded by explicit colours
+            // for the LEDs named; the rest it would have cleared go
+            // into the set as 0.
+            var base = {};
+            if (mcuLedsPending === 'off') {
+                MCU_LED_NAMES.forEach(function(n) { if (n !== 'power') base[n] = 0; });
+            }
+            mcuLedsPending = base;
+        }
+        for (var n in leds) mcuLedsPending[n] = leds[n];
+    }
+    mcuLedsFlush();
+}
+
+// ── Power button to Linux (via the MCU over I2C) ─────────────────
+// By default the MCU keeps the Power button for its own menu. Bit 0
+// (POWER_TO_CPU) of MCU register 0x0210 hands it to Linux instead: the
+// press then arrives as a key from the kernel's "Flipper One Buttons"
+// input device, like any other button. scripts/mcu-power-key.py does
+// the I2C write.
+//
+//   GET  /api/mcu/power-key                  -> {ok, bus, control, to_cpu, held}
+//   POST /api/mcu/power-key {to_cpu: true}   -> take the button (renews the lease)
+//   POST /api/mcu/power-key {to_cpu: false}  -> give it back to the MCU
+//
+// Taking the button is a lease: the client renews it every couple of
+// seconds, and without a renewal for POWER_KEY_LEASE_MS the server gives
+// the button back, so a crashed or reloaded page can't leave the device
+// without its Power menu. Only changes touch the bus; renewals don't.
+// While Linux has the button, a systemd-inhibit lock on
+// handle-power-key keeps logind from treating the press as poweroff.
+// The server hands the button back on startup as well.
+var MCU_POWER_KEY_SCRIPT = path.join(__dirname, '..', 'scripts', 'mcu-power-key.py');
+var POWER_KEY_LEASE_MS = 6000;
+var powerKeyHeld = null;       // true / false as last written, null = unknown
+var powerKeyLease = null;
+var powerKeyInhibitor = null;  // systemd-inhibit child while Linux has the button
+var powerKeyLast = null;       // result of the last write
+function powerKeyInhibit(on) {
+    if (on && !powerKeyInhibitor && process.platform === 'linux') {
+        try {
+            powerKeyInhibitor = spawn('systemd-inhibit', [
+                '--what=handle-power-key', '--who=fake-flipctl2',
+                '--why=An app has taken the Power button', '--mode=block',
+                'sleep', 'infinity'
+            ], { stdio: 'ignore' });
+            powerKeyInhibitor.on('error', function(e) {
+                console.warn('[power-key] systemd-inhibit: ' + e.message);
+            });
+            powerKeyInhibitor.on('exit', function() { powerKeyInhibitor = null; });
+        } catch (e) {
+            powerKeyInhibitor = null;
+        }
+    } else if (!on && powerKeyInhibitor) {
+        try { powerKeyInhibitor.kill(); } catch (e) {}
+        powerKeyInhibitor = null;
+    }
+}
+function powerKeySet(on) {
+    if (powerKeyLease) { clearTimeout(powerKeyLease); powerKeyLease = null; }
+    if (on) powerKeyLease = setTimeout(function() { powerKeySet(false); }, POWER_KEY_LEASE_MS);
+    if (on === powerKeyHeld) return;
+    powerKeyHeld = on;
+    powerKeyInhibit(on);
+    mcuScriptRun(MCU_POWER_KEY_SCRIPT, [on ? 'on' : 'off'], function(result) {
+        powerKeyLast = result;
+        if (!result.ok) {
+            // Unknown state: the next request writes again.
+            powerKeyHeld = null;
+            console.warn('[power-key] ' + (on ? 'on' : 'off') + ' failed: ' + result.error);
+        }
     });
 }
 
@@ -4566,6 +4682,62 @@ var server = http.createServer(function(req, res) {
         });
         return;
     }
+    if (req.url === '/api/mcu/power-key' && req.method === 'GET') {
+        mcuScriptRun(MCU_POWER_KEY_SCRIPT, ['get'], function(result) {
+            result.held = powerKeyHeld;
+            res.writeHead(result.ok ? 200 : 500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(result));
+        });
+        return;
+    }
+    if (req.url === '/api/mcu/power-key' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            if (err || !data || typeof data.to_cpu !== 'boolean') {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Invalid request' }));
+                return;
+            }
+            powerKeySet(data.to_cpu);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, to_cpu: data.to_cpu, last: powerKeyLast }));
+        });
+        return;
+    }
+    if (req.url === '/api/mcu/leds' && req.method === 'GET') {
+        mcuScriptRun(MCU_LEDS_SCRIPT, ['get'], function(result) {
+            res.writeHead(result.ok ? 200 : 500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(result));
+        });
+        return;
+    }
+    if (req.url === '/api/mcu/leds' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            var leds = null;
+            if (!err && data && data.action === 'off') {
+                leds = 'off';
+            } else if (!err && data && data.leds && typeof data.leds === 'object') {
+                leds = {};
+                for (var n in data.leds) {
+                    var v = data.leds[n];
+                    if (MCU_LED_NAMES.indexOf(n) < 0 || typeof v !== 'number'
+                            || v < 0 || v > 0xFFFF) {
+                        leds = null;
+                        break;
+                    }
+                    leds[n] = Math.round(v);
+                }
+            }
+            if (!leds) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Invalid request' }));
+                return;
+            }
+            mcuLedsQueue(leds);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, queued: true, last: mcuLedsLast }));
+        });
+        return;
+    }
     if (req.url === '/api/led/manual' && req.method === 'POST') {
         // Network-LED tuning takeover. When `enabled: true` the
         // periodic apply loop steps aside so direct /api/led/set
@@ -6317,6 +6489,10 @@ server.listen(PORT, BIND, function() {
         // so it runs for the whole server lifetime.
         try { ensureHapticDaemon(); }
         catch (e) { console.warn('[haptic] startup failed: ' + e.message); }
+
+        // The Power button goes back to the MCU's menu until an app
+        // takes it (see powerKeySet).
+        powerKeySet(false);
 
         // Reap any _old_ backup left by a factory reset of the (now booted) profile.
         try { reapOldBackups(); }

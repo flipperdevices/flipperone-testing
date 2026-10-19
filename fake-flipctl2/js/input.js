@@ -21,6 +21,11 @@ var Input = (function() {
         'c': 'power',
         'v': 'del',
         'b': 'run',
+        // The hardware Power button (KEY_POWER), once an app has taken
+        // it from the MCU (POST /api/mcu/power-key); WebKit names it
+        // either way depending on the keymap.
+        'Power': 'power',
+        'PowerOff': 'power',
     };
 
     function Input() {

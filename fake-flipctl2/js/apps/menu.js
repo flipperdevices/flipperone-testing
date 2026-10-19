@@ -251,13 +251,33 @@ var MenuScene = (function() {
     // submenu. Add new "* - UI demo" entries here as they land.
     function demoMenu(sm) {
         return new SubMenuScene(sm, 'UI Demos', [
-            'Boot menu - UI demo',
-            'Boot Menu v3',
-            'Power menu - UI demo'
+            'Boot menu',
+            'MCU UI'
         ], {
-            'Boot menu - UI demo':  function() { return new UIDemoScene(sm); },
-            'Boot Menu v3':         function() { return new BootMenuV2DemoScene(sm); },
-            'Power menu - UI demo': function() { return new PowerMenuUIDemoScene(sm); }
+            'Boot menu': function() { return bootMenuDemosMenu(sm); },
+            'MCU UI':    function() { return mcuUiDemosMenu(sm); }
+        });
+    }
+
+    // Testing → UI Demos → MCU UI: the MCU UI design iterations.
+    function mcuUiDemosMenu(sm) {
+        return new SubMenuScene(sm, 'MCU UI', [
+            'MCU UI - v001',
+            'MCU UI - v002'
+        ], {
+            'MCU UI - v001': function() { return new PowerMenuUIDemoScene(sm); },
+            'MCU UI - v002': function() { return new McuUiV002DemoScene(sm); }
+        });
+    }
+
+    // Testing → UI Demos → Boot menu: the boot-menu design iterations.
+    function bootMenuDemosMenu(sm) {
+        return new SubMenuScene(sm, 'Boot menu', [
+            'Boot menu - UI demo',
+            'Boot Menu v3'
+        ], {
+            'Boot menu - UI demo': function() { return new UIDemoScene(sm); },
+            'Boot Menu v3':        function() { return new BootMenuV2DemoScene(sm); }
         });
     }
 

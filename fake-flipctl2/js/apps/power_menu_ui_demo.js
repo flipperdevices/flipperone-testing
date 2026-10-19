@@ -2,7 +2,7 @@
  * PowerMenuUIDemoScene
  *
  * Empty stub sibling to BootMenuUIDemoScene. Lives under
- * Testing → Demo → "Power menu - UI demo" so the design slot
+ * Testing → Demo → "MCU UI - v001" (was "Power menu - UI demo") so the design slot
  * exists and is reachable; the body is blank until the actual
  * UI is wired up.
  */
@@ -60,8 +60,8 @@ var PowerMenuUIDemoScene = (function() {
     function PowerMenuUIDemoScene(sceneManager) {
         var self = this;
         this.sceneManager    = sceneManager || null;
-        this.displayName     = 'Power menu - UI demo';
-        this.breadcrumbTitle = 'Power menu - UI demo';
+        this.displayName     = 'MCU UI - v001';
+        this.breadcrumbTitle = 'MCU UI - v001';
 
         // Three app-defined buttons along the bottom row, all
         // 48 px wide. Positions are absolute (override the
