@@ -115,6 +115,10 @@
  * backlight is not touched. Back returns to the list.
  */
 var FlipSdrDemoScene = (function() {
+    // Power meter LEDs while open (PowerMeterLeds): battery outline and a
+    // level-3 usage bar; off when the demo is left.
+    var METER = { battery: 'OUTLINE', usage: 3 };
+
     // ── Layout (from the mockup, 1 screen px = 4 mockup px) ─────────
     var TITLE_H    = 16;
     var SPEC_TOP   = 29;            // first spectrum row
@@ -294,6 +298,7 @@ var FlipSdrDemoScene = (function() {
     // First enter builds the display; later ones (back from the keyboard)
     // just resume so the waterfall, zoom and tuning survive.
     FlipSdrDemoScene.prototype.enter = function() {
+        PowerMeterLeds.start(METER);
         var now = Date.now();
         if (this._wf) {
             this._lastRow = now;
@@ -340,6 +345,7 @@ var FlipSdrDemoScene = (function() {
     };
 
     FlipSdrDemoScene.prototype.exit = function() {
+        PowerMeterLeds.stop();
         this._running = false;
         if (this._tpES) { this._tpES.close(); this._tpES = null; }
         sendLinkLed(false);
@@ -1148,13 +1154,27 @@ var FlipSdrDemoScene = (function() {
         if (window.requestRender) window.requestRender();
     };
 
+    // The meter stays as it is over a scene pushed on top (the keyboard).
+    function keepMeter(scene) {
+        var enter = scene.enter, exit = scene.exit;
+        scene.enter = function() {
+            PowerMeterLeds.start(METER);
+            if (enter) return enter.apply(this, arguments);
+        };
+        scene.exit = function() {
+            PowerMeterLeds.stop();
+            if (exit) return exit.apply(this, arguments);
+        };
+        return scene;
+    }
+
     // Keyboard for a new bookmark on the VFO channel (bm = null) or for
     // renaming `bm`. Returning from it re-enters this scene, which resumes.
     FlipSdrDemoScene.prototype._editName = function(bm) {
         if (!this.sceneManager || typeof TextInputScreen === 'undefined') return;
         var khz = channelOf(this._vfo) * STEP_KHZ;
         var existing = bm ? null : this._activeBookmark();     // one bookmark per channel
-        this.sceneManager.push(new TextInputScreen({
+        this.sceneManager.push(keepMeter(new TextInputScreen({
             displayName: bm ? 'Rename' : 'Add bookmark',
             title:       bm ? 'Rename bookmark' : 'Bookmark ' + vfoText(khz),
             initialText: bm ? bm.name : '',
@@ -1172,7 +1192,7 @@ var FlipSdrDemoScene = (function() {
                 else BOOKMARKS.push({ khz: khz, name: t });
                 resortBookmarks();
             }
-        }));
+        })));
     };
 
     // Modal: white box, black 1 px rounded border, gray header band with
@@ -1598,6 +1618,8 @@ var FlipSdrDemoScene = (function() {
  * returns here.
  */
 var FlipSdrBandsMenu = (function() {
+    // Power meter LEDs: battery outline and a level-3 usage bar.
+    var METER = { battery: 'OUTLINE', usage: 3 };
     var BANDS = [
         { name: 'Airband', range: '118-137 MHz', icon: function() { return Icons.airplane_mode; } }
     ];
@@ -1606,6 +1628,16 @@ var FlipSdrBandsMenu = (function() {
             'Airband': function() { return new FlipSdrDemoScene(sm); }
         });
         menu.setBreadcrumbTrail(['FlipSDR']);
+        // Same meter as the receiver while the band list is on screen.
+        var enter = menu.enter, exit = menu.exit;
+        menu.enter = function() {
+            if (enter) enter.apply(this, arguments);
+            PowerMeterLeds.start(METER);
+        };
+        menu.exit = function() {
+            PowerMeterLeds.stop();
+            if (exit) exit.apply(this, arguments);
+        };
         for (var i = 0; i < BANDS.length; i++) {
             menu.items[i].status = BANDS[i].range;
             menu.items[i].icon   = BANDS[i].icon() || null;

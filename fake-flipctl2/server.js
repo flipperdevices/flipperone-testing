@@ -326,6 +326,58 @@ function mcuLedsQueue(leds) {
     mcuLedsFlush();
 }
 
+// ── Power meter LEDs (MCU CLI over UART + group brightness) ──────
+// Colours: the MCU's `led <n> <colour>` CLI command, one line per LED,
+// on PM_PORT at 1.5 Mbaud (as pm6.sh does). LED numbers and colour
+// indices are the firmware's (led_cli.c): 5 battery outline, 6..9
+// battery watt 1..4, 10 USB charging, 11..14 USB watt 1..4, 15 battery
+// centre; colours red 0, green 1, blue 2, yellow 3, orange 4,
+// light blue 5, black (off) 6.
+// Brightness: the wattmeter LED group register over I2C (stock
+// firmware, scripts/mcu-led-brightness.py), saved to the MCU's flash on
+// every write — clients debounce.
+//
+//   POST /api/powermeter {leds: {"5": 1, "6": 6, ...}} -> send those lines
+//   GET  /api/powermeter/brightness                    -> {ok, bus, level}
+//   POST /api/powermeter/brightness {level: 0..255}    -> write the level
+//
+// The port is set up (stty) and opened on first use and then kept
+// open, like pm6.sh's fd 3; a failed write closes it so the next
+// request starts over. Each request goes out as one write.
+var PM_PORT = '/dev/ttyS1';
+var PM_LED_MIN = 5, PM_LED_MAX = 15;
+var PM_COLOR_MAX = 6;
+var PM_BRIGHTNESS_SCRIPT = path.join(__dirname, '..', 'scripts', 'mcu-led-brightness.py');
+var pmFd = null;
+function pmOpen() {
+    if (pmFd !== null) return null;
+    try {
+        require('child_process').execFileSync('stty',
+            ['-F', PM_PORT, '1500000', 'raw', '-echo'], { stdio: 'ignore', timeout: 3000 });
+        pmFd = fs.openSync(PM_PORT,
+            fs.constants.O_RDWR | fs.constants.O_NOCTTY | fs.constants.O_NONBLOCK);
+    } catch (e) {
+        pmFd = null;
+        return PM_PORT + ': ' + e.message;
+    }
+    return null;
+}
+function pmSend(leds, cb) {
+    var err = pmOpen();
+    if (err) { cb({ ok: false, error: err }); return; }
+    var cmd = '';
+    for (var n in leds) cmd += 'led ' + n + ' ' + leds[n] + '\r\n';
+    fs.write(pmFd, cmd, function(e) {
+        if (e) {
+            try { fs.closeSync(pmFd); } catch (x) {}
+            pmFd = null;
+            cb({ ok: false, error: e.message });
+            return;
+        }
+        cb({ ok: true });
+    });
+}
+
 // ── Power button to Linux (via the MCU over I2C) ─────────────────
 // By default the MCU keeps the Power button for its own menu. Bit 0
 // (POWER_TO_CPU) of MCU register 0x0210 hands it to Linux instead: the
@@ -4735,6 +4787,55 @@ var server = http.createServer(function(req, res) {
             mcuLedsQueue(leds);
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ ok: true, queued: true, last: mcuLedsLast }));
+        });
+        return;
+    }
+    if (req.url === '/api/powermeter' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            var leds = null;
+            if (!err && data && data.leds && typeof data.leds === 'object') {
+                leds = {};
+                for (var n in data.leds) {
+                    var led = Number(n), c = data.leds[n];
+                    if (!Number.isInteger(led) || led < PM_LED_MIN || led > PM_LED_MAX
+                            || !Number.isInteger(c) || c < 0 || c > PM_COLOR_MAX) {
+                        leds = null;
+                        break;
+                    }
+                    leds[led] = c;
+                }
+            }
+            if (!leds) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Invalid request' }));
+                return;
+            }
+            pmSend(leds, function(result) {
+                res.writeHead(result.ok ? 200 : 500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(result));
+            });
+        });
+        return;
+    }
+    if (req.url === '/api/powermeter/brightness' && req.method === 'GET') {
+        mcuScriptRun(PM_BRIGHTNESS_SCRIPT, ['get'], function(result) {
+            res.writeHead(result.ok ? 200 : 500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(result));
+        });
+        return;
+    }
+    if (req.url === '/api/powermeter/brightness' && req.method === 'POST') {
+        readJsonBody(req, function(err, data) {
+            var level = data && data.level;
+            if (err || !Number.isInteger(level) || level < 0 || level > 255) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Invalid request' }));
+                return;
+            }
+            mcuScriptRun(PM_BRIGHTNESS_SCRIPT, ['set', String(level)], function(result) {
+                res.writeHead(result.ok ? 200 : 500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(result));
+            });
         });
         return;
     }

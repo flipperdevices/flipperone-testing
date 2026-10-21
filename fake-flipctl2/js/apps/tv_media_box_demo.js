@@ -6,16 +6,18 @@
  * keyboard, but no backend except HDMI plug detection, and a trimmed
  * main screen (no Video out / Adjust screen rows).
  *
- *   - Not connected: the device side with its ports (HMDI_BG.png), the
- *     HDMI cable over it (HDMI_cable_transparent.png) bobbing up and
- *     down above the HDMI port, and the port's front lip on top
- *     (HMDI_FG.png), under the status bar + title bar;
- *     right of the cable a gray 'No display connected' headline over a
- *     black 'Plug in HDMI cable' hint. No body frame, no buttons.
+ *   - Not connected: the "plug in the cable" clip loops — an HDMI cable
+ *     bobbing over the port (Cable_Seq_v003/Media_box_outline, cable
+ *     and port only, its white made transparent), in front of the Media
+ *     Box itself (Media_box_outline.png) at an adjustable opacity, under the status bar +
+ *     title bar; left of the box a 'Plug in HDMI' headline over a
+ *     'Waiting for connection' hint. No body frame, no buttons.
+ *     Up / Down change the Media Box opacity (OUTLINE.min..max % in
+ *     OUTLINE.step steps, kept for the session) and flash the value in
+ *     the status bar.
  *   - Connected (/api/hdmi `connected`, polled every HDMI_POLL_MS):
- *     the cable first drops into the port (unplugging plays it in
- *     reverse: back to this screen, cable pulled out), then the main screen comes
- *     in: the happy TV appears and bounces like the Desktop computer clip
+ *     the main screen comes in (unplugging goes straight back to the
+ *     clip, from its first frame): the happy TV appears and bounces like the Desktop computer clip
  *     (body squashes into the stand, springs back with a 1 px
  *     overshoot), the FAKE_RESOLUTION headline, 'CEC: enabled' and
  *     'Running Kodi' fade in, then a white diagonal glare sweeps the
@@ -25,12 +27,22 @@
  *     hardware, or a backup during a shoot), like the other Kickstarter
  *     connect demos.
  *   - Remote / Keyboard: press flashes only, nothing sent.
+ *   - Power meter LEDs while open: battery outline + one usage tick,
+ *     connected or not; off on exit.
  * Not registered in RunningApps (no App Switcher card / snapshot).
  *
  * Must load after tv_media_box.js (subclasses TVMediaBoxScene).
+ *
+ * Rebuild the clip's sheet after changing the frames, from
+ * assets/tv_media_box/Cable_Seq_v003/Media_box_outline/:
+ *   ffmpeg -framerate 30 -i Media_box_cable_v003_%d.png \
+ *          -vf format=gray,tile=10x6 -frames:v 1 -update 1 ../../Media_box_cable_v003_sheet.png
  */
 var TvMediaBoxDemoScene = (function() {
     var HDMI_POLL_MS    = 500;
+    // Power meter LEDs (PowerMeterLeds), the same with or without HDMI:
+    // battery outline and a one-tick usage bar.
+    var METER = { battery: 'OUTLINE', usage: 1 };
     // Consecutive 'disconnected' polls before dropping back to
     // 'Not connected' — absorbs the TV's HPD flaps on wake / sleep.
     var HDMI_MISS_LIMIT = 3;
@@ -38,39 +50,34 @@ var TvMediaBoxDemoScene = (function() {
 
     var TITLE_H = 16;
 
-    // Not connected: full-screen layers — the device side with its
-    // ports (white, opaque), the cable (transparent; plug tip at y 116,
-    // 4 px above the HDMI port at y 120), and the port's front lip with
-    // the white below it (rows 133..143, x 0..98) hiding the plug as
-    // it goes in. The cable bobs up CABLE_BOB_PX and back
-    // (easeInOutSine) every CABLE_BOB_MS. On connect it drops from
-    // wherever it is to PLUG_DROP_PX below its rest position in PLUG_MS
-    // (easeInQuad — fast, like pushing the plug in), and the main
-    // screen comes in right after (PLUG_HOLD_MS).
-    var BG_SRC        = 'assets/tv_media_box/HMDI_BG.png';
-    var FG_SRC        = 'assets/tv_media_box/HMDI_FG.png';
-    var CABLE_SRC     = 'assets/tv_media_box/HDMI_cable_transparent.png';
-    var CABLE_BOB_PX  = 12;
-    var CABLE_BOB_MS  = 2400;
-    var PLUG_DROP_PX  = 38;
-    var PLUG_MS       = 180;
-    var PLUG_HOLD_MS  = 0;
-    var PLUG_TOTAL_MS = PLUG_MS + PLUG_HOLD_MS;
-    // Unplug (the reverse): the not-connected screen comes back at once
-    // with the cable in the port (PLUG_DROP_PX), pulled out to rest in
-    // UNPLUG_MS (easeOutQuad — fast start, settles), then it bobs again.
-    var UNPLUG_MS     = 220;
-    // Hint text centred in the free area right of the cable (it never
-    // goes past x = 69 → x 70..255, centre 163), on the screen centre.
-    // Born2bSporty headline (ink y+3..y+12), NC_GAP px, HaxrCorp line
-    // (ink y+2..y+8): a 23 px block, ink rows 60..82.
-    var NC_TITLE = 'No display connected';
-    var NC_HINT  = 'Plug in HDMI cable';
-    var NC_CX    = 163;
-    var NC_GAP   = 6;
-    var NC_TITLE_Y = 57;
-    var NC_HINT_Y  = NC_TITLE_Y + 3 + 10 + NC_GAP - 2;   // 74
-    var NC_GRAY    = '#969696';   // the Desktop computer "sad" gray
+    // Not connected: the cable clip (a sprite sheet, every frame in a
+    // cols × rows grid, blitted by wall-clock index so the wrap has no
+    // seam; ink only in x 161..180, y 0..71) under the Media Box
+    // outline (x 110..255, y 59..125) at outlinePct %.
+    var WAITING = {
+        src: 'assets/tv_media_box/Media_box_cable_v003_sheet.png',
+        frames: 60, cols: 10, fps: 30, w: 256, h: 144
+    };
+    var OUTLINE = {
+        src: 'assets/tv_media_box/Media_box_outline.png',
+        def: 50, min: 30, max: 100, step: 10
+    };
+    var OUTLINE_LABEL = 'Media Box Opacity ';
+    var OUTLINE_LABEL_MS = 1500;                 // how long the % shows after a press
+    var outlinePct = OUTLINE.def;                // survives re-entering the scene
+    // Hint text left of the box, from the design: Born2bSporty headline
+    // (ink rows 71..80) over a HaxrCorp line (ink rows 87..93), both
+    // black, ink from x 11.
+    var NC_TITLE = 'Plug in HDMI';
+    var NC_HINT  = 'Waiting for connection';
+    var NC_X       = 11;
+    var NC_TITLE_Y = 68;
+    var NC_HINT_Y  = 85;
+    // Fake status bar, from the design (like the 5G Modem demo's, with
+    // "5G" 1 px further right): full cellular bars + "5G" left, "69%"
+    // and the battery right.
+    var STATUS_PCT = '69%';
+    var STATUS_BAT_FILL = 10;     // px of the battery's 10 px bar lit, as drawn in the design
 
     // TV graphic — same spot as the real app. tv_frame rows: 0..36
     // body, 37..41 stand neck, 42 foot.
@@ -124,8 +131,47 @@ var TvMediaBoxDemoScene = (function() {
     TvMediaBoxDemoScene.prototype = Object.create(TVMediaBoxScene.prototype);
     TvMediaBoxDemoScene.prototype.constructor = TvMediaBoxDemoScene;
 
+    function drawStatusBar(canvas) {
+        var ctx = canvas.ctx, top = 3, H = HaxrCorp4090FlipCTL;
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, canvas.w, UI.STATUS_BAR_H);
+        // 5 bars, 1 px wide, 1 px apart, 3..7 px tall, bottoms on row 9.
+        ctx.fillStyle = '#fff';
+        for (var i = 0; i < 5; i++) ctx.fillRect(2 + 2 * i, 9 - (2 + i), 1, 3 + i);
+        H.draw(ctx, '5G', 13, top - 2, '#fff');
+        var bat = StatusBarBattery.sprite, bx = canvas.w - 2 - bat.w;
+        H.draw(ctx, STATUS_PCT, bx - 1 - H.textWidth(STATUS_PCT), top - 2, '#fff');
+        canvas.drawSprite(bat, bx, top - 1, '#fff');
+        ctx.fillRect(bx + 2, top + 1, STATUS_BAT_FILL, 5);
+    }
+
     function repaint() {
         if (window.requestRender) window.requestRender();
+    }
+
+    // The clip's sheet with its white made transparent (a canvas), so
+    // the cable can go over the Media Box: the cable has no pure white
+    // inside its outline, only the background is 255. null until loaded.
+    function loadClip(src) {
+        var holder = { canvas: null };
+        var img = new Image();
+        img.onload = function() {
+            var c = document.createElement('canvas');
+            c.width = img.naturalWidth;
+            c.height = img.naturalHeight;
+            var cx = c.getContext('2d');
+            cx.drawImage(img, 0, 0);
+            var data = cx.getImageData(0, 0, c.width, c.height);
+            var px = data.data;
+            for (var i = 0; i < px.length; i += 4) {
+                if (px[i] === 255 && px[i + 1] === 255 && px[i + 2] === 255) px[i + 3] = 0;
+            }
+            cx.putImageData(data, 0, 0);
+            holder.canvas = c;
+            repaint();
+        };
+        img.src = src;
+        return holder;
     }
 
     function loadImg(src) {
@@ -133,10 +179,6 @@ var TvMediaBoxDemoScene = (function() {
         img.onload = repaint;
         img.src = src;
         return img;
-    }
-
-    function easeInOutSine(t) {
-        return 0.5 - 0.5 * Math.cos(Math.PI * t);
     }
 
     function gray(v) {
@@ -147,6 +189,7 @@ var TvMediaBoxDemoScene = (function() {
     // ── Lifecycle ─────────────────────────────────────────────────
 
     TvMediaBoxDemoScene.prototype.enter = function() {
+        PowerMeterLeds.start(METER);
         // Re-entry (e.g. returning from a pushed scene) keeps the state.
         if (this._fakeStarted) { repaint(); return; }
         this._fakeStarted = true;
@@ -155,13 +198,13 @@ var TvMediaBoxDemoScene = (function() {
         this._manual      = false;   // OK override
         this._connectAt   = 0;       // 0 = no connect animation
         this._loopStart   = Date.now();
-        if (!this._bgImg) {
-            this._bgImg    = loadImg(BG_SRC);
-            this._fgImg    = loadImg(FG_SRC);
-            this._cableImg = loadImg(CABLE_SRC);
-        }
+        // Re-fetched on every visit (cache-busting query), so art swapped
+        // on disk shows up without reloading the page.
+        this._clipImg    = loadClip(WAITING.src + '?v=' + Date.now());
+        this._outlineImg = loadImg(OUTLINE.src + '?v=' + Date.now());
+        this._labelUntil = 0;
         var self = this;
-        // Repaint tick for the cable bob (only while it's on screen).
+        // Repaint tick for the clip (only while it's on screen).
         this._loopTimer = setInterval(function() {
             if (self._hdmiLoaded && !self._hdmiConnected && self._view === 'main') repaint();
         }, 16);
@@ -189,6 +232,7 @@ var TvMediaBoxDemoScene = (function() {
     };
 
     TvMediaBoxDemoScene.prototype.exit = function() {
+        PowerMeterLeds.stop();
         this._fakeStarted = false;
         if (this._hdmiPollTimer) { clearInterval(this._hdmiPollTimer); this._hdmiPollTimer = null; }
         if (this._connTimer)     { clearInterval(this._connTimer);     this._connTimer     = null; }
@@ -214,21 +258,12 @@ var TvMediaBoxDemoScene = (function() {
         this._kodiRunning   = on;
         if (on && !first) this._startConnectAnim();
         else              this._connectAt = 0;
-        if (!on) {
-            // Pull-out first (not on the very first state), then the bob
-            // starts from rest.
-            this._unplugAt  = first ? 0 : Date.now();
-            this._loopStart = Date.now() + (first ? 0 : UNPLUG_MS);
-        }
+        if (!on) this._loopStart = Date.now();   // the clip from its first frame
         repaint();
     };
 
-    // Plug-in drop first (PLUG_TOTAL_MS), then the main screen's connect
-    // animation: _connectAt is set that far ahead, so _animT() < 0 means
-    // the cable is still going in.
     TvMediaBoxDemoScene.prototype._startConnectAnim = function() {
-        this._plugFrom  = this._cableIdleDy();
-        this._connectAt = Date.now() + PLUG_TOTAL_MS;
+        this._connectAt = Date.now();
         if (this._connTimer) return;
         var self = this;
         this._connTimer = setInterval(function() {
@@ -241,30 +276,15 @@ var TvMediaBoxDemoScene = (function() {
         }, 16);
     };
 
-    // ms since the main screen's connect animation started (negative
-    // during the plug-in drop), or null when idle.
+    // ms since the main screen's connect animation started, or null
+    // when idle.
     TvMediaBoxDemoScene.prototype._animT = function() {
         return this._connectAt ? Date.now() - this._connectAt : null;
     };
 
-    // True while the main screen is up (connected, plug-in drop done).
+    // True while the main screen is up.
     TvMediaBoxDemoScene.prototype._mainShown = function() {
-        var t = this._animT();
-        return this._hdmiConnected && (t === null || t >= 0);
-    };
-
-    // Cable offset while not connected: being pulled out of the port
-    // (PLUG_DROP_PX → 0) right after an unplug, then the bob
-    // 0 (rest) → -CABLE_BOB_PX → 0.
-    TvMediaBoxDemoScene.prototype._cableIdleDy = function() {
-        var now = Date.now();
-        if (this._unplugAt && now - this._unplugAt < UNPLUG_MS) {
-            var u = (now - this._unplugAt) / UNPLUG_MS;
-            return PLUG_DROP_PX * (1 - u * (2 - u));
-        }
-        if (now < this._loopStart) return 0;
-        var ph = ((now - this._loopStart) % CABLE_BOB_MS) / CABLE_BOB_MS;
-        return -CABLE_BOB_PX * easeInOutSine(ph < 0.5 ? ph * 2 : 2 - ph * 2);
+        return !!this._hdmiConnected;
     };
 
     // ── Input ─────────────────────────────────────────────────────
@@ -281,7 +301,15 @@ var TvMediaBoxDemoScene = (function() {
             return;
         }
         if (action === 'back' || action === 'esc') return 'pop';
-        if (!this._mainShown()) return;
+        if (!this._mainShown()) {
+            if (action === 'up' || action === 'down') {
+                var d = action === 'up' ? OUTLINE.step : -OUTLINE.step;
+                outlinePct = Math.max(OUTLINE.min, Math.min(OUTLINE.max, outlinePct + d));
+                this._labelUntil = Date.now() + OUTLINE_LABEL_MS;
+                repaint();
+            }
+            return;
+        }
         if (action === 'edit') { this._pressBtn(this._keyboardBtn); return; }
         if (action === 'del')  { this._pressBtn(this._tvRemoteBtn); return; }
     };
@@ -300,7 +328,7 @@ var TvMediaBoxDemoScene = (function() {
 
         var main = this._mainShown();
         if (main) this._bodyFrame.render(canvas);
-        else      this._drawPort(canvas, t);
+        else      this._drawPort(canvas);
 
         // Title bar (same as the real app).
         var TITLE_Y = UI.STATUS_BAR_H;
@@ -312,13 +340,16 @@ var TvMediaBoxDemoScene = (function() {
         Born2bSportyV2FlipCTL.draw(ctx, this.displayName, 18, TITLE_Y, '#000');
 
         if (!main) {
-            var ntW = Born2bSportyV2FlipCTL.textWidth(NC_TITLE);
-            Born2bSportyV2FlipCTL.draw(ctx, NC_TITLE,
-                NC_CX - Math.floor(ntW / 2), NC_TITLE_Y, NC_GRAY);
-            var nhW = HaxrCorp4090FlipCTL.textWidth(NC_HINT);
-            HaxrCorp4090FlipCTL.draw(ctx, NC_HINT,
-                NC_CX - Math.floor(nhW / 2), NC_HINT_Y, '#000');
-            UI.drawStatusBar(canvas, '');
+            Born2bSportyV2FlipCTL.draw(ctx, NC_TITLE, NC_X, NC_TITLE_Y, '#000');
+            HaxrCorp4090FlipCTL.draw(ctx, NC_HINT, NC_X, NC_HINT_Y, '#000');
+            drawStatusBar(canvas);
+            if (Date.now() < this._labelUntil) {
+                // Over the status bar's left side.
+                var label = OUTLINE_LABEL + outlinePct + '%';
+                ctx.fillStyle = '#000';
+                ctx.fillRect(0, 0, HaxrCorp4090FlipCTL.textWidth(label) + 4, UI.STATUS_BAR_H);
+                HaxrCorp4090FlipCTL.draw(ctx, label, 2, 1, '#fff');
+            }
             return;
         }
 
@@ -344,9 +375,11 @@ var TvMediaBoxDemoScene = (function() {
             });
         }
         this._pageSelectorFrame.render(canvas);
-        Helvb08Regular.draw(ctx, 'Settings', 6, ROW_Y + 2, '#000');
+        // Centred on the screen.
+        Helvb08Regular.draw(ctx, 'Settings',
+            Math.floor((canvas.w - Helvb08Regular.textWidth('Settings')) / 2), ROW_Y + 2, '#000');
 
-        UI.drawStatusBar(canvas, '');
+        drawStatusBar(canvas);
 
         var btnDy = 0;
         if (t !== null) {
@@ -360,26 +393,25 @@ var TvMediaBoxDemoScene = (function() {
         ctx.restore();
     };
 
-    // Device side, cable, port front lip. `t` < 0 → the cable is
-    // dropping into the port (plug-in), otherwise it bobs.
-    TvMediaBoxDemoScene.prototype._drawPort = function(canvas, t) {
+    // The Media Box outline at outlinePct, then the cable clip in front
+    // of it.
+    TvMediaBoxDemoScene.prototype._drawPort = function(canvas) {
         var ctx = canvas.ctx;
         var ready = function(img) { return img && img.complete && img.naturalWidth; };
-        if (ready(this._bgImg)) ctx.drawImage(this._bgImg, 0, 0);
-        if (!ready(this._cableImg)) return;
-        var dy;
-        if (t !== null && t < 0) {
-            var p = Math.min(1, (t + PLUG_TOTAL_MS) / PLUG_MS);
-            dy = this._plugFrom + (PLUG_DROP_PX - this._plugFrom) * p * p;
-        } else {
-            dy = this._cableIdleDy();
+        canvas.clear('#fff');
+        if (ready(this._outlineImg)) {
+            var a = ctx.globalAlpha;
+            ctx.globalAlpha = a * outlinePct / 100;
+            ctx.drawImage(this._outlineImg, 0, 0);
+            ctx.globalAlpha = a;
         }
-        var y = Math.round(dy);
-        ctx.drawImage(this._cableImg, 0, y);
-        // Pushed down past rest: stretch the wire's top row up to the
-        // screen top so it doesn't come loose under the title bar.
-        if (y > 0) ctx.drawImage(this._cableImg, 0, 0, 256, 1, 0, 0, 256, y);
-        if (ready(this._fgImg)) ctx.drawImage(this._fgImg, 0, 0);
+        var clip = this._clipImg && this._clipImg.canvas;
+        if (clip) {
+            var fi = Math.floor(Math.max(0, Date.now() - this._loopStart) * WAITING.fps / 1000) % WAITING.frames;
+            ctx.drawImage(clip,
+                (fi % WAITING.cols) * WAITING.w, Math.floor(fi / WAITING.cols) * WAITING.h,
+                WAITING.w, WAITING.h, 0, 0, canvas.w, canvas.h);
+        }
     };
 
     // Happy TV with the bounce: the body (frame, screen, glare, face)

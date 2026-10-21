@@ -205,11 +205,12 @@ var MenuScene = (function() {
 
     function testingMenu(sm) {
         return new SubMenuScene(sm, 'Testing', [
-            'Screen',
-            'Screen for photos',
+            'Kickstarter demo',
+            'Power Meter',
             'Screen backlight',
             'UI Demos',
-            'Kickstarter demo',
+            'Screen',
+            'Screen for photos',
             'Input',
             'Touchpad',
             'Touchpad ABS',
@@ -233,6 +234,7 @@ var MenuScene = (function() {
             'Touchpad ABS': function() { return new TouchpadAbsScene(); },
             'Screen Keyboard': function() { return new KeyboardTestScene(); },
             'Network LEDs': function() { return new NetworkLedsScene(sm); },
+            'Power Meter': function() { return PowerMeterScene(sm); },
             'Sound': function() { return new SoundMenuScene(sm); },
             'UIinput forwarding': function() { return new UIInputForwardingScene(sm); },
             'Haptic tests': function() { return new HapticTestScene(sm); },
@@ -314,7 +316,7 @@ var MenuScene = (function() {
             'Desktop computer': function() { return desktopComputerVersionsMenu(sm); },
             'FlipSDR': function() { return flipSdrVersionsMenu(sm); },
             'TV Media Box': function() { return new TvMediaBoxDemoScene(sm); },
-            '5G Modem': function() { return new Modem5gDemoScene(sm); }
+            '5G Modem': function() { return modem5gVersionsMenu(sm); }
         });
     }
 
@@ -322,26 +324,44 @@ var MenuScene = (function() {
     function kickstarterSelectedMenu(sm) {
         return new SubMenuScene(sm, 'Selected', [
             'Wi-Fi Scanner v4',
-            '5G Modem',
+            '5G Modem Low-Full',
+            '5G Modem Only Full',
             'Walkie Talkie Receive',
             'Walkie Talkie Transmit',
-            'FlipSDR v1'
+            'FlipSDR v1',
+            'Desktop Mode',
+            'TV Media Box'
         ], {
             'Wi-Fi Scanner v4': function() { return new WifiScannerV4DemoScene(sm); },
-            '5G Modem': function() { return new Modem5gDemoScene(sm); },
+            '5G Modem Low-Full': function() { return new Modem5gDemoScene(sm); },
+            '5G Modem Only Full': function() { return new Modem5gFullDemoScene(sm); },
             'Walkie Talkie Receive': function() { return new WalkieTalkieDemoScene(sm, { v2: true, mode: 'receive' }); },
             'Walkie Talkie Transmit': function() { return new WalkieTalkieDemoScene(sm, { v2: true, mode: 'transmit' }); },
-            'FlipSDR v1': function() { return FlipSdrBandsMenu(sm); }
+            'FlipSDR v1': function() { return FlipSdrBandsMenu(sm); },
+            'Desktop Mode': function() { return new DesktopComputerV3DemoScene(sm); },
+            'TV Media Box': function() { return new TvMediaBoxDemoScene(sm); }
+        });
+    }
+
+    function modem5gVersionsMenu(sm) {
+        return new SubMenuScene(sm, '5G Modem', [
+            'Low-Full',
+            'Only Full'
+        ], {
+            'Low-Full': function() { return new Modem5gDemoScene(sm); },
+            'Only Full': function() { return new Modem5gFullDemoScene(sm); }
         });
     }
 
     function desktopComputerVersionsMenu(sm) {
         return new SubMenuScene(sm, 'Desktop computer', [
             'Version 1',
-            'Version 2'
+            'Version 2',
+            'Version 3'
         ], {
             'Version 1': function() { return new DesktopComputerDemoScene(sm); },
-            'Version 2': function() { return new DesktopComputerV2DemoScene(sm); }
+            'Version 2': function() { return new DesktopComputerV2DemoScene(sm); },
+            'Version 3': function() { return new DesktopComputerV3DemoScene(sm); }
         });
     }
 

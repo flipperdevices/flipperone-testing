@@ -1,7 +1,8 @@
 /**
  * Modem5gDemoScene
  *
- * Testing → Kickstarter demo → '5G Modem'. Standalone fake of a 5G modem
+ * Testing → Kickstarter demo → Selected → '5G Modem Low-Full' (and All →
+ * 5G Modem → 'Low-Full'). Standalone fake of a 5G modem
  * status screen, pixel-matched to the design mock:
  *
  *   - Status bar: cellular bars + "5G" left, battery 69 % right (fixed,
@@ -11,6 +12,8 @@
  *   - Right: Mode / Signal / RSRP, the big "5G" + antenna glyph and 15
  *     rising signal bars (black = lit, gray = unlit).
  *   - Help / More buttons (press flash only; More shows its toggle bar).
+ *   - Power meter LEDs (PowerMeterLeds) while open: battery outline and
+ *     a level-3 usage bar; all off again on exit.
  *
  * Scenario, looped (OK restarts it from the weak phase): weak ~40 %
  * wandering for WEAK_MS, a climb to ~88 % over RISE_MS, good for
@@ -89,6 +92,10 @@ var Modem5gDemoScene = (function() {
     var BARS = 15, BAR_X0 = 133, BAR_PITCH = 8, BAR_W = 7;
     var BAR_BOTTOM = 126, BAR_H0 = 30, BAR_STEP = 5;
 
+    // Power meter LEDs while the app is open: the battery outline and
+    // a level-3 usage bar (green / yellow / orange).
+    var METER = { battery: 'OUTLINE', usage: 3 };
+
     // Bottom buttons (Wi-Fi scanner geometry, nudged to the mock).
     var BTN_W = 48;
     var HELP_X = 52, MORE_X = 156;
@@ -156,11 +163,13 @@ var Modem5gDemoScene = (function() {
         var self = this;
         this._start();
         this._timer = setInterval(function() { self._tick(); }, TICK_MS);
+        PowerMeterLeds.start(METER);
         repaint();
     };
 
     Modem5gDemoScene.prototype.exit = function() {
         if (this._timer) { clearInterval(this._timer); this._timer = null; }
+        PowerMeterLeds.stop();
     };
 
     Modem5gDemoScene.prototype._flash = function(btn) {

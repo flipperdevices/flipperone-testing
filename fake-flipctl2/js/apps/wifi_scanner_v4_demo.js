@@ -5,11 +5,20 @@
  * standalone copy of Version 1 (wifi_scanner_demo.js) — no code is
  * shared, so either can change without breaking the other.
  *
- *   1. Opens straight on the scan list (Version 1's Network submenu →
- *      Wi-Fi page → Scan walkthrough is still in the file as
- *      networkEntry, unused).
- *   2. Scan list — Version 1's cards, but My_Home is first and the
- *      only full-strength network, the rest sorted by signal. Top line:
+ *   1. Opens on a copy of Version 3's start: the real main menu with
+ *      'Apps' pre-selected (only Apps leads anywhere, the other rows
+ *      press-flash), then a fake Apps list where 'Wi-Fi scanner' opens
+ *      the scan list. Back pops one level at a time. (Version 1's
+ *      Network submenu → Wi-Fi page → Scan walkthrough is still in the
+ *      file as networkEntry, unused.)
+ *   2. Scan list — opens empty: "Scanning..." in the title strip and a
+ *      spinner in the middle for SCAN_SPIN_MS, then the networks come
+ *      in one card at a time, every SCAN_REVEAL_MS, each fading in
+ *      while rising CARD_RISE px into place. The spinner keeps turning
+ *      behind the cards (each card is backed with white, so it hides
+ *      what's under it as it fades in). The cards are Version 1's, but My_Home is
+ *      first and the only full-strength network, the rest sorted by
+ *      signal. Top line:
  *      SSID, then right-aligned the lock, security pills and the warning
  *      icon; info line: band / channel / width, and right-aligned the
  *      auth method (SAE), the cipher (RC4 / TKIP/AES / AES) and "WPS"
@@ -19,6 +28,10 @@
  *      Vendor, Clients); Help is there only for WEP (My_Home). Help
  *      shows the dolphin typing into a speech bubble sized to the text,
  *      topped by a gray band with a router icon + the network name.
+ *
+ * Power meter LEDs (PowerMeterLeds): battery outline throughout; the
+ * usage bar shows 1 in the menus, 3 while the scan runs, 2 once every
+ * network has appeared; all off when the demo is left.
  */
 var WifiScannerV4DemoScene = (function() {
 
@@ -48,6 +61,36 @@ var WifiScannerV4DemoScene = (function() {
     var TITLE_H = 16;
 
     var DOTS_MS = 400;   // animated-ellipsis step
+
+    // Power meter LEDs: battery outline, and a usage bar of 1 in the
+    // menus, 3 while scanning, 2 once every network is found.
+    var METER_MENU = { battery: 'OUTLINE', usage: 1 };
+    var METER_SCAN = { battery: 'OUTLINE', usage: 3 };
+    var METER_DONE = { battery: 'OUTLINE', usage: 2 };
+
+    // Scan start: spinner alone, then the cards one by one.
+    var SCAN_SPIN_MS   = 600;
+    var SCAN_REVEAL_MS = 400;
+    var SPINNER_FRAME_MS = 80;
+    // Each new card fades in from opacity 0 while rising CARD_RISE px
+    // into place, over CARD_FADE_MS (shorter than SCAN_REVEAL_MS, so
+    // a card has settled before the next one starts).
+    var CARD_FADE_MS = 300;
+    var CARD_RISE    = 2;
+    // A fading card is drawn here first, then blitted at its opacity:
+    // the grayscale sprite blitter resets ctx.globalAlpha to 1 after
+    // every pixel, so drawing straight onto the screen at an alpha
+    // would leave everything after the signal icon fully opaque.
+    var fadeLayer = null;
+    function fadeCanvas() {
+        if (!fadeLayer) {
+            var el = document.createElement('canvas');
+            el.width = 256;
+            el.height = 144;
+            fadeLayer = new FlipCanvas(el);
+        }
+        return fadeLayer;
+    }
 
     // Network cards — a scrolling stack of ResponsiveFrames in the
     // body, laid out after the design mock: signal icon left, SSID
@@ -485,6 +528,7 @@ var WifiScannerV4DemoScene = (function() {
         this._dotTimer = null;
 
         this._networks   = NETWORKS;
+        this._scanT0     = 0;      // scan start, set on the first enter
         this._selected   = 0;
         this._scroll     = 0;      // index of the first visible card
         this._popup      = null;   // network shown in the details pop-up, or null
@@ -550,8 +594,39 @@ var WifiScannerV4DemoScene = (function() {
         }
     };
 
+    // Cards found so far: none while the spinner runs, then one more
+    // every SCAN_REVEAL_MS.
+    ScanPageDemo.prototype._shownCount = function() {
+        var t = Date.now() - this._scanT0 - SCAN_SPIN_MS;
+        if (!this._scanT0 || t < 0) return 0;
+        return Math.min(this._networks.length, Math.floor(t / SCAN_REVEAL_MS) + 1);
+    };
+
+    // Card i's fade-in progress, 0..1 (0 before it appears).
+    ScanPageDemo.prototype._cardIn = function(i) {
+        var t = Date.now() - this._scanT0 - SCAN_SPIN_MS - i * SCAN_REVEAL_MS;
+        if (!this._scanT0 || t < 0) return 0;
+        return Math.min(1, t / CARD_FADE_MS);
+    };
+
+    // Meter: scanning until the last card has appeared, then done.
+    ScanPageDemo.prototype._meter = function() {
+        var self = this;
+        var left = this._scanT0 + SCAN_SPIN_MS +
+            (this._networks.length - 1) * SCAN_REVEAL_MS - Date.now();
+        PowerMeterLeds.start(left > 0 ? METER_SCAN : METER_DONE);
+        if (left > 0) {
+            this._meterTimer = setTimeout(function() {
+                self._meterTimer = null;
+                self._meter();
+            }, left);
+        }
+    };
+
     ScanPageDemo.prototype.enter = function() {
         var self = this;
+        if (!this._scanT0) this._scanT0 = Date.now();
+        if (!this._meterTimer) this._meter();
         if (this._dotTimer) return;
         this._dotTimer = setInterval(function() {
             self._dotTick = (self._dotTick + 1) % 4;
@@ -560,6 +635,8 @@ var WifiScannerV4DemoScene = (function() {
     };
 
     ScanPageDemo.prototype.exit = function() {
+        if (this._meterTimer) { clearTimeout(this._meterTimer); this._meterTimer = null; }
+        PowerMeterLeds.stop();
         if (this._dotTimer) {
             clearInterval(this._dotTimer);
             this._dotTimer = null;
@@ -602,7 +679,8 @@ var WifiScannerV4DemoScene = (function() {
         if (action === 'back' || action === 'esc') return 'pop';
         if (action === 'down' || action === 'up') {
             // Wraps at both ends, like the menus.
-            var n = this._networks.length;
+            var n = this._shownCount();
+            if (!n) return;
             var d = (action === 'down') ? 1 : -1;
             this._selected = (this._selected + d + n) % n;
             this._ensureVisible();
@@ -614,7 +692,7 @@ var WifiScannerV4DemoScene = (function() {
             // selected network. The button's toggle bar stays on for
             // as long as the pop-up is open.
             var self = this;
-            var net  = this._networks[this._selected];
+            var net  = this._shownCount() ? this._networks[this._selected] : null;
             this._pressButton(this._moreBtn, function() {
                 if (net) {
                     self._popup = net;
@@ -647,6 +725,13 @@ var WifiScannerV4DemoScene = (function() {
         HaxrCorp4090FlipCTL.draw(ctx, base + dots,
             Math.floor((canvas.w - fullW) / 2), TITLE_Y + 3, '#000');
 
+        // Spinner in the middle of the body, behind the cards.
+        var sp = AnimatedIcons.spinner_22x20px;
+        var spH = Math.floor(sp.h / sp.frames);
+        canvas.drawSpriteFrame(sp, Math.floor((canvas.w - sp.w) / 2),
+            BODY_TOP + Math.floor((canvas.h - FADE_H - BODY_TOP - spH) / 2),
+            Math.floor(Date.now() / SPINNER_FRAME_MS) % sp.frames, '#000');
+
         // Card stack, clipped to the body so a partially scrolled
         // card never paints over the title strip. One extra card
         // past the visible window is drawn so the cut-off next card
@@ -655,24 +740,53 @@ var WifiScannerV4DemoScene = (function() {
         ctx.beginPath();
         ctx.rect(0, BODY_TOP, canvas.w, canvas.h - BODY_TOP);
         ctx.clip();
-        var total = this._networks.length;
+        var total = this._shownCount();
         var last = Math.min(total, this._scroll + CARD_VISIBLE + 1);
-        for (var i = this._scroll; i < last; i++) {
-            var cy = LIST_TOP + (i - this._scroll) * CARD_PITCH;
-            // Divider first, card after — so the selected card's
-            // frame paints over the divider below it (the one above
-            // was drawn with the previous card).
-            if (i < total - 1) {
-                canvas.drawHLine(CARD_X + CARD_DIVIDER_INSET, cy + CARD_DIVIDER_DY,
+        var alpha = ctx.globalAlpha, i, p, cys = [];
+        for (i = this._scroll; i < last; i++) {
+            p = this._cardIn(i);
+            var ease = 1 - (1 - p) * (1 - p);
+            cys[i] = LIST_TOP + (i - this._scroll) * CARD_PITCH +
+                Math.round(CARD_RISE * (1 - ease));
+        }
+        // Pass 1: white backing (card rows + the divider row above
+        // it) and that divider, at the card's opacity. Pass 2: the
+        // cards — so the selected card's frame paints over the
+        // dividers above and below it.
+        for (i = this._scroll; i < last; i++) {
+            ctx.globalAlpha = alpha * this._cardIn(i);
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(CARD_X, cys[i] - CARD_GAP, CARD_W, CARD_H + CARD_GAP);
+            if (i > this._scroll) {
+                canvas.drawHLine(CARD_X + CARD_DIVIDER_INSET, cys[i] - CARD_GAP,
                     CARD_W - 2 * CARD_DIVIDER_INSET, CARD_DIVIDER_COLOR);
             }
-            drawNetworkCard(canvas, this._networks[i], cy,
+        }
+        ctx.globalAlpha = alpha;
+        for (i = this._scroll; i < last; i++) {
+            p = this._cardIn(i);
+            if (p >= 1) {
+                drawNetworkCard(canvas, this._networks[i], cys[i],
+                    i === this._selected, this._selectorFrame);
+                continue;
+            }
+            var layer = fadeCanvas();
+            layer.ctx.clearRect(0, 0, layer.w, layer.h);
+            drawNetworkCard(layer, this._networks[i], cys[i],
                 i === this._selected, this._selectorFrame);
+            ctx.globalAlpha = alpha * p;
+            ctx.drawImage(layer.el, 0, 0);
+            ctx.globalAlpha = alpha;
         }
         ctx.restore();
 
-        this._scrollbar.update(this._networks.length, CARD_VISIBLE, this._scroll);
-        this._scrollbar.render(canvas, SCROLLBAR_X, SCROLLBAR_Y, SCROLLBAR_H, SCROLLBAR_THUMB_PAD);
+        if (total) {
+            this._scrollbar.update(total, CARD_VISIBLE, this._scroll);
+            this._scrollbar.render(canvas, SCROLLBAR_X, SCROLLBAR_Y, SCROLLBAR_H, SCROLLBAR_THUMB_PAD);
+        }
+        // Repaint every frame while the spinner can show or a card is
+        // still fading in.
+        if (this._cardIn(this._networks.length - 1) < 1 && window.requestRender) window.requestRender();
 
         // Bottom fade — 256×20 strip under the buttons, over everything
         // else: fully transparent #D3D3D3 at the top → opaque #BDBDBD
@@ -1053,13 +1167,130 @@ var WifiScannerV4DemoScene = (function() {
         }
     };
 
-    // ── Network submenu copy (demo entry point) ──────────────────
-    // Entry: straight into the network list (ScanPageDemo); Back returns
-    // to the menu that opened the demo. The Network / Wi-Fi page copies
-    // below are kept for the longer walkthrough (networkEntry).
-    function WifiScannerV4DemoScene(sceneManager) {
-        return new ScanPageDemo(sceneManager);
+    // ── Fake Apps list (copied from Version 3) ───────────────────
+    // Same rows / icons as appsMenu() in menu.js (kept in sync by hand;
+    // the registry there is private). TV Media Box lives in the main
+    // menu's first slot when that target is active, so it is dropped
+    // from Apps in that case — exactly like the real list.
+    function appsList(sceneManager, profile) {
+        var icons = {
+            'Internet radio': { icon: null,
+                                iconAnimated: (typeof AnimatedIcons !== 'undefined') ? AnimatedIcons.internet_radio_anim : null },
+            'Voice recorder': { icon: Icons.voice_recorder, iconAnimated: null },
+            'Walkie Talkie':  { icon: null,
+                                iconAnimated: (typeof AnimatedIcons !== 'undefined') ? AnimatedIcons.walkie_talkie : null },
+            'TV Media Box':   { icon: Icons.media, iconAnimated: null },
+            'Browser':        { icon: null, iconAnimated: null },
+            'Wi-Fi scanner':  { icon: Icons.wi_fi_scanner, iconAnimated: null }
+        };
+        var order = ['Internet radio', 'Wi-Fi scanner', 'Voice recorder', 'Walkie Talkie', 'TV Media Box', 'Browser'];
+        if (profile === 'TV Media Box') {
+            order = order.filter(function(n) { return n !== 'TV Media Box'; });
+        }
+        var subMenu = new SubMenuScene(sceneManager, 'Apps', order, {
+            // Only the scanner drills in; other rows press-flash and stay.
+            'Wi-Fi scanner': function() { return new ScanPageDemo(sceneManager); }
+        });
+        // Reads "> Apps" like the real list, not "> Testing > UI Demos > …".
+        subMenu.setBreadcrumbTrail(['Apps']);
+        // Menu-level meter while the list is on screen.
+        var enter = subMenu.enter, exit = subMenu.exit;
+        subMenu.enter = function() {
+            if (enter) enter.apply(this, arguments);
+            PowerMeterLeds.start(METER_MENU);
+        };
+        subMenu.exit = function() {
+            PowerMeterLeds.stop();
+            if (exit) exit.apply(this, arguments);
+        };
+        for (var i = 0; i < subMenu.items.length; i++) {
+            var def = icons[subMenu.items[i].text] || {};
+            subMenu.items[i].icon         = def.icon || null;
+            subMenu.items[i].iconAnimated = def.iconAnimated || null;
+        }
+        return subMenu;
     }
+
+    // ── Fake main menu (demo entry point, copied from Version 3) ─
+    // Wraps a real MenuScene so the look (items, icons, selector,
+    // scrollbar) is the real one; input is ours: 'Apps' opens the fake
+    // list, every other row only press-flashes. The inner menu is
+    // rebuilt when /api/target/current answers, so the first slot
+    // matches the device (TV Media Box vs Desktop Computer).
+    function WifiScannerV4DemoScene(sceneManager) {
+        this.sceneManager    = sceneManager || null;
+        this.displayName     = 'Main Menu';
+        this._profile = '';
+        this._menu    = buildMenu(sceneManager, this._profile);
+    }
+
+    // Real MenuScene with the selection moved onto 'Apps'. The main
+    // menu has no scroll at that row (index 2 of 5 visible), so only
+    // the line states and the index need touching.
+    function buildMenu(sceneManager, profile) {
+        var menu = new MenuScene(sceneManager, profile);
+        var idx  = menu.menuNames.indexOf('Apps');
+        if (idx >= 0) {
+            menu.items[menu.selectedIndex].state = MenuLine.STATE_DEFAULT;
+            menu.selectedIndex = idx;
+            menu.items[idx].state = MenuLine.STATE_SELECTED;
+        }
+        return menu;
+    }
+
+    WifiScannerV4DemoScene.prototype.enter = function() {
+        var self = this;
+        if (this._menu.enter) this._menu.enter();
+        PowerMeterLeds.start(METER_MENU);
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', '/api/target/current', true);
+        xhr.timeout = 3000;
+        xhr.onload = function() {
+            if (xhr.status !== 200) return;
+            var data;
+            try { data = JSON.parse(xhr.responseText); } catch (e) { return; }
+            var next = (data && data.profile) ? data.profile : '';
+            if (next !== self._profile) {
+                self._profile = next;
+                if (self._menu.exit) self._menu.exit();
+                self._menu = buildMenu(self.sceneManager, next);
+                if (self._menu.enter) self._menu.enter();
+                if (window.requestRender) window.requestRender();
+            }
+        };
+        try { xhr.send(); } catch (e) { /* offline — keep the default */ }
+    };
+
+    WifiScannerV4DemoScene.prototype.exit = function() {
+        if (this._menu.exit) this._menu.exit();
+        PowerMeterLeds.stop();
+    };
+
+    WifiScannerV4DemoScene.prototype.handleInput = function(action) {
+        var menu = this._menu;
+        if (action === 'ok' || action === 'run') {
+            // Same 30 ms press flash as MenuScene, then our routing.
+            var self = this;
+            var idx  = menu.selectedIndex;
+            var line = menu.items[idx];
+            line.state = MenuLine.STATE_PRESSED;
+            if (window.requestRender) window.requestRender();
+            setTimeout(function() {
+                line.state = MenuLine.STATE_SELECTED;
+                if (menu.menuNames[idx] === 'Apps' && self.sceneManager) {
+                    self.sceneManager.push(appsList(self.sceneManager, self._profile));
+                }
+                if (window.requestRender) window.requestRender();
+            }, 30);
+            return;
+        }
+        // Up / down / back are the real menu's.
+        return menu.handleInput(action);
+    };
+
+    WifiScannerV4DemoScene.prototype.render = function(canvas) {
+        this._menu.render(canvas);
+    };
 
     // The Version 1 walkthrough: Network submenu → Wi-Fi page → Scan.
     function networkEntry(sceneManager) {
