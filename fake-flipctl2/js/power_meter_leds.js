@@ -15,8 +15,9 @@
  *
  *   PowerMeterLeds.colors(state)  -> {led: colour} for all LEDs
  *   PowerMeterLeds.send(leds, cb) -> POST once; cb(ok)
- *   PowerMeterLeds.start(state)   -> show it and re-send every RESEND_MS
- *                                    (pm6.sh may write over the LEDs)
+ *   PowerMeterLeds.start(state, cb) -> show it and re-send every RESEND_MS
+ *                                    (pm6.sh may write over the LEDs);
+ *                                    cb(ok) for this first send
  *   PowerMeterLeds.stop()         -> stop re-sending, every LED off
  *                                    (with an override set: the override
  *                                    stays lit instead)
@@ -25,6 +26,15 @@
  *                                    instead of the app's own (Testing →
  *                                    Power Meter → Override)
  *   PowerMeterLeds.getOverride()  -> the override state or null
+ *   PowerMeterLeds.setSpikes(pct) -> random usage spikes, 0 (off)..100,
+ *                                    for every app (Testing → Power
+ *                                    Meter → Spikes); getSpikes() reads it
+ *
+ * Spikes: while something is shown, every SPIKE_TICK_MS a spike (the
+ * usage bar one level up, for 1..2 ticks, then at least one tick back)
+ * starts with probability (pct / 100) ^ SPIKE_CURVE — at 100 % the bar
+ * flickers non-stop, at 10 % it jumps now and then. Only the 4 usage
+ * LEDs are sent for a spike.
  *
  * Demo apps call start() in enter() and stop() in exit(). The "off" of
  * stop() waits a tick and is dropped if start() comes first, so moving
@@ -56,6 +66,8 @@ var PowerMeterLeds = (function() {
     var USAGE_MAX = USAGE_BARS.length - 1;
     var IN_MAX    = LED_IN.length;
     var RESEND_MS = 3000;
+    var SPIKE_TICK_MS = 120;
+    var SPIKE_CURVE   = 1.5;
 
     function colors(st) {
         var c = {}, i;
@@ -90,19 +102,70 @@ var PowerMeterLeds = (function() {
     var timer = null;
     var stopTimer = null;
 
-    function start(st) {
+    // Spikes (see the header).
+    var spikePct = 0;
+    var spikeTimer = null;
+    var spikeOn = false, spikeLeft = 0;
+
+    // Shows the base colours (no spike).
+    function showBase(cb) {
+        spikeOn = false;
+        spikeLeft = 0;
+        send(shown, cb);
+    }
+
+    function usageLeds(st) {
+        var c = colors(st), out = {};
+        for (var i = 0; i < LED_USAGE.length; i++) out[LED_USAGE[i]] = c[LED_USAGE[i]];
+        return out;
+    }
+
+    function spikeTick() {
+        var st = override || active;
+        if (!st) return;
+        var was = spikeOn;
+        if (spikeLeft > 0) {
+            spikeLeft--;
+        } else if (was) {
+            spikeOn = false;
+        } else if (Math.random() < Math.pow(spikePct / 100, SPIKE_CURVE)) {
+            spikeOn = true;
+            spikeLeft = Math.floor(Math.random() * 2);
+        }
+        if (spikeOn === was) return;
+        var up = {};
+        for (var k in st) up[k] = st[k];
+        up.usage = Math.min(USAGE_MAX, (st.usage || 0) + 1);
+        send(usageLeds(spikeOn ? up : st));
+    }
+
+    function updateSpikes() {
+        var want = spikePct > 0 && !!active;
+        if (want && !spikeTimer) {
+            spikeTimer = setInterval(spikeTick, SPIKE_TICK_MS);
+        } else if (!want && spikeTimer) {
+            clearInterval(spikeTimer);
+            spikeTimer = null;
+            spikeOn = false;
+            spikeLeft = 0;
+        }
+    }
+
+    function start(st, cb) {
         if (stopTimer) { clearTimeout(stopTimer); stopTimer = null; }
         active = st;
         shown = colors(override || active);
-        send(shown);
+        showBase(cb);
         if (!timer) {
-            timer = setInterval(function() { if (shown) send(shown); }, RESEND_MS);
+            timer = setInterval(function() { if (shown) showBase(); }, RESEND_MS);
         }
+        updateSpikes();
     }
 
     function stop() {
         if (timer) { clearInterval(timer); timer = null; }
         active = shown = null;
+        updateSpikes();
         if (stopTimer) return;
         stopTimer = setTimeout(function() {
             stopTimer = null;
@@ -115,13 +178,21 @@ var PowerMeterLeds = (function() {
         override = st || null;
         if (active) {
             shown = colors(override || active);
-            send(shown);
+            showBase();
         }
+    }
+
+    function setSpikes(pct) {
+        spikePct = Math.max(0, Math.min(100, pct));
+        updateSpikes();
+        if (!spikePct && active) showBase();
     }
 
     return {
         setOverride: setOverride,
         getOverride: function() { return override; },
+        setSpikes: setSpikes,
+        getSpikes: function() { return spikePct; },
         USAGE_MAX: USAGE_MAX,
         IN_MAX: IN_MAX,
         colors: colors,

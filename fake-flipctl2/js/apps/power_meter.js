@@ -27,18 +27,23 @@
  *                                  they stack green / yellow / orange /
  *                                  red, above that all four show
  *                                  hotter mixes).
+ *   Spikes          < OFF / 10..100% >  random one-level usage spikes
+ *                                  for every app (PowerMeterLeds.
+ *                                  setSpikes): 100 % flickers non-stop,
+ *                                  10 % jumps now and then. Kept for
+ *                                  the session.
  *   Battery         < OFF / OUTLINE / FULL >  outline / outline + bolt.
  *   Power In        < OFF / 1..4 > green USB-C chevrons.
  *   Power Delivery  < ON / OFF >   the plug LED while power comes in:
  *                                  green with PD, yellow without (MCU
  *                                  UI demo).
  *
- * While the page is open the LEDs show the rows. With Override OFF,
- * opening the page switches the meter off: the rows below Override
- * start at OFF (Power Delivery keeps its value). Each change re-sends
- * every LED, and they're re-sent
- * every RESEND_MS while the page is open, in case something else
- * (pm6.sh) wrote over them.
+ * While the page is open the LEDs show the rows, through
+ * PowerMeterLeds.start() like a demo app (so spikes show here too, and
+ * the LEDs are re-sent in case something else, pm6.sh, wrote over
+ * them); leaving the page stop()s it: off, or the override. With
+ * Override OFF, opening the page switches the meter off: the rows below
+ * Override start at OFF (Power Delivery keeps its value).
  */
 var PowerMeterScene = (function() {
     var BATTERY = ['OFF', 'OUTLINE', 'FULL'];
@@ -46,7 +51,7 @@ var PowerMeterScene = (function() {
     var BRIGHTNESS_STEPS = [0, 2, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
     var BRIGHTNESS_MAX   = BRIGHTNESS_STEPS[BRIGHTNESS_STEPS.length - 1];
     var WRITE_DELAY_MS  = 700;
-    var RESEND_MS = 3000;
+    var SPIKES_STEP = 10;                        // %
 
     // Rows; brightness null until read from the MCU.
     var st = { brightness: null, override: false, usage: 0, battery: 0, powerIn: 0, pd: true };
@@ -66,8 +71,21 @@ var PowerMeterScene = (function() {
     // Shows the rows, and hands them to the demos while Override is ON.
     function sendLeds() {
         if (st.override) PowerMeterLeds.setOverride(meterState());
-        PowerMeterLeds.send(PowerMeterLeds.colors(meterState()),
-            function(ok) { ledError = !ok; repaint(); });
+        PowerMeterLeds.start(meterState(), function(ok) { ledError = !ok; repaint(); });
+    }
+
+    function spikesRow(item) {
+        item.statusProvider = function() {
+            var v = PowerMeterLeds.getSpikes();
+            return '< ' + (v ? v + '%' : 'OFF') + ' >';
+        };
+        item.onAdjust = function(dir) {
+            var v = PowerMeterLeds.getSpikes() + (dir === 'right' ? SPIKES_STEP : -SPIKES_STEP);
+            if (v < 0 || v > 100) return;
+            PowerMeterLeds.setSpikes(v);
+        };
+        item.atStart = function() { return PowerMeterLeds.getSpikes() <= 0; };
+        item.atEnd = function() { return PowerMeterLeds.getSpikes() >= 100; };
     }
 
     function readBrightness() {
@@ -161,6 +179,7 @@ var PowerMeterScene = (function() {
             'Brightness',
             'Override',
             'Power Usage',
+            'Spikes',
             'Battery',
             'Power In',
             'Power Delivery'
@@ -180,6 +199,9 @@ var PowerMeterScene = (function() {
                 var status = item.statusProvider;
                 item.statusProvider = function() { return (ledError ? 'Error ' : '') + status(); };
                 break;
+            case 'Spikes':
+                spikesRow(item);
+                break;
             case 'Battery':
                 stepper(item, 'battery', BATTERY.length - 1, function(v) { return BATTERY[v]; });
                 break;
@@ -192,7 +214,6 @@ var PowerMeterScene = (function() {
             }
         }
 
-        var timer = null;
         var enter = sub.enter, exit = sub.exit;
         sub.enter = function() {
             if (enter) enter.apply(this, arguments);
@@ -201,10 +222,9 @@ var PowerMeterScene = (function() {
             st.brightness = null;
             sendLeds();
             readBrightness();
-            if (!timer) timer = setInterval(sendLeds, RESEND_MS);
         };
         sub.exit = function() {
-            if (timer) { clearInterval(timer); timer = null; }
+            PowerMeterLeds.stop();
             if (exit) exit.apply(this, arguments);
         };
         return sub;
