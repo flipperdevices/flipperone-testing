@@ -7,7 +7,8 @@
  * through POST /api/powermeter/brightness (the wattmeter LED group
  * register over I2C).
  *
- *   Brightness      < 0..100% >    the meter's brightness, shared by
+ *   Brightness      < 0, 2, 5, 10..100% (step 10) >
+ *                                  the meter's brightness, shared by
  *                                  everything that lights it (the
  *                                  Kickstarter demos too) and kept by
  *                                  the MCU across reboots; 0 = nothing
@@ -41,8 +42,9 @@
  */
 var PowerMeterScene = (function() {
     var BATTERY = ['OFF', 'OUTLINE', 'FULL'];
-    var BRIGHTNESS_STEP = 10;                    // %
-    var BRIGHTNESS_MAX  = 100;
+    // Brightness ladder, %: fine steps at the dim end, then every 10.
+    var BRIGHTNESS_STEPS = [0, 2, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+    var BRIGHTNESS_MAX   = BRIGHTNESS_STEPS[BRIGHTNESS_STEPS.length - 1];
     var WRITE_DELAY_MS  = 700;
     var RESEND_MS = 3000;
 
@@ -73,8 +75,14 @@ var PowerMeterScene = (function() {
             .then(function(r) { return r.json(); })
             .then(function(d) {
                 if (!d || !d.ok) throw new Error('read failed');
-                var pct = Math.round(d.level * 100 / 255 / BRIGHTNESS_STEP) * BRIGHTNESS_STEP;
-                st.brightness = writtenBrightness = pct;
+                // The nearest step; marked as written only when it is
+                // exactly what the MCU has.
+                var exact = d.level * 100 / 255, pct = BRIGHTNESS_STEPS[0];
+                BRIGHTNESS_STEPS.forEach(function(p) {
+                    if (Math.abs(p - exact) < Math.abs(pct - exact)) pct = p;
+                });
+                st.brightness = pct;
+                writtenBrightness = Math.round(pct * 255 / 100) === d.level ? pct : null;
                 brightnessError = false;
                 repaint();
             })
@@ -136,9 +144,9 @@ var PowerMeterScene = (function() {
         };
         item.onAdjust = function(dir) {
             if (st.brightness === null) return;
-            var v = st.brightness + (dir === 'right' ? BRIGHTNESS_STEP : -BRIGHTNESS_STEP);
-            if (v < 0 || v > BRIGHTNESS_MAX) return;
-            st.brightness = v;
+            var i = BRIGHTNESS_STEPS.indexOf(st.brightness) + (dir === 'right' ? 1 : -1);
+            if (i < 0 || i >= BRIGHTNESS_STEPS.length) return;
+            st.brightness = BRIGHTNESS_STEPS[i];
             repaint();
             writeBrightnessSoon();
         };
