@@ -43,3 +43,7 @@ fake-flipctl2/assets/tv_media_box/hdmi_port_fg_narrow.png
 
 # Rendered frame sequences for the campaign footage (generated, large).
 fake-flipctl2/exports/
+
+# Kickstarter demo handover for designers — shared outside the repo,
+# never committed.
+fake-flipctl2/KICKSTARTER_HANDOVER.md

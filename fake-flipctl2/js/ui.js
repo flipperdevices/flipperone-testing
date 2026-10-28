@@ -7,11 +7,17 @@ var UI = (function() {
 
     var batteryLevel = -1;
     var batteryCharging = false;
+    // Demo override: a number (0..100) replaces the real level and
+    // hides the charging bolt; null shows the real battery.
+    var batteryOverride = null;
     var modemAvailable = false;
     var signalQuality = -1;  // 0-100 or -1 for unknown
     var accessTech = '--';  // Technology: 5G, LTE, 3G, etc.
     var wifiConnected = false;
     var wifiQuality = 0;     // 0-100
+    // Demo override: a number (0..100) shows the Wi-Fi icon at that
+    // quality whatever the real link is; null shows the real state.
+    var wifiOverride = null;
     var wifiSSID = '';
     // Ethernet status-bar state. `'none'` → nothing connected (no
     // icon). `'real'` → at least one physical port (end0 / end1) is
@@ -345,8 +351,8 @@ var UI = (function() {
             HaxrCorp4090FlipCTL.draw(canvas.ctx, accessTech, leftX, top, fg);
             leftX += HaxrCorp4090FlipCTL.textWidth(accessTech) + 2;
         }
-        if (wifiConnected) {
-            canvas.drawSprite(wifiIcon(wifiQuality), leftX, top, fg);
+        if (wifiOverride !== null || wifiConnected) {
+            canvas.drawSprite(wifiIcon(wifiOverride !== null ? wifiOverride : wifiQuality), leftX, top, fg);
             leftX += 7 + 2;
         }
         if (ethernetStatus === 'real') {
@@ -399,7 +405,9 @@ var UI = (function() {
         fg = fg || '#000';
         if (typeof top !== 'number') top = STATUS_BAR_PAD_TOP;
 
-        var pctStr   = batteryLevel >= 0 ? batteryLevel + '%' : '--%';
+        var level    = batteryOverride !== null ? batteryOverride : batteryLevel;
+        var charging = batteryOverride !== null ? false : batteryCharging;
+        var pctStr   = level >= 0 ? level + '%' : '--%';
         var batteryW = StatusBarBattery.sprite.w;
         var batteryX = canvas.w - 2 - batteryW;
         var textX    = batteryX - 1 - HaxrCorp4090FlipCTL.textWidth(pctStr);
@@ -415,7 +423,7 @@ var UI = (function() {
         var barHeight   = 5;
         var barX        = batteryX + 2;
         var barY        = top + 1;
-        var barWidth    = Math.round((barMaxWidth * Math.max(0, batteryLevel)) / 100);
+        var barWidth    = Math.round((barMaxWidth * Math.max(0, level)) / 100);
 
         if (barWidth > 0) {
             canvas.drawRect(barX, barY, barWidth, barHeight, fg);
@@ -425,9 +433,17 @@ var UI = (function() {
         // left/top edge. Rendered literally so black stays black,
         // white stays white, and transparent lets the battery
         // sprite show through.
-        if (batteryCharging) {
+        if (charging) {
             canvas.drawSpriteLiteral(Icons.charging_status_bar, batteryX, batteryY);
         }
+    }
+
+    function setBatteryOverride(pct) {
+        batteryOverride = (typeof pct === 'number') ? pct : null;
+    }
+
+    function setWifiOverride(quality) {
+        wifiOverride = (typeof quality === 'number') ? quality : null;
     }
 
     function drawMenuList(canvas, items, selectedIndex, scrollOffset) {
@@ -1362,6 +1378,8 @@ var UI = (function() {
     return {
         drawStatusBar:  drawStatusBar,
         drawBattery:    drawBattery,
+        setBatteryOverride: setBatteryOverride,
+        setWifiOverride: setWifiOverride,
         drawMenuList:   drawMenuList,
         visibleCount:   visibleCount,
         MiddleButton:   MiddleButton,

@@ -323,7 +323,7 @@ var MenuScene = (function() {
     // Kickstarter demo → Selected: the versions picked for the shoot.
     function kickstarterSelectedMenu(sm) {
         return new SubMenuScene(sm, 'Selected', [
-            'Wi-Fi Scanner v4',
+            'Wi-Fi Scanner v7',
             '5G Modem Low-Full',
             '5G Modem Only Full',
             'Walkie Talkie Receive',
@@ -332,7 +332,7 @@ var MenuScene = (function() {
             'Desktop Mode',
             'TV Media Box'
         ], {
-            'Wi-Fi Scanner v4': function() { return new WifiScannerV4DemoScene(sm); },
+            'Wi-Fi Scanner v7': function() { return new WifiScannerV7DemoScene(sm); },
             '5G Modem Low-Full': function() { return new Modem5gDemoScene(sm); },
             '5G Modem Only Full': function() { return new Modem5gFullDemoScene(sm); },
             'Walkie Talkie Receive': function() { return new WalkieTalkieDemoScene(sm, { v2: true, mode: 'receive' }); },
@@ -394,12 +394,14 @@ var MenuScene = (function() {
             'Version 1',
             'Version 2',
             'Version 3',
-            'Version 4'
+            'Version 4',
+            'Version 7'
         ], {
             'Version 1': function() { return new WifiScannerDemoScene(sm); },
             'Version 2': function() { return new WifiScannerV2DemoScene(sm); },
             'Version 3': function() { return new WifiScannerV3DemoScene(sm); },
-            'Version 4': function() { return new WifiScannerV4DemoScene(sm); }
+            'Version 4': function() { return new WifiScannerV4DemoScene(sm); },
+            'Version 7': function() { return new WifiScannerV7DemoScene(sm); }
         });
     }
 
