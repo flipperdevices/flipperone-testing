@@ -6,10 +6,11 @@
  * assets/kickstarter_UI/network_sniffer/ (status bar, "Ethernet
  * Sniffer" title and the Flipper between the Network / Device / PC
  * cables are part of both):
- *   • not connected — the still Ethernet_sniffer_v002_still.png;
+ *   • not connected — the still Ethernet_sniffer_v003_still.png;
  *   • Ethernet connected — the clip with packets running along the
- *     cables (Ethernet_sniffer_v002.mp4, 256×144, 25 fps, 4 s), looped,
- *     from its first frame on every connect.
+ *     cables (Ethernet_sniffer_v003.mp4, 256×144, 25 fps, 99 frames,
+ *     exported seamless), looped, from its first frame on every
+ *     connect.
  * Left / right / up / down / OK flip between the two (no detection).
  *
  * A fake status bar covers the one in the art: battery BATTERY_PCT on
@@ -23,14 +24,14 @@
  *
  * Rebuild the sheet after changing the clip, from
  * assets/kickstarter_UI/network_sniffer/:
- *   ffmpeg -i Ethernet_sniffer_v002.mp4 \
- *          -vf format=gray,tile=10x10 -frames:v 1 -update 1 Ethernet_sniffer_v002_sheet.png
+ *   ffmpeg -i Ethernet_sniffer_v003.mp4 \
+ *          -vf format=gray,tile=10x10 -frames:v 1 -update 1 Ethernet_sniffer_v003_sheet.png
  */
 var EthernetSnifferDemoScene = (function() {
-    var STILL_SRC = 'assets/kickstarter_UI/network_sniffer/Ethernet_sniffer_v002_still.png';
+    var STILL_SRC = 'assets/kickstarter_UI/network_sniffer/Ethernet_sniffer_v003_still.png';
     var CLIP = {
-        src: 'assets/kickstarter_UI/network_sniffer/Ethernet_sniffer_v002_sheet.png',
-        frames: 100, cols: 10, fps: 25, w: 256, h: 144
+        src: 'assets/kickstarter_UI/network_sniffer/Ethernet_sniffer_v003_sheet.png',
+        frames: 99, cols: 10, fps: 25, w: 256, h: 144
     };
 
     var BATTERY_PCT = 84;
