@@ -11,11 +11,11 @@
  *     cable only; the Flipper is display_port_outline_100.png laid over
  *     it at an adjustable opacity), under a status bar (battery 69 %) and
  *     "Plug in Display Port" / "Waiting for connection" on the right.
- *   • Connected    — the happy monitor loop (bounce and a glare;
- *     desktop_mode/desktop_connected_dip_256x144_h264.mp4), from its
- *     first frame on every connect, with "Desktop Mode" over it in
- *     Version 1's title font and place, and the same status bar as the
- *     waiting state (now charging) over the clip's own.
+ *   • Connected    — the designer's desktop loop (a PC whose screen
+ *     opens a window, with "Desktop Mode" baked in;
+ *     desktop_mode/image-1793288579474.gif, 46 frames at 10 fps, drawn
+ *     4× the LCD), from its first frame on every connect, under the same
+ *     status bar as the waiting state (now charging) over the clip's own.
  *
  * Both clips are pre-rendered sprite sheets (every frame in a cols × rows
  * grid, one rect blitted per frame, so the wrap has no seam), re-fetched
@@ -44,8 +44,12 @@
  * Rebuild the sheets after changing the clips, from assets/desktop_mode/:
  *   ffmpeg -i display_port_connect_v008.mp4 \
  *          -vf format=gray,tile=10x6 -frames:v 1 -update 1 display_port_connect_v008_sheet.png
- *   ffmpeg -i desktop_connected_dip_256x144_h264.mp4 \
- *          -vf format=gray,tile=10x6 -frames:v 1 -update 1 desktop_connected_sheet.png
+ * and the connected one from the GIF (4× → 1× nearest, grayscale, a
+ * 10-column grid), e.g. in Python with Pillow:
+ *   im = Image.open('image-1793288579474.gif'); sheet = Image.new('L', (2560, 720), 255)
+ *   for i in range(im.n_frames): im.seek(i); sheet.paste(
+ *       im.convert('L').resize((256, 144), Image.NEAREST), ((i % 10) * 256, (i // 10) * 144))
+ *   sheet.save('desktop_connected_v002_sheet.png')
  */
 var DesktopComputerV3DemoScene = (function() {
     var POLL_MS = 150;
@@ -72,12 +76,10 @@ var DesktopComputerV3DemoScene = (function() {
     // + bolt), 3 USB-C input chevrons and the plug (green: PD).
     var METER_WAITING   = { battery: 'OUTLINE', usage: 1 };
     var METER_CONNECTED = { battery: 'FULL', usage: 1, powerIn: 3, pd: true };
-    // Over the connected clip, where Version 1 had "Desktop Computer":
-    // Born2bSporty at 2× (caps rows 20..39), centred.
-    var CONNECTED_TITLE = 'Desktop Mode', CONNECTED_TITLE_Y = 14, CONNECTED_TITLE_SCALE = 2;
+    // Connected clip; its "Desktop Mode" title is part of the art.
     var CONNECTED = {
-        src: 'assets/desktop_mode/desktop_connected_sheet.png',
-        frames: 60, cols: 10, fps: 60, w: 256, h: 144
+        src: 'assets/desktop_mode/desktop_connected_v002_sheet.png',
+        frames: 46, cols: 10, fps: 10, w: 256, h: 144
     };
 
     function repaint() {
@@ -169,7 +171,9 @@ var DesktopComputerV3DemoScene = (function() {
         this._pollTimer = setInterval(poll, POLL_MS);
         poll();
         // Both states animate: repaint every frame of the faster clip.
-        this._frameTimer = setInterval(repaint, Math.floor(1000 / CONNECTED.fps));
+        // Repaint at the faster clip's rate.
+        this._frameTimer = setInterval(repaint,
+            Math.floor(1000 / Math.max(WAITING.fps, CONNECTED.fps)));
         PowerMeterLeds.start(this._connected ? METER_CONNECTED : METER_WAITING);
         repaint();
     };
@@ -250,10 +254,6 @@ var DesktopComputerV3DemoScene = (function() {
         if (!this._connected) {
             B.draw(canvas.ctx, TITLE, TITLE_X, TITLE_Y, '#000');
             HaxrCorp4090FlipCTL.draw(canvas.ctx, HINT, HINT_X, HINT_Y, '#000');
-        } else {
-            var tw = B.textWidth(CONNECTED_TITLE, CONNECTED_TITLE_SCALE);
-            B.draw(canvas.ctx, CONNECTED_TITLE, Math.floor((canvas.w - tw) / 2),
-                CONNECTED_TITLE_Y, '#000', CONNECTED_TITLE_SCALE);
         }
     };
 

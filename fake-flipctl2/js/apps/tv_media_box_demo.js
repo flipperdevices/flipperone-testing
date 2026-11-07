@@ -17,12 +17,11 @@
  *     the status bar.
  *   - Connected (/api/hdmi `connected`, polled every HDMI_POLL_MS):
  *     the main screen comes in (unplugging goes straight back to the
- *     clip, from its first frame): the happy TV appears and bounces like the Desktop computer clip
- *     (body squashes into the stand, springs back with a 1 px
- *     overshoot), the FAKE_RESOLUTION headline, 'CEC: enabled' and
- *     'Running Kodi' fade in, then a white diagonal glare sweeps the
- *     screen once. A selected 'Settings' row (Helvb08) and the
- *     Keyboard + TV remote buttons appear.
+ *     clip, from its first frame): the designer's animated media icon
+ *     (a film strip with a play sign, media_big_icon_v001.gif) plays
+ *     where the real app has its TV, the FAKE_RESOLUTION headline,
+ *     'CEC: enabled' and 'Running Kodi' fade in, a selected 'Settings'
+ *     row (Helvb08) and the Keyboard + TV remote buttons appear.
  *   - OK toggles a manual "connected" override (preview without
  *     hardware, or a backup during a shoot), like the other Kickstarter
  *     connect demos.
@@ -37,6 +36,12 @@
  * assets/tv_media_box/Cable_Seq_v003/Media_box_outline/:
  *   ffmpeg -framerate 30 -i Media_box_cable_v003_%d.png \
  *          -vf format=gray,tile=10x6 -frames:v 1 -update 1 ../../Media_box_cable_v003_sheet.png
+ * and the icon's from the GIF (frames 1:1, grayscale, ICON.cols per row;
+ * keep ICON_MS in step with the GIF's frame durations), e.g. with Pillow:
+ *   im = Image.open('media_big_icon_v001.gif'); sheet = Image.new('L', (63 * 8, 43 * 4), 255)
+ *   for i in range(im.n_frames): im.seek(i); sheet.paste(
+ *       im.convert('L'), ((i % 8) * 63, (i // 8) * 43))
+ *   sheet.save('media_big_icon_v001_sheet.png')
  */
 var TvMediaBoxDemoScene = (function() {
     var HDMI_POLL_MS    = 500;
@@ -76,22 +81,20 @@ var TvMediaBoxDemoScene = (function() {
     // Fake status bar, from the design (like the 5G Modem demo's, with
     // "5G" 1 px further right): full cellular bars + "5G" left, "69%"
     // and the battery right.
-    var STATUS_PCT = '69%';
-    var STATUS_BAT_FILL = 10;     // px of the battery's 10 px bar lit, as drawn in the design
+    var BATTERY_PCT = 69;         // the battery bar is filled to match
 
-    // TV graphic — same spot as the real app. tv_frame rows: 0..36
-    // body, 37..41 stand neck, 42 foot.
-    var TV_X = 45, TV_Y = 38, TV_W = 61, TV_H = 43;
-    var BODY_H = 37, FOOT_ROW = 42, NECK_ROW = 38;
-    // TV screen: the transparent inside of the body (1 px border).
-    var SCREEN_X = 1, SCREEN_Y = 1, SCREEN_W = 59, SCREEN_H = 35;
-    var SCREEN_GRAY = '#EBEBEB';
-
-    // Bounce: body offset per 60 fps frame after connect. Desktop
-    // computer's curve (+2 +4 +6 +6 +5 … -1 -1 0) at half amplitude to
-    // match the half-size TV; the foot stays put, the neck absorbs it.
-    var BOUNCE = [1, 2, 3, 3, 3, 2, 2, 1, 1, 0, -1, -1, 0];
-    var FRAME_MS = 1000 / 60;
+    // Media icon (the designer's GIF as a sprite sheet), centred on the
+    // real app's TV spot (x 45..105, y 38..80). It loops the whole GIF
+    // from its first frame on every connect; ICON_MS = the GIF's frame
+    // durations (a 200 / 200 / 500 ms press, then the strip runs).
+    var TV_X = 45, TV_Y = 38, TV_W = 61;
+    var ICON = {
+        src: 'assets/tv_media_box/media_big_icon_v001_sheet.png',
+        frames: 31, cols: 8, w: 63, h: 43
+    };
+    var ICON_MS = [200, 200, 500];
+    while (ICON_MS.length < ICON.frames) ICON_MS.push(100);
+    var ICON_CYCLE_MS = ICON_MS.reduce(function(a, b) { return a + b; }, 0);
 
     // Resolution headline (Born2bSporty, ink y+3..y+12) over the CEC
     // line (HaxrCorp, ink y+2..y+8), both centred on x = 175; the
@@ -111,18 +114,12 @@ var TvMediaBoxDemoScene = (function() {
     var FADE_DELAY_MS = 33;
     var FADE_MS       = 100;
 
-    // Glare: a solid white '/' band GLARE_W px wide (measured along x)
-    // crossing the screen from top-left to bottom-right in GLARE_MS,
-    // once the bounce has settled.
-    var GLARE_DELAY_MS = 400;
-    var GLARE_W        = 22;
-    var GLARE_MS       = 450;
-    var ANIM_END_MS    = GLARE_DELAY_MS + GLARE_MS;
-
     // Bottom buttons slide up from below the screen edge on connect
     // (easeOutCubic).
     var BTN_SLIDE_PX = 14;   // button height: fully hidden at start
     var BTN_SLIDE_MS = 300;
+    // The connect animation (fade + button slide) is over by then.
+    var ANIM_END_MS = Math.max(BTN_SLIDE_MS, FADE_DELAY_MS + FADE_MS);
 
     function TvMediaBoxDemoScene(sceneManager) {
         TVMediaBoxScene.call(this, sceneManager);
@@ -140,9 +137,10 @@ var TvMediaBoxDemoScene = (function() {
         for (var i = 0; i < 5; i++) ctx.fillRect(2 + 2 * i, 9 - (2 + i), 1, 3 + i);
         H.draw(ctx, '5G', 13, top - 2, '#fff');
         var bat = StatusBarBattery.sprite, bx = canvas.w - 2 - bat.w;
-        H.draw(ctx, STATUS_PCT, bx - 1 - H.textWidth(STATUS_PCT), top - 2, '#fff');
+        var pct = BATTERY_PCT + '%';
+        H.draw(ctx, pct, bx - 1 - H.textWidth(pct), top - 2, '#fff');
         canvas.drawSprite(bat, bx, top - 1, '#fff');
-        ctx.fillRect(bx + 2, top + 1, STATUS_BAT_FILL, 5);
+        ctx.fillRect(bx + 2, top + 1, Math.round(10 * BATTERY_PCT / 100), 5);
     }
 
     function repaint() {
@@ -202,11 +200,13 @@ var TvMediaBoxDemoScene = (function() {
         // on disk shows up without reloading the page.
         this._clipImg    = loadClip(WAITING.src + '?v=' + Date.now());
         this._outlineImg = loadImg(OUTLINE.src + '?v=' + Date.now());
+        this._iconImg    = loadImg(ICON.src + '?v=' + Date.now());
+        this._iconT0     = Date.now();
         this._labelUntil = 0;
         var self = this;
-        // Repaint tick for the clip (only while it's on screen).
+        // Repaint tick for the clip / media icon (main view only).
         this._loopTimer = setInterval(function() {
-            if (self._hdmiLoaded && !self._hdmiConnected && self._view === 'main') repaint();
+            if (self._hdmiLoaded && self._view === 'main') repaint();
         }, 16);
         var poll = function() {
             fetch('/api/hdmi', { cache: 'no-store' })
@@ -259,6 +259,7 @@ var TvMediaBoxDemoScene = (function() {
         if (on && !first) this._startConnectAnim();
         else              this._connectAt = 0;
         if (!on) this._loopStart = Date.now();   // the clip from its first frame
+        else     this._iconT0    = Date.now();   // the icon from its first frame
         repaint();
     };
 
@@ -357,7 +358,7 @@ var TvMediaBoxDemoScene = (function() {
         HaxrCorp4090FlipCTL.draw(ctx, label,
             canvas.w - 4 - HaxrCorp4090FlipCTL.textWidth(label), TITLE_Y + 3, ink);
 
-        this._drawTv(canvas, t);
+        this._drawIcon(canvas);
 
         var resW = Born2bSportyV2FlipCTL.textWidth(FAKE_RESOLUTION);
         Born2bSportyV2FlipCTL.draw(ctx, FAKE_RESOLUTION,
@@ -414,61 +415,15 @@ var TvMediaBoxDemoScene = (function() {
         }
     };
 
-    // Happy TV with the bounce: the body (frame, screen, glare, face)
-    // is shifted by the bounce offset, the foot stays put and the neck
-    // is redrawn to fill the gap between them.
-    TvMediaBoxDemoScene.prototype._drawTv = function(canvas, t) {
-        if (typeof Icons === 'undefined' || !Icons.tv_frame) return;
-        var ctx = canvas.ctx;
-        var spr = Icons.tv_frame;
-        var dy  = 0;
-        if (t !== null) {
-            var fi = Math.floor(t / FRAME_MS);
-            if (fi < BOUNCE.length) dy = BOUNCE[fi];
-        }
-        var clipRow = function(y, h, drawY) {
-            ctx.save();
-            ctx.beginPath();
-            ctx.rect(TV_X, y, TV_W, h);
-            ctx.clip();
-            canvas.drawSprite(spr, TV_X, drawY, '#000');
-            ctx.restore();
-        };
-        // Foot (fixed).
-        clipRow(TV_Y + FOOT_ROW, TV_H - FOOT_ROW, TV_Y);
-        // Neck: from the shifted body's bottom down to the foot, one
-        // neck row at a time.
-        for (var y = TV_Y + BODY_H + dy; y < TV_Y + FOOT_ROW; y++) {
-            clipRow(y, 1, y - NECK_ROW);
-        }
-        // Body.
-        var by = TV_Y + dy;
-        clipRow(by, BODY_H, by);
-
-        // Screen fill + glare.
-        var sx = TV_X + SCREEN_X, sy = by + SCREEN_Y;
-        ctx.fillStyle = SCREEN_GRAY;
-        ctx.fillRect(sx, sy, SCREEN_W, SCREEN_H);
-        if (t !== null && t >= GLARE_DELAY_MS) {
-            var g = Math.min(1, (t - GLARE_DELAY_MS) / GLARE_MS);
-            // Band covers lx + ly in [a, a + GLARE_W); a runs from fully
-            // before the top-left corner to fully past the bottom-right.
-            var a = Math.round(-GLARE_W + g * (SCREEN_W + SCREEN_H + GLARE_W));
-            ctx.fillStyle = '#fff';
-            for (var ly = 0; ly < SCREEN_H; ly++) {
-                var x0 = Math.max(0, a - ly);
-                var x1 = Math.min(SCREEN_W, a + GLARE_W - ly);
-                if (x1 > x0) ctx.fillRect(sx + x0, sy + ly, x1 - x0, 1);
-            }
-        }
-
-        // Face (same centring as the real app's tv_screen_on).
-        var face = Icons.tv_screen_on;
-        if (face) {
-            canvas.drawSprite(face,
-                TV_X + Math.floor((TV_W - face.w) / 2),
-                by + Math.floor((TV_H - face.h) / 2) - 3, '#000');
-        }
+    // The media icon at the frame due ICON_MS-wise since _iconT0.
+    TvMediaBoxDemoScene.prototype._drawIcon = function(canvas) {
+        var img = this._iconImg;
+        if (!img || !img.complete || !img.naturalWidth) return;
+        var t = (Date.now() - this._iconT0) % ICON_CYCLE_MS, fi = 0;
+        while (fi < ICON.frames - 1 && t >= ICON_MS[fi]) t -= ICON_MS[fi++];
+        canvas.ctx.drawImage(img,
+            (fi % ICON.cols) * ICON.w, Math.floor(fi / ICON.cols) * ICON.h, ICON.w, ICON.h,
+            TV_X + Math.floor((TV_W - ICON.w) / 2), TV_Y, ICON.w, ICON.h);
     };
 
     // ── Keyboard: keep the UI, drop the mouse forwarder ───────────
