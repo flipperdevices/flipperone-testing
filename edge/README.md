@@ -11,7 +11,7 @@ anything.
 ./start-tests.sh --temperature --time 1 --interval 1
 python3 edge/export_jsonl.py results/test_run_<timestamp>/system_data.csv \
   --output results/test_run_<timestamp>/neural_link.jsonl \
-  --device-id rk3576-field-01
+  --device-id tar001-edge-001
 ```
 
 Or set `NEURAL_LINK_DEVICE_ID` instead of passing `--device-id`. Use a stable, opaque
