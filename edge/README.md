@@ -1,11 +1,10 @@
-# EDGE SYSTEMS: local export and configurable transport
+# NEURAL LINK EDGE
 
-`export_jsonl.py` is a local-only adapter from the repository's existing
-`temperature/system_monitor.sh` output (`system_data.csv`) to newline-delimited JSON.
-It uses only Python's standard library. It does not open a network connection or upload
-anything.
+This directory contains a local collector, an opt-in HTTPS sender, and a small
+authenticated receiver suitable for development and controlled pilot testing.
+All components use the Python standard library.
 
-## Run on a board
+## 1. Collect locally
 
 ```bash
 ./start-tests.sh --temperature --time 1 --interval 1
@@ -14,46 +13,63 @@ python3 edge/export_jsonl.py results/test_run_<timestamp>/system_data.csv \
   --device-id tar001-edge-001
 ```
 
-Or set `NEURAL_LINK_DEVICE_ID` instead of passing `--device-id`. Use a stable, opaque
-identifier rather than a personal hostname. Each JSONL row is one sample and contains
-`schema`, `device_id`, `source`, `sequence`, `elapsed_s`, and `metrics`; recognized
-metrics are temperature (`Cel`), CPU load (`%`), and frequency (`MHz`). `elapsed_s` is
-time relative to the beginning of collection, not a wall-clock timestamp.
+The exporter writes versioned `neural-link.edge.sample.v1` JSONL records. Device IDs
+should be stable opaque identifiers, not personal hostnames.
 
-## Configurable HTTPS transport
+## 2. Start the receiver (development)
 
-`send_jsonl.py` is a separate transport adapter. It validates every sample against
-`neural-link.edge.sample.v1` and sends the JSONL batch only when all records are valid.
-It requires an absolute HTTPS endpoint and a bearer token supplied through an environment
-variable. No endpoint, credential, or server is hard-coded.
+Create a strong receiver token and keep it out of source control:
 
 ```bash
-export NEURAL_LINK_ENDPOINT="https://your-receiver.example/v1/edge/samples"
-export NEURAL_LINK_TOKEN="your-issued-token"
+export NEURAL_LINK_RECEIVER_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+export NEURAL_LINK_RECEIVER_DB="./neural_link.sqlite3"
+python3 edge/receive_jsonl.py --host 127.0.0.1 --port 8080
+```
+
+The receiver listens at `/v1/edge/samples`. It requires bearer authentication,
+`application/x-ndjson`, a matching SHA-256 `Idempotency-Key`, and a body no larger
+than 1 MiB. It validates the entire batch before inserting anything. Samples and
+idempotency keys are stored in SQLite in a transaction. Replayed batches are
+acknowledged as duplicates and are not inserted again.
+
+The default bind address is loopback (`127.0.0.1`). The built-in server uses HTTP and
+is for local development only. For a remote pilot, deploy behind a TLS reverse proxy,
+restrict network access, provision unique credentials, define device authorization,
+retention/deletion policy, backups, monitoring, and operational ownership. Do not expose
+the development server directly to the public internet.
+
+## 3. Send a batch
+
+For local end-to-end testing, use the loopback receiver:
+
+```bash
+export NEURAL_LINK_ENDPOINT="http://127.0.0.1:8080/v1/edge/samples"
+export NEURAL_LINK_TOKEN="$NEURAL_LINK_RECEIVER_TOKEN"
 python3 edge/send_jsonl.py results/test_run_<timestamp>/neural_link.jsonl
 ```
 
-The sender sets `Content-Type: application/x-ndjson`, uses a SHA-256
-`Idempotency-Key` for the exact batch body, applies a configurable timeout, and does not
-retry automatically. The token is never printed. Empty files cause no network request.
-The receiving service must implement the matching endpoint, validate the bearer token,
-and honor the idempotency key if duplicate suppression is required.
+The sender requires HTTPS by default. For local-only testing against loopback, pass
+`--allow-insecure-loopback` only if that option is implemented and reviewed; otherwise
+use a local TLS reverse proxy. Never weaken TLS validation for a remote host.
 
-Do not use a real endpoint until its owner has supplied the URL, authentication policy,
-retention policy, and accepted response contract. This repository does not yet include
-or deploy a central receiver.
+The sender uses bearer authentication, a content hash as idempotency key, a timeout,
+and no automatic retries. Empty files cause no network request. Credentials are read
+from environment variables and are never printed.
 
-## Smoke tests without hardware
+## 4. Tests
 
 ```bash
 python3 -m unittest discover -s tests -v
-mkdir -p /tmp/neural-link-edge-demo
-printf '# METADATA: {}\\nseconds,temp_soc,load_cpu0,freq_cpu0\\n0,31.5,12,1200\\n' \
-  > /tmp/neural-link-edge-demo/system_data.csv
-python3 edge/export_jsonl.py /tmp/neural-link-edge-demo/system_data.csv \
-  --output /tmp/neural-link-edge-demo/samples.jsonl --device-id demo-board
-cat /tmp/neural-link-edge-demo/samples.jsonl
 ```
 
-The collector and sender use only Python's standard library. The transport adapter is
-opt-in and separate from collection, so local-only operation remains the default.
+Tests cover export, validation, authentication, media type, idempotency, and receiver
+persistence behavior. Run the complete repository test suite and hardware checks before
+using this on a board.
+
+## Deployment boundary
+
+This repository now contains a receiver implementation, but it is not deployed or
+hosted. No production endpoint, device credential issuance, access-control registry,
+or retention policy has been configured. The initial receiver uses one shared bearer
+token; a real multi-device deployment must move to per-device credentials and explicit
+authorization before onboarding external devices.
