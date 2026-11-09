@@ -1,8 +1,8 @@
 # NEURAL LINK EDGE
 
-This directory contains a local collector, an opt-in HTTPS sender, and a small
-authenticated receiver suitable for development and controlled pilot testing.
-All components use the Python standard library.
+This directory contains a local collector, an opt-in sender, and an authenticated
+SQLite receiver for development and controlled pilot testing. All components use
+the Python standard library.
 
 ## 1. Collect locally
 
@@ -40,21 +40,19 @@ the development server directly to the public internet.
 
 ## 3. Send a batch
 
-For local end-to-end testing, use the loopback receiver:
+For local end-to-end testing, explicitly enable plain HTTP only for loopback:
 
 ```bash
 export NEURAL_LINK_ENDPOINT="http://127.0.0.1:8080/v1/edge/samples"
 export NEURAL_LINK_TOKEN="$NEURAL_LINK_RECEIVER_TOKEN"
-python3 edge/send_jsonl.py results/test_run_<timestamp>/neural_link.jsonl
+python3 edge/send_jsonl.py results/test_run_<timestamp>/neural_link.jsonl \
+  --allow-insecure-loopback
 ```
 
-The sender requires HTTPS by default. For local-only testing against loopback, pass
-`--allow-insecure-loopback` only if that option is implemented and reviewed; otherwise
-use a local TLS reverse proxy. Never weaken TLS validation for a remote host.
-
-The sender uses bearer authentication, a content hash as idempotency key, a timeout,
-and no automatic retries. Empty files cause no network request. Credentials are read
-from environment variables and are never printed.
+The sender rejects plain HTTP by default and rejects non-loopback HTTP even when the
+development flag is supplied. Remote endpoints must use HTTPS. The sender uses bearer
+authentication, a content hash as idempotency key, a timeout, and no automatic retries.
+Credentials are read from environment variables and are never printed.
 
 ## 4. Tests
 
@@ -68,8 +66,8 @@ using this on a board.
 
 ## Deployment boundary
 
-This repository now contains a receiver implementation, but it is not deployed or
-hosted. No production endpoint, device credential issuance, access-control registry,
-or retention policy has been configured. The initial receiver uses one shared bearer
-token; a real multi-device deployment must move to per-device credentials and explicit
-authorization before onboarding external devices.
+This repository contains a receiver implementation, but it is not deployed or hosted.
+No production endpoint, device credential issuance, access-control registry, or retention
+policy has been configured. The initial receiver uses one shared bearer token; a real
+multi-device deployment must move to per-device credentials and explicit authorization
+before onboarding external devices.
