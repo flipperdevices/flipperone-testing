@@ -72,9 +72,25 @@ class SendJsonlTests(unittest.TestCase):
         self.assertEqual(request.get_header("Content-type"), "application/x-ndjson; charset=utf-8")
         self.assertTrue(request.get_header("Idempotency-key"))
 
-    def test_rejects_plain_http(self):
+    def test_rejects_plain_http_to_remote_host(self):
         with self.assertRaisesRegex(ValueError, "HTTPS"):
-            send_jsonl(self.path, "http://collector.example/ingest", "secret")
+            send_jsonl(self.path, "http://collector.example/ingest", "secret", allow_insecure_loopback=True)
+
+    def test_allows_plain_http_to_loopback_only_when_opted_in(self):
+        response = MagicMock()
+        response.status = 202
+        response.__enter__.return_value = response
+        with patch("edge.send_jsonl.urlopen", return_value=response) as mocked:
+            self.assertEqual(
+                send_jsonl(self.path, "http://127.0.0.1:8080/ingest", "secret",
+                           allow_insecure_loopback=True),
+                1,
+            )
+        mocked.assert_called_once()
+
+    def test_rejects_plain_http_without_opt_in(self):
+        with self.assertRaisesRegex(ValueError, "HTTPS"):
+            send_jsonl(self.path, "http://127.0.0.1:8080/ingest", "secret")
 
     def test_requires_token(self):
         with self.assertRaisesRegex(ValueError, "token is required"):
