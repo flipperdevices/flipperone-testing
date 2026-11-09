@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Send validated NEURAL LINK JSONL batches to a configured HTTPS endpoint."""
+"""Send validated NEURAL LINK JSONL batches to a configured receiver."""
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import math
 import os
@@ -43,13 +44,34 @@ def validate_jsonl(content: str) -> int:
     return count
 
 
-def send_jsonl(input_path: Path, endpoint: str, token: str, timeout: float = 10.0) -> int:
-    """POST one validated JSONL batch; never retries automatically."""
+def _is_loopback(hostname: str) -> bool:
+    if hostname == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+def send_jsonl(
+    input_path: Path,
+    endpoint: str,
+    token: str,
+    timeout: float = 10.0,
+    allow_insecure_loopback: bool = False,
+) -> int:
+    """POST one validated JSONL batch; plain HTTP is opt-in for loopback only."""
     parsed = urlparse(endpoint)
-    if parsed.scheme != "https" or not parsed.netloc:
-        raise ValueError("endpoint must be an absolute HTTPS URL")
+    if not parsed.hostname:
+        raise ValueError("endpoint must include a hostname")
+    if parsed.scheme != "https" and not (
+        parsed.scheme == "http" and allow_insecure_loopback and _is_loopback(parsed.hostname)
+    ):
+        raise ValueError("endpoint must use HTTPS (HTTP is allowed only for explicit loopback testing)")
     if not token or not token.strip():
         raise ValueError("authentication token is required")
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("timeout must be a finite positive number")
     content = input_path.read_text(encoding="utf-8")
     count = validate_jsonl(content)
     if count == 0:
@@ -85,14 +107,19 @@ def main(argv=None) -> int:
     parser.add_argument("--endpoint", default=os.environ.get("NEURAL_LINK_ENDPOINT"))
     parser.add_argument("--token-env", default="NEURAL_LINK_TOKEN", help="environment variable containing the bearer token")
     parser.add_argument("--timeout", type=float, default=10.0)
+    parser.add_argument(
+        "--allow-insecure-loopback",
+        action="store_true",
+        help="allow plain HTTP only to localhost or a loopback IP (development only)",
+    )
     args = parser.parse_args(argv)
     if not args.endpoint:
         parser.error("--endpoint or NEURAL_LINK_ENDPOINT is required")
-    if not math.isfinite(args.timeout) or args.timeout <= 0:
-        parser.error("--timeout must be a finite positive number")
     token = os.environ.get(args.token_env)
     try:
-        count = send_jsonl(args.jsonl_file, args.endpoint, token, args.timeout)
+        count = send_jsonl(
+            args.jsonl_file, args.endpoint, token, args.timeout, args.allow_insecure_loopback
+        )
     except (OSError, ValueError, RuntimeError) as exc:
         print(f"edge send failed: {exc}", file=sys.stderr)
         return 1
