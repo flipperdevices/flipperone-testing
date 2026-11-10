@@ -6,6 +6,7 @@ access. The built-in HTTP server is intended for local development and testing.
 """
 
 import argparse
+import hashlib
 import hmac
 import json
 import math
@@ -13,20 +14,21 @@ import os
 import sqlite3
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 
 SCHEMA_VERSION = "neural-link.edge.sample.v1"
 DEFAULT_PATH = "/v1/edge/samples"
 MAX_BODY_BYTES = 1_048_576
+METRIC_UNITS = {"temp_": "Cel", "load_": "%", "freq_": "MHz"}
 
 
 def validate_batch(body: bytes):
-    """Decode and validate a complete JSONL batch before storing any records."""
+    """Decode and validate a complete, single-device JSONL batch."""
     try:
         content = body.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ValueError("body must be UTF-8") from exc
     records = []
+    batch_device_id = None
     for line_number, line in enumerate(content.splitlines(), start=1):
         if not line.strip():
             continue
@@ -41,11 +43,18 @@ def validate_batch(body: bytes):
         device_id = record.get("device_id")
         if not isinstance(device_id, str) or not device_id.strip():
             raise ValueError(f"line {line_number}: device_id is required")
+        if batch_device_id is None:
+            batch_device_id = device_id
+        elif device_id != batch_device_id:
+            raise ValueError(f"line {line_number}: a batch must contain one device_id")
+        if record.get("source") != "rk3576-system-monitor":
+            raise ValueError(f"line {line_number}: unsupported source")
         sequence = record.get("sequence")
         if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 0:
             raise ValueError(f"line {line_number}: sequence must be a non-negative integer")
         elapsed = record.get("elapsed_s")
-        if isinstance(elapsed, bool) or not isinstance(elapsed, (int, float)) or not math.isfinite(elapsed) or elapsed < 0:
+        if (isinstance(elapsed, bool) or not isinstance(elapsed, (int, float))
+                or not math.isfinite(elapsed) or elapsed < 0):
             raise ValueError(f"line {line_number}: elapsed_s must be finite and non-negative")
         metrics = record.get("metrics")
         if not isinstance(metrics, dict) or not metrics:
@@ -53,11 +62,18 @@ def validate_batch(body: bytes):
         for name, metric in metrics.items():
             if not isinstance(name, str) or not isinstance(metric, dict):
                 raise ValueError(f"line {line_number}: invalid metric")
+            expected_unit = next(
+                (unit for prefix, unit in METRIC_UNITS.items() if name.startswith(prefix)),
+                None,
+            )
+            if expected_unit is None:
+                raise ValueError(f"line {line_number}: unsupported metric name")
             value = metric.get("value")
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value)):
                 raise ValueError(f"line {line_number}: metric values must be finite numbers")
-            if not isinstance(metric.get("unit"), str):
-                raise ValueError(f"line {line_number}: metric unit must be a string")
+            if metric.get("unit") != expected_unit:
+                raise ValueError(f"line {line_number}: invalid unit for metric {name}")
         records.append(record)
     if not records:
         raise ValueError("batch contains no samples")
@@ -156,7 +172,6 @@ def make_handler(token: str, database: str, endpoint_path: str = DEFAULT_PATH):
             if len(key) != 64 or any(ch not in "0123456789abcdef" for ch in key):
                 self._json(400, {"error": "valid_sha256_idempotency_key_required"})
                 return
-            import hashlib
             if not hmac.compare_digest(key, hashlib.sha256(body).hexdigest()):
                 self._json(400, {"error": "idempotency_key_mismatch"})
                 return
