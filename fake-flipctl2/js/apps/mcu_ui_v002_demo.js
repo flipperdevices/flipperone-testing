@@ -1,14 +1,13 @@
 /**
  * McuUiV002DemoScene
  *
- * Testing → UI Demos → MCU UI → 'MCU UI - v002'. Design-only mock of the
- * MCU UI (v001 is the former Power menu demo, power_menu_ui_demo.js),
+ * Testing → UI Demos → MCU UI. Design-only mock of the MCU UI,
  * pixel-matched to the design mock. No status bar.
  *
- *   - Top left: a gray "Auto Power OFF" pill and, under it, the time left
- *     ("in 0h 59m 58s"), counting down from Settings → Power → Auto Power
- *     OFF (AUTO_OFF, 1 hour by default) from every visit or change;
- *     hidden when that is Never.
+ *   - Top left: the gray Auto Power OFF icon and the time left as one
+ *     number ("Power OFF in 1h", then "in 59m" …), counting down from
+ *     Settings → Power → Auto Power OFF (AUTO_OFF, 1 hour by default)
+ *     from every visit or change; hidden when that is Never.
  *   - Top right: "Discharge: 0.03W" and the battery: rounded outline
  *     with a gray-filled tip, a black charge fill (rounded ends) and the
  *     percent centred in it — black on the empty part, white over the
@@ -20,12 +19,14 @@
  *     X → Help (the Help menu), C / Power → Power Menu (from any
  *     screen of the app), V → Settings (opens the Settings
  *     list: Display / Power / Haptics & LEDs / System / About).
- *   - The dolphin swims in the middle (DOLPHIN, 14 frames at 2 fps).
- *     While the USB-C1 status line is up it moves over to the left, and
- *     back to the centre once the line is gone.
+ *   - Behind everything: the sea (back), two fish schools swimming
+ *     across and swaying foliage (drawHomeBackground).
+ *   - The sleeping dolphin in the middle (DOLPHIN, sleepd frames).
+ *     While any status line is up (USB-C1, a power line OFF) it moves
+ *     over to the left, and back to the centre once they are gone.
  *
- * The data is fake, set from a Test menu: a barely visible "Test"
- * button over B (run) opens it. Rows: USB-C1 cable, USB-C1 direction
+ * The data is fake, set from a Test menu: B (run) opens it (there is
+ * no button for it on the screen). Rows: USB-C1 cable, USB-C1 direction
  * (IN / OUT), PD, USB-C1 watts (2 W by default, capped at PD_LIMIT_W
  * without PD), battery %, power usage, Error and MCU LEDs. Plugging a
  * real cable into USB-C1 turns "USB-C1 cable" on (detected like Desktop
@@ -35,17 +36,24 @@
  *   - charging (input covers the usage) or discharging (the battery
  *     covers more than BASE_USAGE_W) slides a black plate with the
  *     battery and a light info plate in from the right ("Charging: 5V
- *     4.11W / Untill full: 4h 2m", "Output: 5W / Left: 2h 34m", "Fully
+ *     4.11W / Full in: 4h 2m", "Output: 5W / Left: 2h 34m", "Fully
  *     charged!"), the Discharge line rides off to the right and the
  *     Auto Power OFF countdown hides;
  *   - while charging the battery shows a spark instead of the digits
  *     and the plate shows the charge with hundredths;
- *   - a non-zero USB-C1 port adds "USB-C1 IN: PD Ver2 [9V/20W]" under it;
- *   - the physical battery / USB-C LEDs get the same states (green
- *     charging, yellow when the input can't keep up, red on error or
- *     critical charge, blinking BLINK_MS, discharge ticks green → red)
- *     through POST /api/mcu/leds (server.js → scripts/mcu-leds.py → MCU
- *     over I2C). They go dark when the app closes.
+ *   - a non-zero USB-C1 port adds "USB-C1 Power In: PD Ver2 9V/20W"
+ *     (Power Out when it gives power; plain gray text) under it;
+ *   - every Settings → Power line switched OFF adds "USB-A & USB-C2 5V:
+ *     OFF" (GPIO 5V, GPIO 3.3V; plain gray text) below that,
+ *     STATUS_PITCH apart;
+ *   - the power meter (the MCU's battery / USB-C LEDs) gets the same
+ *     states (green charging, yellow when the input can't keep up, red
+ *     on error or critical charge, blinking BLINK_MS, discharge ticks
+ *     green → red) the way the Kickstarter demos light it: through
+ *     PowerMeterLeds (POST /api/powermeter, the MCU's `led <n> <colour>`
+ *     CLI over UART, stock firmware). Testing → Power Meter → Override
+ *     wins over them, as in the demos. They go dark when the app closes
+ *     (the override stays lit).
  *
  * While the app is open it takes the hardware Power button from the
  * MCU (POST /api/mcu/power-key, MCU register 0x0210): a press comes in
@@ -56,15 +64,17 @@
  * Z (esc) goes straight to the home screen from anywhere in the app.
  */
 var McuUiV002DemoScene = (function() {
-    var COL_PILL     = '#AAAAAA';
+    var COL_AUTO_OFF = '#AAAAAA';
     var COL_VERSION  = '#AAAAAA';
     var COL_OUTLINE  = '#232323';                // battery body outline (the tip is black)
     var COL_TIP      = '#DFDFDF';
     var COL_TIP_LOW  = '#9D9D9D';                // the tip's last inside row
 
-    // Auto Power OFF pill (rows 5..15) and the countdown under it.
-    var PILL = { x: 5, y: 5, w: 80, h: 11 };
-    var PILL_TEXT_X = 10, PILL_TEXT_Y = 5;       // Haxrcorp, ink rows 7..13
+    // Auto Power OFF countdown: Icons.auto_power_off_icon (13×14, its
+    // gray is baked in, so it is drawn with black) and "Power OFF in 1h"
+    // in gray.
+    var AUTO_OFF_ICON = { x: 5, y: 4 };
+    var AUTO_OFF_TEXT_X = 22, AUTO_OFF_TEXT_Y = 5;   // Haxrcorp, ink rows 7..13
     // Settings → Power → Auto Power OFF choices (seconds, 0 = Never).
     var AUTO_OFF = [
         { label: '5 min', s: 300 }, { label: '30 min', s: 1800 },
@@ -72,7 +82,6 @@ var McuUiV002DemoScene = (function() {
         { label: 'Never', s: 0 }
     ];
     var AUTO_OFF_DEFAULT = 2;                    // 1 hour
-    var TIMER_X = 10, TIMER_Y = 17;              // ink rows 19..25
 
     // Discharge line + battery.
     var DISCHARGE_Y = 6;
@@ -85,7 +94,7 @@ var McuUiV002DemoScene = (function() {
     var FILL = { x: 214, y: 5, w: 34, h: 13 };
     var PCT_Y = 6;                               // Haxrcorp, ink rows 8..14
 
-    var VERSION = '0.1.0 88f88s88 /gui-test';
+    var VERSION = '0.1.0 e3b7a90c /gui-test';     // fake 8-hex-digit commit hash
     var VERSION_X = 5, VERSION_Y = 110;          // ink rows 112..118
 
     // Buttons from the design: per row, ' ' outside, '#' outline,
@@ -151,12 +160,6 @@ var McuUiV002DemoScene = (function() {
     var KEY_TO_BUTTON = { edit: 'help', power: 'power' };   // V (del) opens Settings
     var PRESS_MS = 150;
 
-    // "Test" button over B (run): the stock right-button shape, drawn
-    // barely visible.
-    var TEST_BTN = { x: 208, w: 48, h: 14, text: 'Test' };
-    var COL_TEST_LINE = '#E4E4E4';
-    var COL_TEST_TEXT = '#D6D6D6';
-
     // Fake power model (the power meter demo's numbers).
     var PD_LIMIT_W   = 15;                       // USB-C1 input without PD
     var MAX_W        = 36;
@@ -166,7 +169,7 @@ var McuUiV002DemoScene = (function() {
     var OUT_W_STEPS = [0, 0.05, 0.1, 0.25, 0.5, 0.75, 1];   // then whole watts
     var USAGE_STEPS = [0, 0.03, 0.1, 0.2, 0.3, 0.4, 0.5, 0.75, 1, 1.5];  // then whole watts
     var MAX_USAGE_W = 60;
-    var DEFAULT_SIM = { dir: 'in', pd: false, desiredW: 2, charge: 48,
+    var DEFAULT_SIM = { dir: 'in', pd: false, desiredW: 2, charge: 70,
                         usage: 0.03, error: false, leds: true, plugged: false };
 
     // USB-C1 cable detection, the same as Desktop computer v2: GET
@@ -205,14 +208,20 @@ var McuUiV002DemoScene = (function() {
     var PLATE_PCT_RIGHT = 210;                   // last ink column of "38.00%"
     var PLATE_PCT_Y = 3;                         // Born2bSporty draw y
 
-    // USB-C1 status line under the plates: gray text, then a gray box
-    // with the port's volts / watts in white. Box rows 30..40, right
-    // edge x 250, 5 px side padding.
-    var STATUS_Y = 30;                           // Haxrcorp draw y (ink rows 32..38)
-    var BOX = { right: 250, y: 30, h: 11, pad: 5 };
-    var STATUS_GAP = 4;                          // text → box
+    // Status lines under the plates: plain gray text, right-aligned
+    // (last ink column STATUS_RIGHT).
+    var STATUS_Y = 31;                           // Haxrcorp draw y (ink rows 33..39)
+    var STATUS_RIGHT = 250;
+    var STATUS_PITCH = 13;                       // next status line, rows below
+    var STATUS_VALUE_GAP = 6;                    // px from a label to its volts / watts
+    // Settings → Power lines that get a "<name>: OFF" status line while
+    // they are OFF, in this order, under the USB-C1 line.
+    var POWER_LINES = [
+        { key: 'usbA_C2', name: 'USB-A & USB-C2 5V' },
+        { key: 'gpio5',   name: 'GPIO 5V' },
+        { key: 'gpio33',  name: 'GPIO 3.3V' }
+    ];
     var COL_STATUS = '#696969';
-    var COL_BOX    = '#AAAAAA';
 
     // Battery while a plate is up: light outline on the black plate, the
     // charge fill turns white (rows/cols as the idle battery).
@@ -250,8 +259,7 @@ var McuUiV002DemoScene = (function() {
         '  w#w',
         '   w'
     ] };
-    // Glyphs the Haxrcorp font lacks: "×" (no PD) and "∞".
-    var GLYPH_X   = ['#   #', ' # # ', '  #  ', ' # # ', '#   #'];
+    // Glyph the Haxrcorp font lacks: "∞".
     var GLYPH_INF = [' ##   ## ', '#  # #  #', '#   #   #', '#  # #  #', ' ##   ## '];
 
     // Physical LEDs (names as in scripts/mcu-leds.py), RGB565.
@@ -260,6 +268,16 @@ var McuUiV002DemoScene = (function() {
     var LED_NAMES = ['bat_outline', 'bat_center', 'bat_watt1', 'bat_watt2',
                      'bat_watt3', 'bat_watt4', 'usb_charging', 'usb_watt1',
                      'usb_watt2', 'usb_watt3', 'usb_watt4'];
+    // Power meter LED numbers and CLI colour indices (firmware led_cli.c,
+    // as PowerMeterLeds uses them).
+    var METER_LED = {
+        bat_outline: 5, bat_watt1: 6, bat_watt2: 7, bat_watt3: 8, bat_watt4: 9,
+        usb_charging: 10, usb_watt1: 11, usb_watt2: 12, usb_watt3: 13, usb_watt4: 14,
+        bat_center: 15
+    };
+    var METER_COLOR = {};
+    METER_COLOR[LED_OFF] = 6; METER_COLOR[LED_GREEN] = 1; METER_COLOR[LED_YELLOW] = 3;
+    METER_COLOR[LED_ORANGE] = 4; METER_COLOR[LED_RED] = 0;
     var BLINK_MS = 1000;                         // on for the first half
     var LED_TICK_MS = 100;
     // Every LED is re-sent this often, not only the changed ones: the
@@ -290,71 +308,102 @@ var McuUiV002DemoScene = (function() {
     };
     // Help menu (X, the Help button): same window style as the Power
     // Menu — help_question badge and "Flipper One - Help" in the band,
-    // then a left-aligned list (up / down pick; nothing opens yet).
+    // then a left-aligned list (up / down pick, wrapping; OK opens). Ports
+    // opens the same window as "Flipper One - Help > Ports" with every
+    // port in the list (HELP_MENU.rows at a time, scrolled with the
+    // selection, a dotted scrollbar); OK on a port opens
+    // its page in the help window.
+    // Sized by its longest label (bold, as when selected): frame line,
+    // 18 px, selector line, 9 px, label, 18 px, selector line + its
+    // shadow, 18 px, frame line (see helpListGeom); offsets below are from the frame's
+    // top-left. Vertically: band, 4 px, the rows (selector 16 px + 1 px
+    // shadow at the last), 4 px, frame line. Up to `rows` rows, then it
+    // scrolls. Centred above the Power button.
     var HELP_MENU = {
-        // Frame x 51..200 (y 27..105) + 3 px shadow, centred as a block.
-        x: 51, y: 27, w: 150, h: 79, band: 20, radius: 4, shadow: 3,
-        iconX: 56, iconY: 31, title: 'Flipper One - Help', titleX: 74, titleY: 32,
+        band: 20, radius: 4, shadow: 3,
+        title: 'Flipper One - Help',
         items: ['Quick start', 'Ports', 'Troubleshooting'],
-        rowFrame: { x: 70, y: 52, w: 111, h: 16 },           // selector of row 1 (absolute)
-        rowPitch: 16, textX: 80, textY: 55                    // row 1 label draw y (Helvb08 and Haxrcorp)
+        icon: { dx: 5, dy: 4 }, titleDx: 23, titleDy: 5,
+        selDx: 19, selDy: 25, selH: 16,                       // selector of row 1
+        textDx: 29, textDy: 28,                               // row 1 label draw (Helvb08 and Haxrcorp)
+        gapSelText: 9, gapTextSel: 18, gapSelFrame: 18,
+        titleRightPad: 9,                                     // min air right of the title
+        rowPitch: 16, rows: 5,
+        gapBottom: 4                                          // last selector's shadow → frame bottom line
     };
-    // Help window (OK on a Help menu row): the pages Quick start / Ports
-    // and slots / Troubleshooting, flipped with left / right (the page
-    // tabs flash on a press) and scrolled with up / down (a dotted
-    // scrollbar with a 3 px thumb). Back returns to the Help menu.
+    // Help window (OK on Quick start / Troubleshooting or on a port):
+    // one page, scrolled with up / down (a dotted scrollbar with a 3 px
+    // thumb); no paging left / right. Back returns to the list it was
+    // opened from.
     var HELP_WINDOW = {
         x: 5, y: 5, w: 244, h: 131, band: 19, radius: 4, shadow: 2,    // frame x 5..248, y 5..135
-        iconX: 12, iconY: 9, titleX: 30, titleY: 10, pageRight: 242,    // header
+        iconX: 12, iconY: 8, titleX: 30, titleY: 10,                    // header
         view: { x: 6, y: 25, w: 236, h: 109 },                          // content viewport
         textX: 13, wrapW: 224,
         titleGap: 20, titleGapText: 17,                                 // title → heading / → paragraph
         line: 11, sectionGap: 11,                                       // px
-        bar: { x: 243, y: 27, h: 105, pad: 0 }                          // dots at x, thumb x-1..x+1
+        // A page shorter than the viewport gets a window cut to its text
+        // (fitPad px under the content), centred on the screen.
+        fitPad: 2
     };
-    // Page content: { title, blocks } — { h } a bold heading, { p } a
-    // wrapped paragraph ({down} / {router} inline icons), { gap } an
-    // empty line, { qr, lines } the docs QR code with lines beside it.
-    var HELP_PAGES = [
-        { title: 'Quick start', blocks: [
-            { p: 'Flipper One is Portable Linux Computer.' },
-            { p: 'It has different Operation Modes.' },
-            { gap: 1 },
-            { p: 'Now you are in MCU Mode. Only basic functions are available: Power Bank and Power Delivery tester.' },
-            { gap: 1 },
-            { p: 'To start Linux, press this {down} button.' }
-        ] },
-        { title: 'Ports and slots', blocks: [
-            { h: 'USB-C1' },
+    // Page content: { title, crumb, blocks } — crumb is the header,
+    // the path without the page itself ("Flipper One - Help > Ports");
+    // blocks: { h } a bold heading, { p } a wrapped paragraph ({power} /
+    // {router} inline), { gap } an empty line, { qr, lines } the docs QR
+    // code with lines beside it.
+    var HELP_QUICK_START = { title: 'Quick start', crumb: 'Flipper One - Help', blocks: [
+        { p: 'Flipper One is Portable Linux Computer.' },
+        { p: 'It has different Operation Modes.' },
+        { gap: 1 },
+        { p: 'Now you are in MCU Mode. Only basic functions are available: Power Bank and Power Delivery tester.' },
+        { gap: 1 },
+        { p: 'To start Linux, press this {power} button.' }
+    ] };
+    // Help > Ports: one page per port.
+    var HELP_PORTS = [
+        { title: 'USB-C1', blocks: [
             { p: 'This is main USB port. You can charge device through it or it can power your devices, like power bank do. In Linux Mode this port can be USB Ethernet, DisplayPort or USB data. Plug your devices into USB-C1, or connect Flipper One USB-C1 to another host.' },
             { gap: 1 },
-            { p: 'Use USB-C1 to flash MCU firmware and for Maskrom mode.' },
-            { h: 'USB-A and USB-C2' },
-            { p: 'It can power your devices from this port 5V 3A max. In Linux Mode, plug in your USB devices: drives, keyboards, adapters and etc.' },
-            { h: 'HDMI' },
-            { p: 'Plug in your screen or TV to get the picture up to 4K\u00a0@\u00a0120Hz.' },
-            { h: 'ETH0 and ETH1' },
-            { p: '1 Gbps each. Launch the {router} Router with different port configurations of WAN, LAN or Bridge mode' },
-            { h: 'M.2' },
+            { p: 'Use USB-C1 to flash MCU firmware and for Maskrom mode.' }
+        ] },
+        { title: 'USB-A and USB-C2', blocks: [
+            { p: 'It can power your devices from this port 5V 3A max. In Linux Mode, plug in your USB devices: drives, keyboards, adapters and etc.' }
+        ] },
+        { title: 'HDMI', blocks: [
+            { p: 'Plug in your screen or TV to get the picture up to 4K\u00a0@\u00a0120Hz.' }
+        ] },
+        { title: 'ETH0 and ETH1', blocks: [
+            { p: '1 Gbps each. Launch the {router} Router with different port configurations of WAN, LAN or Bridge mode' }
+        ] },
+        { title: 'M.2', blocks: [
             { p: 'Hidden behind the Back Plate. Use screwdriver to instal M.2 expansion modules: cellular modems, Wi-Fi, SDR, NVMe SSDs, GNSS modules, AI accelerators, and other M.2 modules.' },
             { gap: 1 },
             { p: 'Key B, Supported sizes: 2230(via extender), 2242, 3042, 3052' },
             { gap: 1 },
-            { p: 'It also has: PCIe 2.1 x1, USB 2.0, USB 3.1, SATA3, Serial Audio, UART, I2C, SIM card + eSIM' },
-            { h: 'NANO SIM' },
-            { p: 'Works only with a modem in the M.2 slot.' },
-            { h: '3.5 Audio' },
-            { p: 'Plug in a TRRS headset to use headphones with a mic.' }
+            { p: 'It also has: PCIe 2.1 x1, USB 2.0, USB 3.1, SATA3, Serial Audio, UART, I2C, SIM card + eSIM' }
         ] },
-        { title: 'Troubleshooting', blocks: [
-            { h: "Can't boot Linux mode" },
-            { p: 'Check whether your SD card or UFS has Linux image on it. Or use On-Device Recovery in Settings\u00a0-\u00a0System\u00a0-\u00a0CPU\u00a0Recovery.' },
-            { h: "Doesn't charge" },
-            { p: 'Flipper One can be charged only through USB-C1 port. Check battery in Settings\u00a0-\u00a0Power\u00a0-\u00a0Battery\u00a0Info.' },
-            { h: 'Need additional help?' },
-            { qr: 'docs', lines: ['For docs and support', 'go to docs.flipper.net/one'] }
+        { title: 'NANO SIM', blocks: [
+            { p: 'Works only with a modem in the M.2 slot.' }
+        ] },
+        { title: '3.5 Audio', blocks: [
+            { p: 'Plug in a TRRS headset to use headphones with a mic.' }
         ] }
     ];
+    HELP_PORTS.forEach(function(pg) { pg.crumb = 'Flipper One - Help > Ports'; });
+    var HELP_TROUBLESHOOTING = { title: 'Troubleshooting', crumb: 'Flipper One - Help', blocks: [
+        { h: "Can't boot Linux mode" },
+        { p: 'Check whether your SD card or UFS has Linux image on it. Or use Start Recovery in Settings\u00a0-\u00a0System\u00a0-\u00a0CPU\u00a0Recovery.' },
+        { h: "Doesn't charge" },
+        { p: 'Flipper One can be charged only through USB-C1 port. Check battery in Settings\u00a0-\u00a0Power\u00a0-\u00a0Battery\u00a0Info.' },
+        { h: 'Need additional help?' },
+        { qr: 'docs', lines: ['For docs and support', 'go to docs.flipper.net/one'] }
+    ] };
+    // Help menu rows → a page, or 'ports' for the port list.
+    var HELP_MENU_TARGETS = [HELP_QUICK_START, 'ports', HELP_TROUBLESHOOTING];
+    var HELP_PORTS_TITLE = 'Flipper One - Help > Ports';
+    var HELP_PORT_NAMES = HELP_PORTS.map(function(pg) { return pg.title; });
+    var HELP_ANIM_MS = 120;                      // window resize between help views
+
     // QR code for https://docs.flipper.net/one (version 3, ECC M, mask 0;
     // 29×29 modules, '#' dark), drawn at HELP_QR_SCALE px per module.
     var HELP_QR_DOCS = [
@@ -409,17 +458,10 @@ var McuUiV002DemoScene = (function() {
             if (i < parts.length - 1) { drawMap(ctx, RSQUO, x, y + 2, { '#': color }); x += 3; }
         }
     }
-    // The {down} glyph of the Quick start page (a filled down arrow,
-    // 11×7, its top on the text's cap line).
-    var HELP_DOWN_ICON = [
-        ' ######### ',
-        '###########',
-        ' ######### ',
-        '  #######  ',
-        '   #####   ',
-        '    ###    ',
-        '     #     '
-    ];
+    // The inline {power} button of the Quick start page: Icons.power_button
+    // (exported at 2x, 62×26 with every pixel doubled) drawn at 1x, 31×13,
+    // centred on the text's caps (rows y-1..y+11 of the line).
+    var INLINE_POWER_SCALE = 2;
     // Network LEDs (server names) kept dark while this app is open.
     var NET_LEDS_OFF = ['wifi', 'eth0', 'eth1'];
 
@@ -453,11 +495,9 @@ var McuUiV002DemoScene = (function() {
     var BL_WRITE_MS = 700;
     var BL_OFF_FAILSAFE_MS = 10000;
     // Settings help: on a row whose value costs energy (see each page's
-    // help topics) a Help button (the in_button_help icon) over X — the
-    // View key — blinks (inverted every HELP_BLINK_MS) until that topic
-    // has been opened once; X opens the help window.
+    // help topics) a Help button (the in_button_help icon) shows over X —
+    // the View key (steady, no blinking); X opens the help window.
     var HELP_BTN = { x: 52, w: 48, iconDy: 1 };  // icon rows 132..142
-    var HELP_BLINK_MS = 500;
     // Help window, from the design: rounded 1 px frame, a light header
     // band with the "?" badge and the title, the body text under it.
     var HELP_WIN = { w: 156, h: 51, band: 20, radius: 4 };  // h for two body lines, +pitch per extra
@@ -469,22 +509,83 @@ var McuUiV002DemoScene = (function() {
     var HELP_TITLE_X = 22, HELP_TITLE_Y = 5;     // Haxrcorp draw position
     var HELP_BODY_X = 5, HELP_BODY_Y = 23, HELP_BODY_PITCH = 12;
 
-    // Swimming dolphin: a vertical sheet of 114×62 frames (the design's
-    // dolphin-new-swim-smile.mp4, its codec noise snapped to pure black /
-    // white, the bubbles' grays kept), drawn under the rest of
-    // the UI. Centred on the screen; moves to leftX while the USB-C1
-    // status line shows.
+    // Sleeping dolphin (MCU_Home_screen_assets/sleepd_*.png, transparent
+    // around the body), over the home background and under the rest of
+    // the UI. Timing and offsets from the design GIF (dolphin-mcu.gif):
+    // sleepd 1 → 2 → 3 → 2, FRAME_MS each, looped; sleepd_1 at
+    // (centerX, y), sleepd_2 at (+1, +1), sleepd_3 at (+1, +2). Centred
+    // on the screen; moves to leftX while any status line shows.
     var DOLPHIN = {
-        src: 'assets/MCU_UI/dolphin-new-swim-smile_sheet.png',
-        w: 114, h: 62, frames: 14, frameMs: 500,
-        y: 41, centerX: 71, leftX: 10,
+        dir: 'assets/MCU_UI/MCU_Home_screen_assets/',
+        files: ['sleepd_1', 'sleepd_2', 'sleepd_3'],
+        // Loop order: file index and offset from (x, y).
+        frames: [{ i: 0, dx: 0, dy: 0 }, { i: 1, dx: 1, dy: 1 },
+                 { i: 2, dx: 1, dy: 2 }, { i: 1, dx: 1, dy: 1 }],
+        frameMs: 400,
+        y: 41, centerX: 72, leftX: 10,
         moveMs: 350
     };
 
+    // Home screen background (assets/MCU_UI/MCU_Home_screen_assets),
+    // drawn under the dolphin and the rest of the UI, bottom to top:
+    //   - back: the sea, static at (0, 23);
+    //   - two fish schools at 5 fps, 5 px per frame (speeds from the
+    //     design GIF, dolphin-mcu.gif) across the whole screen and
+    //     wrapping: fishr* to the right from x -34 to 256 (y 43; only up
+    //     to the status text on its rows, see FISH_TEXT_GAP),
+    //     fishl* to the left from 256 to -34 (y 75); their two frames
+    //     swap every 3 frames and they bob y ±1 (one step every 4
+    //     frames: 0, -1, 0, +1);
+    //   - foliage: two frames swapping every 800 ms (as in the GIF),
+    //     at (1, 83).
+    var BG_DIR = 'assets/MCU_UI/MCU_Home_screen_assets/background/';
+    var BG_BACK = { x: 0, y: 23 };
+    var BG_FOLIAGE = { x: 1, y: 83, frameMs: 800 };
+    var FISH_FRAME_MS = 200;                     // 5 fps
+    var FISH_STEP = 5;                           // px per frame
+    var FISH_SWAP_FRAMES = 3;
+    var FISH_BOB_FRAMES = 4;
+    var FISH_BOB = [0, -1, 0, 1];
+    var FISH = [
+        { frames: ['fishr1', 'fishr2'], y: 43, from: -34, to: 256, stopAtText: true },
+        { frames: ['fishl1', 'fishl2'], y: 75, from: 256, to: -34 }
+    ];
+    var FISH_H = 19;
+    // The right-swimming school only swims up to the status text on its
+    // rows: its path ends (and it is clipped) FISH_TEXT_GAP px before the
+    // text's left edge, as if that were the screen edge.
+    var FISH_TEXT_GAP = 3;
+    var BG_FILES = ['back', 'foliage1', 'foliage2', 'fishr1', 'fishr2', 'fishl1', 'fishl2'];
+
+    function drawHomeBackground(ctx, img, t, lines) {
+        function put(name, x, y) {
+            var im = img[name];
+            if (im && im.complete && im.naturalWidth) ctx.drawImage(im, x, y);
+        }
+        put('back', BG_BACK.x, BG_BACK.y);
+        var n = Math.floor(t / FISH_FRAME_MS);
+        var bob = FISH_BOB[Math.floor(n / FISH_BOB_FRAMES) % FISH_BOB.length];
+        var sprite = Math.floor(n / FISH_SWAP_FRAMES) % 2;
+        for (var i = 0; i < FISH.length; i++) {
+            var f = FISH[i], to = f.to, clip = 256;
+            if (f.stopAtText) to = clip = fishLimit(lines, f);
+            var span = Math.abs(to - f.from) + 1;          // both ends included
+            var x = f.from + (to > f.from ? 1 : -1) * ((n * FISH_STEP) % span);
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(0, 0, clip, 144);
+            ctx.clip();
+            put(f.frames[sprite], x, f.y + bob);
+            ctx.restore();
+        }
+        put(Math.floor(t / BG_FOLIAGE.frameMs) % 2 ? 'foliage2' : 'foliage1',
+            BG_FOLIAGE.x, BG_FOLIAGE.y);
+    }
+
     function McuUiV002DemoScene(sceneManager) {
         this.sceneManager    = sceneManager || null;
-        this.displayName     = 'MCU UI - v002';
-        this.breadcrumbTitle = 'MCU UI - v002';
+        this.displayName     = 'MCU UI';
+        this.breadcrumbTitle = 'MCU UI';
         this._startedAt = 0;
         this._timer = null;
         this._pressed = null;                    // button name while flashing
@@ -503,14 +604,16 @@ var McuUiV002DemoScene = (function() {
         // except the home screen's Auto Power OFF countdown).
         this._power = { autoOff: AUTO_OFF_DEFAULT, usbA_C2: true, gpio5: true, gpio33: true };
         this._autoOffAt = 0;                     // countdown start
-        this._helpSeen = {};                     // help topics opened, by title
         this._powerMenu = null;                  // { sel: 0 Start / 1 Power OFF } while open
         this._helpMenu = null;                   // { sel } while the Help menu is open
-        this._helpWin = null;                    // { page, scroll, press, pressAt } while open
+        this._helpPorts = null;                  // { sel, top } while Help > Ports is open
+        this._helpAnim = null;                   // { from: view, t0 } while the window resizes
+        this._helpWin = null;                    // { page, scroll } while open
         this._ledsHeld = false;                  // Power OFF screen: LED loop paused
         this._usbBaseline = null;                // ids present when the app opened
         this._usbFresh = false;                  // a new id is present
-        this._dolphinImg = null;
+        this._dolphinImg = null;                 // sleepd images, by DOLPHIN.files index
+        this._bgImg = {};                        // home background sprites, by name
         this._dolphinLeft = null;                // null: place without moving
         this._dolphinFrom = DOLPHIN.centerX;
         this._dolphinMoveAt = 0;
@@ -575,7 +678,7 @@ var McuUiV002DemoScene = (function() {
         var shownW = into > 9 ? Math.round(into) : parseFloat(into.toFixed(2));
         var r = { layout: Number.isInteger(shownW) ? INFO.charge : INFO.chargeLow,
                   line1: 'Charging: ' + volts + 'V ' + shownW + 'W',
-                  line2: 'Untill full: ', inf: true };
+                  line2: 'Full in: ', inf: true };
         if (into > 0) {
             var t = hmText((1 - sim.charge / 100) * BATTERY_WH / into);
             if (t.h < 100) { r.line2 += t.text; r.inf = false; }
@@ -681,11 +784,22 @@ var McuUiV002DemoScene = (function() {
         } catch (e) { /* ignore */ }
     }
 
-    // Sends the LEDs that changed since the last send.
+    // The power meter for this moment as { led number: CLI colour }:
+    // Testing → Power Meter's override when set, else this app's state.
+    function meterColors(sim, now) {
+        var ov = PowerMeterLeds.getOverride();
+        if (ov) return PowerMeterLeds.colors(ov);
+        var named = ledColors(sim, derive(sim), now), out = {};
+        for (var name in named) out[METER_LED[name]] = METER_COLOR[named[name]];
+        return out;
+    }
+
+    // Sends the power meter LEDs that changed since the last send (all
+    // of them every LED_RESEND_MS).
     McuUiV002DemoScene.prototype._ledTick = function() {
         if (!this._sim.leds || this._ledsHeld) return;
         var now = Date.now();
-        var c = ledColors(this._sim, derive(this._sim), now);
+        var c = meterColors(this._sim, now);
         var all = !this._ledSent || now - this._ledSentAt >= LED_RESEND_MS;
         var changed = {}, any = false;
         for (var n in c) {
@@ -694,7 +808,7 @@ var McuUiV002DemoScene = (function() {
         if (all) this._ledSentAt = now;
         if (!any) return;
         this._ledSent = c;
-        postLeds({ leds: changed });
+        PowerMeterLeds.send(changed);
     };
 
     function postPowerKey(toCpu) {
@@ -707,9 +821,11 @@ var McuUiV002DemoScene = (function() {
         } catch (e) { /* ignore */ }
     }
 
-    McuUiV002DemoScene.prototype._ledsOff = function() {
+    // Every power meter LED off; with `keepOverride`, Testing → Power
+    // Meter's override (if set) stays lit instead, as the demos leave it.
+    McuUiV002DemoScene.prototype._ledsOff = function(keepOverride) {
         this._ledSent = null;
-        postLeds({ action: 'off' });
+        PowerMeterLeds.send(PowerMeterLeds.colors(keepOverride ? PowerMeterLeds.getOverride() : null));
     };
 
     // Settings → Power → Battery Info: the design's page (battery,
@@ -752,14 +868,13 @@ var McuUiV002DemoScene = (function() {
     McuUiV002DemoScene.prototype._buildPowerSettings = function(sm) {
         var self = this, pw = this._power;
         var sub = new SubMenuScene(sm, 'Power',
-            ['Auto Power OFF', 'USB-A & USB-C2', 'GPIO 5V', 'GPIO 3.3V', 'Battery Info'], {
+            ['Power OFF Timeout', 'USB-A & USB-C2 5V', 'GPIO 5V', 'GPIO 3.3V', 'Battery Info'], {
                 'Battery Info': function() { return self._batteryInfoScene(); }
             });
         sub.setBreadcrumbTrail(['Settings', 'Power']);
         sub.setHeaderRenderer(function(canvas) { self._drawSettingsHeader(canvas); });
         sub.setIgnoreRun(true);
         liftLabels(sub);
-        markDrill(sub, ['Battery Info']);
         var auto = sub.items[0];
         auto.statusProvider = function() { return '< ' + AUTO_OFF[pw.autoOff].label + ' >'; };
         auto.atStart = function() { return pw.autoOff <= 0; };
@@ -780,13 +895,12 @@ var McuUiV002DemoScene = (function() {
         this._attachHelp(sub, function() {
             var i = sub.selectedIndex;
             if (i === 0 && AUTO_OFF[pw.autoOff].s === 0) {
-                return { title: 'Auto Power OFF',
+                return { title: 'Power OFF Timeout',
                          text: 'Energy usage will be higher if the Flipper One never turns OFF' };
             }
             if (lineKeys[i] && pw[lineKeys[i]]) {
                 var name = sub.items[i].text;
-                // One "seen" for all three lines: read once, none blinks.
-                return { title: name, seen: 'power-lines',
+                return { title: name,
                          text: 'Energy usage will be higher when ' + name + ' power is ON' };
             }
             return null;
@@ -807,14 +921,14 @@ var McuUiV002DemoScene = (function() {
         return sub;
     };
 
-    // Settings → System → CPU Recovery: On-Device Recovery (the
-    // "Launching Installer..." screen) and Maskrom (a confirmation modal).
+    // Settings → System → CPU Recovery: Start Recovery (the
+    // "Launching Installer..." screen) and Maskrom mode (a confirmation modal).
     McuUiV002DemoScene.prototype._buildCpuRecovery = function(sm) {
         var self = this;
-        var sub = new SubMenuScene(sm, 'CPU Recovery', ['On-Device Recovery', 'Maskrom'], {
-            'On-Device Recovery': function() { return launchingScene(); },
+        var sub = new SubMenuScene(sm, 'CPU Recovery', ['Start Recovery', 'Maskrom mode'], {
+            'Start Recovery': function() { return launchingScene(); },
             // A modal in place (the factory returns null: no push).
-            'Maskrom': function(s) { s.showModal(maskromDialog(s)); repaint(); return null; }
+            'Maskrom mode': function(s) { s.showModal(maskromDialog(s)); repaint(); return null; }
         });
         sub.setBreadcrumbTrail(['Settings', 'System', 'CPU Recovery']);
         sub.setHeaderRenderer(function(canvas) { self._drawSettingsHeader(canvas); });
@@ -823,7 +937,7 @@ var McuUiV002DemoScene = (function() {
         return sub;
     };
 
-    // Confirmation modal (Maskrom, MCU Firmware Update), from the design:
+    // Confirmation modal (Maskrom, MCU Recovery), from the design:
     // a white wash over the page, a rounded window with a gray header
     // (the title, Born2bSporty), the text centred under it — `bold` lines
     // in Helvb08, then `regular` lines in Haxrcorp, both wrapped, one
@@ -935,19 +1049,19 @@ var McuUiV002DemoScene = (function() {
     // doesn't actually reboot into maskrom).
     function maskromDialog(sub) {
         return confirmDialog(sub, {
-            title: 'Maskrom',
+            title: 'Maskrom mode',
             bold: 'Maskrom mode may\nerase all your user data',
             regular: 'Use RkDevTool for next steps',
             onContinue: function(s) { if (s.sceneManager) s.sceneManager.push(maskromScene()); }
         });
     }
 
-    // MCU Firmware Update: Continue blanks the backlight and leaves a
+    // MCU Recovery: Continue blanks the backlight and leaves a
     // plain white screen (the MCU would now be a UF2 drive). Any key
     // wakes the backlight on the MCU side; Back leaves and turns it on.
     function mcuFirmwareDialog(sub) {
         return confirmDialog(sub, {
-            title: 'MCU Firmware Update',
+            title: 'MCU Recovery',
             regular: 'Upload .UF2 firmware to FlipperOneMCU mass storage device through USB-C1',
             onContinue: function(s) { if (s.sceneManager) s.sceneManager.push(blankScene()); }
         });
@@ -963,7 +1077,7 @@ var McuUiV002DemoScene = (function() {
     }
     function blankScene() {
         return {
-            breadcrumbTitle: 'MCU Firmware Update',
+            breadcrumbTitle: 'MCU Recovery',
             enter: function() { postBacklight({ action: 'off' }); repaint(); },
             exit: function() { postBacklight({ action: 'on' }); },
             handleInput: function(action) {
@@ -973,14 +1087,14 @@ var McuUiV002DemoScene = (function() {
         };
     }
 
-    // On-Device Recovery: a plain white screen (no status bar) with
+    // Start Recovery: a plain white screen (no status bar) with
     // "Launching Installer" centred and its three dots filling in one by
     // one, then starting over. The text doesn't move as the dots change.
     var LAUNCHING = { text: 'Launching Installer', dotMs: 400 };
     function launchingScene() {
         var startedAt = 0, timer = null;
         return {
-            breadcrumbTitle: 'On-Device Recovery',
+            breadcrumbTitle: 'Start Recovery',
             enter: function() {
                 startedAt = Date.now();
                 if (timer) clearInterval(timer);
@@ -1010,7 +1124,7 @@ var McuUiV002DemoScene = (function() {
     var MASKROM_ICON = { right: 251, y: 4, gap: 4, text: 'Maskrom mode' };  // icon's last column, top row
     function maskromScene() {
         return {
-            breadcrumbTitle: 'Maskrom',
+            breadcrumbTitle: 'Maskrom mode',
             enter: function() { repaint(); },
             exit: function() {},
             handleInput: function(action) {
@@ -1280,42 +1394,6 @@ var McuUiV002DemoScene = (function() {
         };
     };
 
-    // Rows that open a page or screen get, while selected, a light strip
-    // inside the selector frame's right edge with a small ▶ (from the
-    // design): 5 px wide, filling every inner row of the frame down to its
-    // bottom edge (cut by the rounded corners), the arrow 3×5 on rows
-    // 8..12. Right on such a row works as OK.
-    var COL_DRILL_STRIP = '#D9D9D9';
-    var DRILL_ARROW = ['#..', '##.', '###', '##.', '#..'];
-    function markDrill(sub, names) {
-        for (var i = 0; i < sub.items.length; i++) {
-            if (names.indexOf(sub.items[i].text) >= 0) sub.items[i].drill = true;
-        }
-        var baseRender = sub.render, baseInput = sub.handleInput;
-        sub.render = function(canvas) {
-            baseRender.call(this, canvas);
-            var item = this.items[this.selectedIndex], f = this.selectorFrame;
-            if (!item || !item.drill || this._modal || item.state === MenuLine.STATE_PRESSED) return;
-            // Strip flush with the frame's right edge: on each row, from sx
-            // up to the frame line, wherever the row is inside the frame.
-            var ctx = canvas.ctx, sx = f.x + f.width - 6, y = f.y, right = f.x + f.width;
-            var data = ctx.getImageData(sx, y, right - sx, f.height).data, w = right - sx;
-            ctx.fillStyle = COL_DRILL_STRIP;
-            for (var r = 1; r < f.height; r++) {
-                if (data[(r * w) * 4] < 128) continue;            // at or past the bottom line
-                var c = 0;
-                while (c < w && data[(r * w + c) * 4] >= 128) c++;
-                if (c > 0 && c < w) ctx.fillRect(sx, y + r, c, 1);
-            }
-            drawMap(ctx, DRILL_ARROW, sx + 1, y + 8, { '#': '#000' });
-        };
-        sub.handleInput = function(action) {
-            var item = this.items[this.selectedIndex];
-            if (action === 'right' && !this._modal && item && item.drill) action = 'ok';
-            return baseInput.call(this, action);
-        };
-    }
-
     // Every menu of this app draws its row labels (and values)
     // MENU_LABEL_DY px off the stock MenuLine position.
     var MENU_LABEL_DY = -1;
@@ -1328,58 +1406,45 @@ var McuUiV002DemoScene = (function() {
     McuUiV002DemoScene.prototype._buildSystemSettings = function(sm) {
         var self = this;
         var sub = new SubMenuScene(sm, 'System',
-            ['Self Check', 'CPU Recovery', 'MCU Firmware Update', 'Testing'], {
+            ['Self Check', 'CPU Recovery', 'MCU Recovery', 'Testing'], {
                 'Self Check': function() { return bootScene('self'); },
                 'CPU Recovery': function() { return self._buildCpuRecovery(sm); },
                 // A modal in place (the factory returns null: no push).
-                'MCU Firmware Update': function(s) { s.showModal(mcuFirmwareDialog(s)); repaint(); return null; },
+                'MCU Recovery': function(s) { s.showModal(mcuFirmwareDialog(s)); repaint(); return null; },
                 'Testing': function() { return self._buildTesting(sm); }
             });
         sub.setBreadcrumbTrail(['Settings', 'System']);
         sub.setHeaderRenderer(function(canvas) { self._drawSettingsHeader(canvas); });
         sub.setIgnoreRun(true);
         liftLabels(sub);
-        markDrill(sub, ['Self Check', 'CPU Recovery', 'Testing']);
         return sub;
     };
 
-    // Help for a settings page: `topic()` gives { title, text, seen? }
-    // for the current selection, or null (no Help button). The button
-    // blinks until that topic has been opened once — topics sharing a
-    // `seen` key count as one (default: the title) — and stays toggled
-    // on, drawn above the wash, while the window is open.
+    // Help for a settings page: `topic()` gives { title, text } for the
+    // current selection, or null (no Help button). The button shows
+    // steady and stays toggled on, drawn above the wash, while the
+    // window is open.
     McuUiV002DemoScene.prototype._attachHelp = function(sub, topic) {
         var self = this;
         var btn = new UI.MiddleIconToggleButton(Icons.in_button_help, 0, HELP_BTN.w, 0, 'edit');
         btn.iconDy = HELP_BTN.iconDy;
         btn.x = HELP_BTN.x;
         var baseRender = sub.render, baseInput = sub.handleInput;
-        var baseEnter = sub.enter, baseExit = sub.exit, blinkTimer = null;
         sub.render = function(canvas) {
             var open = !!this._modal, t = open ? null : topic();
             btn.toggled = open;
-            btn.pressed = !!t && !self._helpSeen[t.seen || t.title]
-                && Math.floor(Date.now() / HELP_BLINK_MS) % 2 === 1;
+            btn.pressed = false;
             this.setAppButton(open || t ? btn : null);
             baseRender.call(this, canvas);
         };
         sub.handleInput = function(action) {
             var t = action === 'edit' && !this._modal ? topic() : null;
             if (t) {
-                self._helpSeen[t.seen || t.title] = true;
                 this.showModal(helpWindow(this, btn, t));
                 repaint();
                 return;
             }
             return baseInput.call(this, action);
-        };
-        sub.enter = function() {
-            if (baseEnter) baseEnter.call(this);
-            if (!blinkTimer) blinkTimer = setInterval(repaint, HELP_BLINK_MS / 2);
-        };
-        sub.exit = function() {
-            if (blinkTimer) { clearInterval(blinkTimer); blinkTimer = null; }
-            if (baseExit) baseExit.call(this);
         };
     };
 
@@ -1466,7 +1531,7 @@ var McuUiV002DemoScene = (function() {
     // Settings → Display page.
     McuUiV002DemoScene.prototype._buildDisplaySettings = function(sm) {
         var self = this;
-        var sub = new SubMenuScene(sm, 'Display', ['Backlight Brightness', 'Backlight OFF'], {});
+        var sub = new SubMenuScene(sm, 'Display', ['Brightness', 'Backlight Timeout'], {});
         sub.setBreadcrumbTrail(['Settings', 'Display']);
         sub.setHeaderRenderer(function(canvas) { self._drawSettingsHeader(canvas); });
         sub.setIgnoreRun(true);
@@ -1532,7 +1597,7 @@ var McuUiV002DemoScene = (function() {
         }
         this._attachHelp(sub, function() {
             if (sub.selectedIndex !== 1 || BL_TIMEOUTS[timeoutIdx].ds !== 0) return null;
-            return { title: 'Backlight OFF',
+            return { title: 'Backlight Timeout',
                      text: 'Energy usage will be higher if the Backlight never turns OFF' };
         });
 
@@ -1626,29 +1691,42 @@ var McuUiV002DemoScene = (function() {
             this._hookPowerKey();
             // Re-fetched on every visit (cache-busted), so a sheet swapped
             // on disk shows up without reloading the page.
-            var img = new Image();
-            img.onload = function() { self._dolphinImg = img; repaint(); };
-            img.src = DOLPHIN.src + '?v=' + Date.now();
+            var bust = '?v=' + Date.now();
+            this._dolphinImg = [];
+            DOLPHIN.files.forEach(function(name, i) {
+                var im = new Image();
+                im.onload = function() { self._dolphinImg[i] = im; repaint(); };
+                im.src = DOLPHIN.dir + name + '.png' + bust;
+            });
+            BG_FILES.forEach(function(name) {
+                var im = new Image();
+                im.onload = function() { self._bgImg[name] = im; repaint(); };
+                im.src = BG_DIR + name + '.png' + bust;
+            });
         }
         if (this._timer) clearInterval(this._timer);
-        var lastTick = -1, lastSec = -1;
+        var lastTick = -1, lastSec = -1, lastFish = -1;
         this._timer = setInterval(function() {
-            // Every frame while the plates slide or the dolphin moves,
-            // else on each dolphin frame and each countdown second.
+            // Every frame while the plates slide or the dolphin moves, else
+            // on each dolphin / fish frame and each countdown second (the
+            // help window's resize asks for frames itself, see _drawHelp).
             var now = Date.now();
             var tick = Math.floor((now - self._startedAt) / DOLPHIN.frameMs);
             var sec = Math.floor((now - self._autoOffAt) / 1000);
+            var fish = Math.floor((now - self._startedAt) / FISH_FRAME_MS);
             if (now - self._activeAt < SLIDE_MS + FRAME_MS
                     || now - self._dolphinMoveAt < DOLPHIN.moveMs + FRAME_MS
-                    || tick !== lastTick || sec !== lastSec) {
+                    || tick !== lastTick || sec !== lastSec || fish !== lastFish) {
                 lastTick = tick;
                 lastSec = sec;
+                lastFish = fish;
                 repaint();
             }
         }, FRAME_MS);
         if (!this._ledTimer) {
             this._ledTimer = setInterval(function() { self._ledTick(); }, LED_TICK_MS);
-            this._ledTick();
+            // First send after a demo app's deferred PowerMeterLeds.stop().
+            setTimeout(function() { self._ledTick(); }, 0);
         }
         if (!this._powerKeyTimer) {
             this._powerKeyTimer = setInterval(function() { postPowerKey(true); }, POWER_KEY_RENEW_MS);
@@ -1681,7 +1759,7 @@ var McuUiV002DemoScene = (function() {
             this._powerKeyTimer = null;
             postPowerKey(false);
         }
-        if (this._sim.leds) this._ledsOff();
+        if (this._sim.leds) this._ledsOff(true);
         releaseNetLeds();
         this._unhookPowerKey();
     };
@@ -1720,7 +1798,9 @@ var McuUiV002DemoScene = (function() {
             sm.pop();
         }
         this._helpWin = null;
+        this._helpPorts = null;
         this._helpMenu = null;
+        this._helpAnim = null;
         this._powerMenu = null;
         this._helpTouchStop();
         repaint();
@@ -1763,6 +1843,7 @@ var McuUiV002DemoScene = (function() {
                 // Leaving for Start / Power OFF: the help underneath closes.
                 this._powerMenu = null;
                 this._helpWin = null;
+                this._helpPorts = null;
                 this._helpMenu = null;
                 this._helpTouchStop();
                 this._inMenu = true;
@@ -1779,21 +1860,26 @@ var McuUiV002DemoScene = (function() {
             var hw = this._helpWin, maxS = this._helpMaxScroll(hw.page);
             if (action === 'up') hw.scroll = Math.max(0, hw.scroll - HELP_WINDOW.line);
             else if (action === 'down') hw.scroll = Math.min(maxS, hw.scroll + HELP_WINDOW.line);
-            else if (action === 'left' || action === 'right') {
-                var np = hw.page + (action === 'right' ? 1 : -1);
-                if (np >= 0 && np < HELP_PAGES.length) {
-                    hw.page = np;
-                    hw.scroll = 0;
-                    hw.press = action;
-                    if (hw.pressTimer) clearTimeout(hw.pressTimer);
-                    hw.pressTimer = setTimeout(function() {
-                        if (self._helpWin) self._helpWin.press = null;
-                        repaint();
-                    }, PRESS_MS);
-                }
-            } else if (action === 'back' || action === 'esc' || action === 'edit') {
-                this._helpWin = null;            // back to the Help menu
-                this._helpTouchStop();
+            else if (action === 'back' || action === 'esc' || action === 'edit') {
+                this._helpGo(function() {
+                    this._helpWin = null;        // back to the list it came from
+                    this._helpTouchStop();
+                });
+            }
+            repaint();
+            return;
+        }
+        if (this._helpPorts) {
+            var hp = this._helpPorts, np = HELP_PORTS.length;
+            if (action === 'up' || action === 'down') {
+                // Wraps around at both ends; the visible rows follow.
+                hp.sel = (hp.sel + (action === 'up' ? np - 1 : 1)) % np;
+                if (hp.sel < hp.top) hp.top = hp.sel;
+                if (hp.sel >= hp.top + HELP_MENU.rows) hp.top = hp.sel - HELP_MENU.rows + 1;
+            } else if (action === 'back' || action === 'edit') {
+                this._helpGo(function() { this._helpPorts = null; });   // back to the Help menu
+            } else if (action === 'ok') {
+                this._helpGo(function() { this._openHelpPage(HELP_PORTS[hp.sel]); });
             }
             repaint();
             return;
@@ -1807,20 +1893,26 @@ var McuUiV002DemoScene = (function() {
                 this._helpMenu = null; repaint();
             }
             else if (action === 'ok') {
-                this._helpWin = { page: hm.sel, scroll: 0, press: null, pressTimer: null };
-                this._helpTouchStart();
+                var target = HELP_MENU_TARGETS[hm.sel];
+                this._helpGo(function() {
+                    if (target === 'ports') this._helpPorts = { sel: 0, top: 0 };
+                    else this._openHelpPage(target);
+                });
                 repaint();
             }
             return;
         }
         if (action === 'back') return 'pop';
         if (action === 'edit') {
-            this._helpMenu = { sel: 0 };
-            repaint();
+            // The Help button flashes first, as Settings does.
+            this._flash('help', function() {
+                self._helpMenu = { sel: 0 };
+                repaint();
+            });
             return;
         }
         if (action === 'run') {
-            this._flash('test', function() { self._openTest(); });
+            this._openTest();                    // no button on screen
             return;
         }
         if (action === 'del') {
@@ -1866,7 +1958,6 @@ var McuUiV002DemoScene = (function() {
         sub.setHeaderRenderer(function(canvas) { self._drawSettingsHeader(canvas); });
         sub.setIgnoreRun(true);
         liftLabels(sub);
-        markDrill(sub, ['Display', 'Power', 'System', 'About']);
         for (var i = 0; i < sub.items.length; i++) sub.items[i].icon = Icons[SETTINGS_ROWS[i].icon];
         this._inMenu = true;
         sm.push(sub);
@@ -1874,24 +1965,62 @@ var McuUiV002DemoScene = (function() {
 
     // ── Test menu ────────────────────────────────────────────────
 
+    // Holding left / right on a Test menu value: after HOLD_DELAY_MS the
+    // value keeps stepping every HOLD_STEP_MS, one value at a time, and
+    // from HOLD_FAST_MS on HOLD_FAST_STEP values per step, until the key
+    // is let go (window.input.isHeld). The key's own auto-repeat is
+    // ignored meanwhile.
+    var HOLD_DELAY_MS = 400, HOLD_STEP_MS = 100;
+    var HOLD_FAST_MS = 2000, HOLD_FAST_STEP = 5;
+    function keyHeld(action) {
+        return !!(window.input && typeof window.input.isHeld === 'function'
+                  && window.input.isHeld(action));
+    }
+    function holdRepeat(item) {
+        var adjust = item.onAdjust, hold = null;
+        item.onAdjust = function(dir) {
+            if (hold && hold.dir === dir && keyHeld(dir)) return;
+            if (hold) clearTimeout(hold.timer);
+            adjust(dir);
+            var h = hold = { dir: dir, t0: Date.now(), timer: null };
+            var tick = function() {
+                if (hold !== h) return;
+                if (!keyHeld(dir)) {
+                    hold = null;
+                    item.arrowPressed = null;
+                    repaint();
+                    return;
+                }
+                var n = Date.now() - h.t0 >= HOLD_FAST_MS ? HOLD_FAST_STEP : 1;
+                for (var k = 0; k < n; k++) adjust(dir);
+                item.arrowPressed = dir;         // the chevron stays pressed
+                repaint();
+                h.timer = setTimeout(tick, HOLD_STEP_MS);
+            };
+            h.timer = setTimeout(tick, HOLD_DELAY_MS);
+        };
+    }
+
     McuUiV002DemoScene.prototype._openTest = function() {
         var sm = this.sceneManager;
         if (!sm || typeof SubMenuScene === 'undefined' || sm.current() !== this) return;
         var sim = this._sim, self = this;
         var rows = ['USB-C1 cable', 'USB-C1', 'PD', 'USB-C1 power', 'Battery', 'Power usage', 'Error', 'MCU LEDs'];
         var sub = new SubMenuScene(sm, 'Test', rows, {});
-        sub.setBreadcrumbTrail(['MCU UI - v002', 'Test']);
+        sub.setBreadcrumbTrail(['MCU UI', 'Test']);
         sub.setIgnoreRun(true);
         liftLabels(sub);
         function toggle(item, get, set) {
             item.statusProvider = function() { return get() ? '< ON >' : '< OFF >'; };
             item.onToggle = function() { set(!get()); };
         }
-        function stepper(item, text, onAdjust, atStart, atEnd) {
+        // `repeat`: holding the key keeps stepping (holdRepeat).
+        function stepper(item, text, onAdjust, atStart, atEnd, repeat) {
             item.statusProvider = function() { return '< ' + text() + ' >'; };
             item.onAdjust = onAdjust;
             item.atStart = atStart;
             item.atEnd = atEnd;
+            if (repeat) holdRepeat(item);
         }
         var limit = function() { return sim.pd ? MAX_W : PD_LIMIT_W; };
         for (var i = 0; i < sub.items.length; i++) {
@@ -1926,27 +2055,27 @@ var McuUiV002DemoScene = (function() {
                         sim.desiredW = next;
                     },
                     function() { return Math.min(sim.desiredW, limit()) <= 0; },
-                    function() { return Math.min(sim.desiredW, limit()) >= limit(); });
+                    function() { return Math.min(sim.desiredW, limit()) >= limit(); }, true);
                 break;
             case 'Battery':
                 stepper(item, function() { return sim.charge + '%'; }, function(dir) {
                     sim.charge = Math.max(0, Math.min(100, sim.charge + (dir === 'right' ? 1 : -1)));
                 },
                 function() { return sim.charge <= 0; },
-                function() { return sim.charge >= 100; });
+                function() { return sim.charge >= 100; }, true);
                 break;
             case 'Power usage':
                 stepper(item, function() { return sim.usage.toFixed(2) + 'W'; }, function(dir) {
                     sim.usage = stepValue(sim.usage, dir, USAGE_STEPS, MAX_USAGE_W);
                 },
                 function() { return sim.usage <= 0; },
-                function() { return sim.usage >= MAX_USAGE_W; });
+                function() { return sim.usage >= MAX_USAGE_W; }, true);
                 break;
             case 'Error':
                 toggle(item, function() { return sim.error; }, function(v) { sim.error = v; });
                 break;
             case 'MCU LEDs':
-                // Off: the LEDs go dark and stay untouched.
+                // Off: the power meter goes dark and stays untouched.
                 toggle(item, function() { return sim.leds; }, function(v) {
                     sim.leds = v;
                     if (v) self._ledSent = null; else self._ledsOff();
@@ -1961,10 +2090,12 @@ var McuUiV002DemoScene = (function() {
     // ── Drawing ──────────────────────────────────────────────────
 
     // "in 1h 59m 58s" for the time left, never below zero.
+    // Time left as one number, rounded up: hours from an hour on
+    // ("in 10h" … "in 1h"), then minutes ("in 59m" … "in 1m", "in 0m").
     function timeLeftText(totalS, ms) {
         var s = Math.max(0, totalS - Math.floor(ms / 1000));
-        var h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60;
-        return 'in ' + h + 'h ' + m + 'm ' + (s % 60) + 's';
+        var m = Math.ceil(s / 60);
+        return 'in ' + (m >= 60 ? Math.ceil(m / 60) + 'h' : m + 'm');
     }
 
     // Rows of a char map; `colors` maps a char to a colour, others skip.
@@ -2062,58 +2193,53 @@ var McuUiV002DemoScene = (function() {
         }
     }
 
-    // The faint "Test" button: stock right-button outline (rounded top
-    // left, open on the right), normal black / white while pressed.
-    function drawTestButton(ctx, pressed) {
-        var b = TEST_BTN, y = 144 - b.h;
-        if (pressed) {
-            ctx.fillStyle = '#000';
-            ctx.fillRect(b.x + 3, y, b.w - 3, 1);
-            ctx.fillRect(b.x + 2, y + 1, b.w - 2, 1);
-            ctx.fillRect(b.x + 1, y + 2, b.w - 1, 1);
-            ctx.fillRect(b.x, y + 3, b.w, b.h - 3);
-        } else {
-            ctx.fillStyle = COL_TEST_LINE;
-            ctx.fillRect(b.x + 3, y, b.w - 3, 1);
-            ctx.fillRect(b.x + 2, y + 1, 1, 1);
-            ctx.fillRect(b.x + 1, y + 2, 1, 1);
-            ctx.fillRect(b.x, y + 3, 1, b.h - 3);
+    // One status line `dy` rows below the first, right-aligned.
+    // A status line is a string, or { label, value }: the value right-
+    // aligned, the label STATUS_VALUE_GAP px before it.
+    function statusLineWidth(l) {
+        var H = HaxrCorp4090FlipCTL;
+        if (typeof l === 'string') return H.textWidth(l);
+        return H.textWidth(l.label) + STATUS_VALUE_GAP + H.textWidth(l.value);
+    }
+    function drawStatusText(ctx, l, dy) {
+        var H = HaxrCorp4090FlipCTL, y = STATUS_Y + dy;
+        if (typeof l === 'string') {
+            H.draw(ctx, l, STATUS_RIGHT + 1 - H.textWidth(l), y, COL_STATUS);
+            return;
         }
-        var tw = HaxrCorp4090FlipCTL.textWidth(b.text);
-        HaxrCorp4090FlipCTL.draw(ctx, b.text, b.x + Math.floor((b.w - tw) / 2), y + 2,
-            pressed ? '#fff' : COL_TEST_TEXT);
+        var vx = STATUS_RIGHT + 1 - H.textWidth(l.value);
+        H.draw(ctx, l.value, vx, y, COL_STATUS);
+        H.draw(ctx, l.label, vx - STATUS_VALUE_GAP - H.textWidth(l.label), y, COL_STATUS);
     }
 
-    // "USB-C1 IN: PD Ver2 [12V/36W]", right-aligned; without PD the "PD
-    // Ver2" turns into "×PD" (the × 1 px lower).
-    function drawUsbStatus(ctx, sim, d) {
-        var H = HaxrCorp4090FlipCTL;
-        var volts = d.portW <= 15 ? 5 : d.portW <= 27 ? 9 : 12;
-        var boxText = volts + 'V/' + fmtW(d.portW);
-        var bw = H.textWidth(boxText) + 1 + 2 * BOX.pad;
-        var bx = BOX.right + 1 - bw;
-        ctx.fillStyle = COL_BOX;
-        ctx.fillRect(bx + 2, BOX.y, bw - 4, 1);
-        ctx.fillRect(bx + 1, BOX.y + 1, bw - 2, 1);
-        ctx.fillRect(bx, BOX.y + 2, bw, BOX.h - 4);
-        ctx.fillRect(bx + 1, BOX.y + BOX.h - 2, bw - 2, 1);
-        ctx.fillRect(bx + 2, BOX.y + BOX.h - 1, bw - 4, 1);
-        H.draw(ctx, boxText, bx + BOX.pad, STATUS_Y, '#fff');
-
-        var right = bx - STATUS_GAP;             // text advance ends here
-        var head = 'USB-C1 ' + sim.dir.toUpperCase() + ':';
-        if (sim.pd) {
-            var t = head + ' PD Ver2';
-            H.draw(ctx, t, right - H.textWidth(t) - 1, STATUS_Y, COL_STATUS);
-        } else {
-            // head, 3 px, ×, 1 px, PD
-            var pdW = H.textWidth('PD') + 1;
-            var px = right - pdW;
-            var xx = px - 1 - GLYPH_X[0].length;
-            drawMap(ctx, GLYPH_X, xx, STATUS_Y + 3, { '#': COL_STATUS });
-            H.draw(ctx, 'PD', px, STATUS_Y, COL_STATUS);
-            H.draw(ctx, head, xx - 3 - H.textWidth(head), STATUS_Y, COL_STATUS);
+    // Status lines under the plates, top to bottom:
+    //   - while USB-C1 carries power: "USB-C1 Power In: PD Ver2" and,
+    //     STATUS_VALUE_GAP px on, "12V/36W" (Power Out when it gives
+    //     power; without PD just "USB-C1 Power In:" and "5V/5W");
+    //   - every Settings → Power line that is OFF: "USB-A & USB-C2 5V: OFF".
+    function statusLines(sim, power, d) {
+        var lines = [];
+        if (d.portW > 0) {
+            var volts = d.portW <= 15 ? 5 : d.portW <= 27 ? 9 : 12;
+            lines.push({ label: 'USB-C1 Power ' + (sim.dir === 'in' ? 'In' : 'Out') + ':'
+                                + (sim.pd ? ' PD Ver2' : ''),
+                         value: volts + 'V/' + fmtW(d.portW) });
         }
+        POWER_LINES.forEach(function(l) { if (!power[l.key]) lines.push(l.name + ': OFF'); });
+        return lines;
+    }
+
+    // Right end for the right-swimming fish: the left edge of the status
+    // text they would run into (FISH_TEXT_GAP px before it), else 256.
+    function fishLimit(lines, fish) {
+        var limit = 256, top = fish.y - 1, bottom = fish.y + 1 + FISH_H - 1;
+        lines.forEach(function(t, i) {
+            var inkTop = STATUS_Y + i * STATUS_PITCH + 2, inkBottom = inkTop + 6;
+            if (inkBottom < top || inkTop > bottom) return;
+            var left = STATUS_RIGHT + 1 - statusLineWidth(t);
+            limit = Math.min(limit, left - FISH_TEXT_GAP);
+        });
+        return limit;
     }
 
     function easeInOut(t) {
@@ -2141,17 +2267,25 @@ var McuUiV002DemoScene = (function() {
 
     McuUiV002DemoScene.prototype.render = function(canvas) {
         var ctx = canvas.ctx;
+        // While the help window resizes, only the window moves: the home
+        // screen under it (washed, with its buttons) and both sides'
+        // content were drawn once when the animation started.
+        var ha = this._helpAnim;
+        if (ha && ha.bg && !this._powerMenu) {
+            ctx.drawImage(ha.bg.el, 0, 0);
+            this._drawHelp(canvas);
+            return;
+        }
         var sim = this._sim, d = derive(sim);
         var now = Date.now();
         canvas.clear('#fff');
+        var lines = statusLines(sim, this._power, d);
+        drawHomeBackground(ctx, this._bgImg, now - this._startedAt, lines);
 
-        var dx = this._dolphinX(d.portW > 0, now);
-        var img = this._dolphinImg;
-        if (img && img.complete && img.naturalWidth) {
-            var frame = Math.floor((now - this._startedAt) / DOLPHIN.frameMs) % DOLPHIN.frames;
-            ctx.drawImage(img, 0, frame * DOLPHIN.h, DOLPHIN.w, DOLPHIN.h,
-                dx, DOLPHIN.y, DOLPHIN.w, DOLPHIN.h);
-        }
+        var dx = this._dolphinX(lines.length > 0, now);
+        var df = DOLPHIN.frames[Math.floor((now - this._startedAt) / DOLPHIN.frameMs) % DOLPHIN.frames.length];
+        var img = this._dolphinImg && this._dolphinImg[df.i];
+        if (img && img.complete && img.naturalWidth) ctx.drawImage(img, dx + df.dx, DOLPHIN.y + df.dy);
 
         // Plates start sliding when the state turns active on screen.
         if (d.active && !this._wasActive) this._activeAt = now;
@@ -2161,15 +2295,11 @@ var McuUiV002DemoScene = (function() {
 
         var autoOffS = AUTO_OFF[this._power.autoOff].s;
         if (!d.active && autoOffS > 0) {
-            // Pill: rows inset 2 / 1 at the top and bottom (2 px corners).
-            ctx.fillStyle = COL_PILL;
-            ctx.fillRect(PILL.x + 2, PILL.y, PILL.w - 4, 1);
-            ctx.fillRect(PILL.x + 1, PILL.y + 1, PILL.w - 2, 1);
-            ctx.fillRect(PILL.x, PILL.y + 2, PILL.w, PILL.h - 4);
-            ctx.fillRect(PILL.x + 1, PILL.y + PILL.h - 2, PILL.w - 2, 1);
-            ctx.fillRect(PILL.x + 2, PILL.y + PILL.h - 1, PILL.w - 4, 1);
-            HaxrCorp4090FlipCTL.draw(ctx, 'Auto Power OFF', PILL_TEXT_X, PILL_TEXT_Y, '#fff');
-            HaxrCorp4090FlipCTL.draw(ctx, timeLeftText(autoOffS, now - this._autoOffAt), TIMER_X, TIMER_Y, '#000');
+            if (Icons.auto_power_off_icon) {
+                canvas.drawSprite(Icons.auto_power_off_icon, AUTO_OFF_ICON.x, AUTO_OFF_ICON.y, '#000');
+            }
+            HaxrCorp4090FlipCTL.draw(ctx, 'Power OFF ' + timeLeftText(autoOffS, now - this._autoOffAt),
+                AUTO_OFF_TEXT_X, AUTO_OFF_TEXT_Y, COL_AUTO_OFF);
         }
 
         // "Discharge: 0.03W" — what the battery gives — right-aligned to
@@ -2208,35 +2338,33 @@ var McuUiV002DemoScene = (function() {
             Born2bSportyV2FlipCTL.draw(ctx, pct,
                 PLATE_PCT_RIGHT - Born2bSportyV2FlipCTL.textWidth(pct) + 1, PLATE_PCT_Y, '#fff');
         }
-        if (d.portW > 0) drawUsbStatus(ctx, sim, d);
+        lines.forEach(function(t, i) { drawStatusText(ctx, t, i * STATUS_PITCH); });
 
         HaxrCorp4090FlipCTL.draw(ctx, VERSION, VERSION_X, VERSION_Y, COL_VERSION);
 
         for (var name in BUTTONS) {
             drawButton(ctx, BUTTONS[name], this._pressed === name);
         }
-        drawTestButton(ctx, this._pressed === 'test');
 
-        if (this._helpMenu && !this._helpWin) this._drawHelpMenu(canvas);
-        if (this._helpWin) this._drawHelpWindow(canvas);
+        this._drawHelp(canvas);
         if (this._powerMenu) this._drawPowerMenu(canvas);
     };
 
     // Lays a help page out: draw ops { font | icon, text, x, y } with y
     // from the viewport top, and the content height.
-    var helpLayouts = {};
-    function layoutHelpPage(index) {
-        if (helpLayouts[index]) return helpLayouts[index];
-        var m = HELP_WINDOW, page = HELP_PAGES[index], ops = [];
+    function layoutHelpPage(page) {
+        if (page._layout) return page._layout;
+        var m = HELP_WINDOW, ops = [];
         // Inline icons; gap = blank px on each side (3 is a plain space).
         var H = HaxrCorp4090FlipCTL, icons = {
-            down: { map: HELP_DOWN_ICON, gap: 8 },
+            power: { inlinePower: true, gap: 3 },
             router: { sprite: Icons.router_small, gap: 3 }
         };
         function tokenW(t) {
             var mt = /^\{(\w+)\}$/.exec(t);
             if (!mt) return haxrWidth(t);
             var ic = icons[mt[1]];
+            if (ic.inlinePower) return inlinePower().width;
             return ic.map ? ic.map[0].length : ic.sprite.w;
         }
         function iconOf(t) {
@@ -2262,16 +2390,15 @@ var McuUiV002DemoScene = (function() {
         page.blocks.forEach(function(b) {
             if (b.gap) { y += m.line; return; }
             if (b.qr) {
-                // QR with its lines to the right, the pair centred in the
-                // window; the lines are centred on the QR vertically as a
-                // block (Haxrcorp caps of line 1 to those of the last line:
-                // line × (n−1) + 7 px).
+                // QR with its lines to the right, the pair left-aligned to
+                // the text, 2 px lower than a plain line break; the lines
+                // are centred on the QR vertically as a block (Haxrcorp
+                // caps of line 1 to those of the last line: line × (n−1)
+                // + 7 px).
                 var q = HELP_QR_DOCS, size = q.length * HELP_QR_SCALE;
-                var lines = b.lines || [], n = lines.length, textW = 0;
-                lines.forEach(function(t) { textW = Math.max(textW, haxrWidth(t)); });
-                var blockW = size + (n ? HELP_QR_TEXT_GAP + textW : 0);
-                var qx = m.view.x + Math.floor((m.view.w - blockW) / 2);
-                y += 2;
+                var lines = b.lines || [], n = lines.length;
+                var qx = m.textX;
+                y += 4;
                 ops.push({ qr: q, x: qx, y: y });
                 if (n) {
                     var textH = m.line * (n - 1) + 7;
@@ -2316,19 +2443,8 @@ var McuUiV002DemoScene = (function() {
                 y += m.line;
             });
         });
-        return (helpLayouts[index] = { ops: ops, height: y });
+        return (page._layout = { ops: ops, height: y });
     }
-
-    // The help window's page tabs: the About tabs with a blunt arrow —
-    // the tip's one 5 px row loses its outermost pixel (3 rows of 4).
-    function bluntTab(map, right) {
-        return map.map(function(row) {
-            if ((row.match(/t/g) || []).length !== 5) return row;
-            var i = right ? row.lastIndexOf('t') : row.indexOf('t');
-            return row.slice(0, i) + 'w' + row.slice(i + 1);
-        });
-    }
-    var HELP_TAB = bluntTab(ABOUT_TAB, true), HELP_TAB_LEFT = bluntTab(ABOUT_TAB_LEFT, false);
 
     // Touchpad drag-scrolls the help window: the absolute (x, y, touch)
     // feed of /api/touchpad/xy, read only while the window is open. A
@@ -2386,29 +2502,189 @@ var McuUiV002DemoScene = (function() {
 
     var HELP_HANGING = /^[\w@&]{1,2}$/;
 
+    // Help window geometry for `page`: the full HELP_WINDOW when the page
+    // scrolls; else cut to the content and centred vertically.
+    function helpWinGeom(page) {
+        var m = HELP_WINDOW, lay = layoutHelpPage(page);
+        var viewH = Math.min(m.view.h, lay.height + m.fitPad);
+        var cut = m.view.h - viewH;
+        var h = m.h - cut, y = Math.floor((144 - (h + m.shadow)) / 2);
+        if (!cut) y = m.y;
+        var dy = y - m.y;
+        return {
+            x: m.x, y: y, w: m.w, h: h, band: m.band, radius: m.radius, shadow: m.shadow,
+            iconX: m.iconX, iconY: m.iconY + dy, titleX: m.titleX, titleY: m.titleY + dy,
+            view: { x: m.view.x, y: m.view.y + dy, w: m.view.w, h: viewH }
+        };
+    }
+
     McuUiV002DemoScene.prototype._helpMaxScroll = function(page) {
-        var v = HELP_WINDOW.view;
-        return Math.max(0, layoutHelpPage(page).height - v.h);
+        return Math.max(0, layoutHelpPage(page).height - helpWinGeom(page).view.h);
     };
 
-    McuUiV002DemoScene.prototype._drawHelpWindow = function(canvas) {
-        var ctx = canvas.ctx, m = HELP_WINDOW, hw = this._helpWin, H = HaxrCorp4090FlipCTL;
-        canvas.clear('#fff');
-        drawMenuWindow(canvas, m);
-        drawBadge(ctx, Icons.help_question, m.iconX, m.iconY);
-        // "Help > Quick start": the header follows the page.
-        H.draw(ctx, 'Help > ' + HELP_PAGES[hw.page].title, m.titleX, m.titleY, '#000');
-        var pg = 'Page ' + (hw.page + 1) + '/' + HELP_PAGES.length;
-        H.draw(ctx, pg, m.pageRight - H.textWidth(pg), m.titleY, '#000');
+    // ── Help views and the resize animation between them ────────
 
-        // Content, clipped to the viewport and scrolled.
-        var v = m.view, lay = layoutHelpPage(hw.page);
+    // The open help view: { kind: 'menu', sel } / { kind: 'ports', sel,
+    // top } / { kind: 'page', page, scroll }; null when none is open.
+    McuUiV002DemoScene.prototype._helpView = function() {
+        if (this._helpWin) return { kind: 'page', page: this._helpWin.page, scroll: this._helpWin.scroll };
+        if (this._helpPorts) return { kind: 'ports', sel: this._helpPorts.sel, top: this._helpPorts.top };
+        if (this._helpMenu) return { kind: 'menu', sel: this._helpMenu.sel };
+        return null;
+    };
+
+    // Runs `change` (moving between help views); if it lands on another
+    // view, the window animates there from the old one.
+    McuUiV002DemoScene.prototype._helpGo = function(change) {
+        var from = this._helpView();
+        change.call(this);
+        var to = this._helpView();
+        if (from && to && (from.kind !== to.kind || from.page !== to.page)) {
+            this._helpAnim = { from: from, t0: Date.now() };
+        }
+    };
+
+    // Window geometry of a view: the frame (x, y, w, h, band, radius,
+    // shadow), its header (iconX / iconY, title, titleX / titleY) and
+    // what its body needs.
+    function helpViewGeom(v) {
+        var m = HELP_MENU, g;
+        if (v.kind === 'page') {
+            g = helpWinGeom(v.page);
+            g.title = v.page.crumb;
+            return g;
+        }
+        var title = v.kind === 'menu' ? m.title : HELP_PORTS_TITLE;
+        g = helpListGeom(title, v.kind === 'menu' ? m.items : HELP_PORT_NAMES);
+        g.title = title;
+        g.iconX = g.x + m.icon.dx; g.iconY = g.y + m.icon.dy;
+        g.titleX = g.x + m.titleDx; g.titleY = g.y + m.titleDy;
+        return g;
+    }
+
+    function drawHelpHeader(ctx, g) {
+        drawBadge(ctx, Icons.help_question, g.iconX, g.iconY);
+        HaxrCorp4090FlipCTL.draw(ctx, g.title, g.titleX, g.titleY, '#000');
+    }
+
+    // Everything inside a view's window under the header.
+    function drawHelpBody(canvas, v, g) {
+        if (v.kind === 'page') drawHelpPageBody(canvas, v, g);
+        else drawHelpListBody(canvas, g, v.kind === 'menu' ? HELP_MENU.items : HELP_PORT_NAMES, v.sel, v.top || 0);
+    }
+
+    // Buttons a view keeps clear of the wash: Help under the lists.
+    function drawHelpButtons(ctx, v) {
+        if (v.kind !== 'page') drawButton(ctx, BUTTONS.help, false);
+    }
+
+    // Icons.power_button at 1x on a canvas of its own (built once; every
+    // 2×2 block of the sprite is one pixel, so the nearest pick is exact).
+    var inlinePowerEl = null;
+    function inlinePower() {
+        if (inlinePowerEl) return inlinePowerEl;
+        var ic = Icons.power_button, k = INLINE_POWER_SCALE;
+        var big = document.createElement('canvas');
+        big.width = ic.w; big.height = ic.h;
+        new FlipCanvas(big).drawSprite(ic, 0, 0, '#000');
+        var el = document.createElement('canvas');
+        el.width = Math.ceil(ic.w / k); el.height = Math.ceil(ic.h / k);
+        var cx = el.getContext('2d');
+        cx.imageSmoothingEnabled = false;
+        cx.drawImage(big, 0, 0, el.width * k, el.height * k, 0, 0, el.width, el.height);
+        return (inlinePowerEl = el);
+    }
+
+    // Offscreen layers for the animation: 0 the washed home screen, 1 / 2
+    // the old / new content (glyph sprites ignore globalAlpha, so each
+    // side is drawn whole and blitted faded).
+    var helpLayers = [];
+    function helpLayer(i) {
+        if (!helpLayers[i]) {
+            var el = document.createElement('canvas');
+            el.width = 256; el.height = 144;
+            helpLayers[i] = new FlipCanvas(el);
+        }
+        helpLayers[i].ctx.clearRect(0, 0, 256, 144);
+        return helpLayers[i];
+    }
+
+    // The open help view over the home screen behind a half-transparent
+    // wash. Right after a move between views the window resizes from
+    // the old frame to the new one over HELP_ANIM_MS (eased); the old
+    // content fades out over the first half, the new one in over the
+    // second, both clipped to the moving frame. A header that doesn't
+    // change rides along at full opacity.
+    McuUiV002DemoScene.prototype._drawHelp = function(canvas) {
+        var v = this._helpView();
+        if (!v) return;
+        var ctx = canvas.ctx, a = this._helpAnim;
+        if (!(a && a.bg)) {
+            ctx.fillStyle = HELP_WASH;
+            ctx.fillRect(0, 0, canvas.w, canvas.h);
+            drawHelpButtons(ctx, v);
+        }
+        var g = helpViewGeom(v);
+        var p = a ? Math.min(1, (Date.now() - a.t0) / HELP_ANIM_MS) : 1;
+        if (p >= 1) {
+            if (a) {
+                // Done: the final window over the kept background now, one
+                // full paint next frame (the home screen moved on).
+                this._helpAnim = null;
+                repaint();
+            }
+            drawMenuWindow(canvas, g);
+            drawHelpHeader(ctx, g);
+            drawHelpBody(canvas, v, g);
+            return;
+        }
+        // Ask for the next frame right away: the main loop paints on every
+        // display frame (requestAnimationFrame), not on the 25 fps timer.
+        repaint();
+        var f = helpViewGeom(a.from), e = easeInOut(p);
+        var sameTitle = f.title === g.title;
+        if (!a.bg) {
+            // First frame: keep the washed home screen and both sides'
+            // content for the rest of the animation.
+            a.bg = helpLayer(0);
+            a.bg.ctx.drawImage(canvas.el, 0, 0);
+            a.layers = [[a.from, f], [v, g]].map(function(side, i) {
+                var c = helpLayer(i + 1);
+                if (!sameTitle) drawHelpHeader(c.ctx, side[1]);
+                drawHelpBody(c, side[0], side[1]);
+                return c;
+            });
+        }
+        var lerp = function(k) { return Math.round(f[k] + (g[k] - f[k]) * e); };
+        var frame = { x: lerp('x'), y: lerp('y'), w: lerp('w'), h: lerp('h'), band: lerp('band'),
+                      radius: g.radius, shadow: lerp('shadow') };
+        drawMenuWindow(canvas, frame);
+        if (sameTitle) {
+            drawHelpHeader(ctx, { title: g.title, iconX: lerp('iconX'), iconY: lerp('iconY'),
+                                  titleX: lerp('titleX'), titleY: lerp('titleY') });
+        }
+        [1 - 2 * p, 2 * p - 1].forEach(function(alpha, i) {
+            if (alpha <= 0) return;
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(frame.x + 1, frame.y + 1, frame.w - 2, frame.h - 2);
+            ctx.clip();
+            ctx.globalAlpha = Math.min(1, alpha);
+            ctx.drawImage(a.layers[i].el, 0, 0);
+            ctx.restore();
+        });
+    };
+
+    // A help page's content, clipped to its viewport and scrolled, and
+    // its scrollbar when it doesn't fit.
+    function drawHelpPageBody(canvas, hv, m) {
+        var ctx = canvas.ctx, v = m.view, lay = layoutHelpPage(hv.page);
         ctx.save();
         ctx.beginPath();
         ctx.rect(v.x, v.y, v.w, v.h);
         ctx.clip();
         lay.ops.forEach(function(op) {
-            var y = v.y + op.y - hw.scroll;
+            var y = v.y + op.y - hv.scroll;
             if (y > v.y + v.h || y < v.y - 16) return;
             if (op.qr) {
                 // Whole pixels per module, so the code stays sharp.
@@ -2420,6 +2696,8 @@ var McuUiV002DemoScene = (function() {
                         }
                     }
                 }
+            } else if (op.icon && op.icon.inlinePower) {
+                ctx.drawImage(inlinePower(), op.x, y - 1);
             } else if (op.icon) {
                 // Icons sit on the Haxrcorp caps (rows y+2..y+8).
                 if (op.icon.map) drawMap(ctx, op.icon.map, op.x, y + 2, { '#': '#000' });
@@ -2432,29 +2710,17 @@ var McuUiV002DemoScene = (function() {
         });
         ctx.restore();
 
-        // Scrollbar (only when the page doesn't fit).
-        var maxS = this._helpMaxScroll(hw.page), b = m.bar;
-        if (maxS > 0) {
-            ctx.fillStyle = '#000';
-            for (var i = 0; i < b.h; i += 2) ctx.fillRect(b.x, b.y + i, 1, 1);
-            var range = b.h - 2 * b.pad;
-            var th = Math.max(5, Math.round(range * v.h / lay.height));
-            var ty = b.y + b.pad + Math.round((range - th) * hw.scroll / maxS);
-            ctx.fillRect(b.x - 1, ty, 3, th);
-        }
+        drawHelpScrollbar(canvas, m, lay.height, v.h, hv.scroll);
+    }
 
-        // Page tabs, flashing on a press.
-        var drawTab = function(right, down) {
-            var map = right ? HELP_TAB : HELP_TAB_LEFT, w = map[0].length;
-            drawMap(ctx, map, right ? 256 - w : 0, ABOUT.tabY,
-                down ? { '#': '#000', w: '#000', t: '#fff' } : { '#': '#000', w: '#fff', t: '#000' });
-        };
-        if (hw.page > 0 || hw.press === 'left') drawTab(false, hw.press === 'left');
-        if (hw.page < HELP_PAGES.length - 1 || hw.press === 'right') drawTab(true, hw.press === 'right');
-
-        // Quick start points at the Power button below the window.
-        if (hw.page === 0) drawButton(ctx, BUTTONS.power, false);
-    };
+    // Scrollbar as in the app's other modals (UI.Scrollbar: dotted line,
+    // 3 px thumb, 1 px thumb pad): 4 px in from the frame's right edge,
+    // from 4 px under the band to 4 px above the bottom line. Shown only
+    // when total > visible.
+    function drawHelpScrollbar(canvas, f, total, visible, offset) {
+        new UI.Scrollbar(total, visible, offset)
+            .render(canvas, f.x + f.w - 4, f.y + f.band + 4, f.h - f.band - 8, 1);
+    }
 
     // A menu window (Power / Help): the rounded frame, its shadow (the
     // same shape filled, m.shadow px right and down) and the header band.
@@ -2472,26 +2738,68 @@ var McuUiV002DemoScene = (function() {
         fillBand(canvas.ctx, m.x, m.y, m.w, m.band);
     }
 
-    McuUiV002DemoScene.prototype._drawHelpMenu = function(canvas) {
-        var ctx = canvas.ctx, m = HELP_MENU, sel = this._helpMenu.sel;
-        ctx.fillStyle = HELP_WASH;
-        ctx.fillRect(0, 0, canvas.w, canvas.h);
-        drawButton(ctx, BUTTONS.help, false);
-        drawMenuWindow(canvas, m);
-        drawBadge(ctx, Icons.help_question, m.iconX, m.iconY);
-        HaxrCorp4090FlipCTL.draw(ctx, m.title, m.titleX, m.titleY, '#000');
-        var f = m.rowFrame;
-        for (var i = 0; i < m.items.length; i++) {
-            var dy = i * m.rowPitch;
+    // Ink width of `text` in `font` (first to last inked column), cached.
+    var inkWidths = {};
+    function inkWidth(font, name, text) {
+        var key = name + '|' + text;
+        if (inkWidths[key] !== undefined) return inkWidths[key];
+        var c = document.createElement('canvas');
+        c.width = font.textWidth(text) + 16; c.height = 24;
+        var cx = c.getContext('2d');
+        font.draw(cx, text, 4, 4, '#000');
+        var d = cx.getImageData(0, 0, c.width, c.height).data, lo = -1, hi = -1;
+        for (var x = 0; x < c.width; x++) {
+            for (var y = 0; y < c.height; y++) {
+                if (d[(y * c.width + x) * 4 + 3] > 0) { if (lo < 0) lo = x; hi = x; break; }
+            }
+        }
+        return (inkWidths[key] = lo < 0 ? 0 : hi - lo + 1);
+    }
+
+    // Help list window geometry for `title` and `items`: width from the
+    // longest label in bold, wide enough for the title too; centred
+    // (with its shadow) across the screen and in the space above the
+    // Power button.
+    function helpListGeom(title, items) {
+        var m = HELP_MENU, labelW = 0;
+        items.forEach(function(t) { labelW = Math.max(labelW, inkWidth(Helvb08Regular, 'b8', t)); });
+        var selW = 1 + m.gapSelText + labelW + m.gapTextSel + 1;
+        var w = m.selDx + selW + 1 + m.gapSelFrame + 1;      // + the selector's 1 px shadow
+        w = Math.max(w, m.titleDx + inkWidth(HaxrCorp4090FlipCTL, 'hx', title) + m.titleRightPad);
+        var rows = Math.min(m.rows, items.length);
+        var h = m.selDy + (rows - 1) * m.rowPitch + m.selH + 1 + m.gapBottom + 1;
+        var x = Math.floor((256 - (w + m.shadow)) / 2);
+        var y = Math.floor((BUTTONS.power.y - (h + m.shadow)) / 2);
+        return {
+            x: x, y: y, w: w, h: h, band: m.band, radius: m.radius, shadow: m.shadow,
+            rows: rows, selX: x + m.selDx, selW: selW
+        };
+    }
+
+    // A help list's rows from `top` (up to HELP_MENU.rows), the
+    // selection framed and bold, and a dotted scrollbar when they don't
+    // all fit.
+    function drawHelpListBody(canvas, g, items, sel, top) {
+        var ctx = canvas.ctx, m = HELP_MENU;
+        for (var r = 0; r < g.rows && top + r < items.length; r++) {
+            var i = top + r, dy = r * m.rowPitch;
             if (i === sel) {
                 new MenuSelectorFrame({
-                    x: f.x, y: f.y + dy, width: f.w, height: f.h,
+                    x: g.selX, y: g.y + m.selDy + dy, width: g.selW, height: m.selH,
                     anchorH: 'left', anchorV: 'top',
                     strokeColor: '#000', showStroke: true, showFill: false
                 }).render(canvas);
             }
-            (i === sel ? Helvb08Regular : HaxrCorp4090FlipCTL).draw(ctx, m.items[i], m.textX, m.textY + dy, '#000');
+            (i === sel ? Helvb08Regular : HaxrCorp4090FlipCTL).draw(ctx, items[i],
+                g.x + m.textDx, g.y + m.textDy + dy, '#000');
         }
+        drawHelpScrollbar(canvas, g, items.length, g.rows, top);
+    }
+
+    // Opens `page` in the help window, at its top.
+    McuUiV002DemoScene.prototype._openHelpPage = function(page) {
+        this._helpWin = { page: page, scroll: 0 };
+        this._helpTouchStart();
     };
 
     McuUiV002DemoScene.prototype._drawPowerMenu = function(canvas) {
