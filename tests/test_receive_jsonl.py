@@ -49,6 +49,31 @@ class ReceiverValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "finite numbers"):
             validate_batch((json.dumps(item) + "\n").encode())
 
+    def test_rejects_invalid_metric_unit(self):
+        item = record()
+        item["metrics"]["temp_soc"]["unit"] = "%"
+        with self.assertRaisesRegex(ValueError, "invalid unit"):
+            validate_batch((json.dumps(item) + "\n").encode())
+
+    def test_rejects_unsupported_metric_name(self):
+        item = record()
+        item["metrics"] = {"voltage": {"value": 5, "unit": "V"}}
+        with self.assertRaisesRegex(ValueError, "unsupported metric"):
+            validate_batch((json.dumps(item) + "\n").encode())
+
+    def test_rejects_unsupported_source(self):
+        item = record()
+        item["source"] = "unknown-source"
+        with self.assertRaisesRegex(ValueError, "unsupported source"):
+            validate_batch((json.dumps(item) + "\n").encode())
+
+    def test_rejects_mixed_device_batch(self):
+        second = record(1)
+        second["device_id"] = "edge-test-02"
+        body = (json.dumps(record()) + "\n" + json.dumps(second) + "\n").encode()
+        with self.assertRaisesRegex(ValueError, "one device_id"):
+            validate_batch(body)
+
     def test_rejects_empty_batch(self):
         with self.assertRaisesRegex(ValueError, "no samples"):
             validate_batch(b"\n")
