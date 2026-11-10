@@ -14,11 +14,14 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 SCHEMA_VERSION = "neural-link.edge.sample.v1"
+MAX_BODY_BYTES = 1_048_576
+METRIC_UNITS = {"temp_": "Cel", "load_": "%", "freq_": "MHz"}
 
 
 def validate_jsonl(content: str) -> int:
-    """Validate every non-empty line and return the number of samples."""
+    """Validate the full sample contract and return the number of samples."""
     count = 0
+    batch_device_id = None
     for line_number, line in enumerate(content.splitlines(), start=1):
         if not line.strip():
             continue
@@ -30,22 +33,46 @@ def validate_jsonl(content: str) -> int:
             raise ValueError(f"line {line_number}: sample must be a JSON object")
         if record.get("schema") != SCHEMA_VERSION:
             raise ValueError(f"line {line_number}: unsupported schema")
-        if not isinstance(record.get("device_id"), str) or not record["device_id"].strip():
+        device_id = record.get("device_id")
+        if not isinstance(device_id, str) or not device_id.strip():
             raise ValueError(f"line {line_number}: missing device_id")
+        if batch_device_id is None:
+            batch_device_id = device_id
+        elif device_id != batch_device_id:
+            raise ValueError(f"line {line_number}: a batch must contain one device_id")
+        if record.get("source") != "rk3576-system-monitor":
+            raise ValueError(f"line {line_number}: unsupported source")
         sequence = record.get("sequence")
         if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 0:
             raise ValueError(f"line {line_number}: sequence must be a non-negative integer")
         elapsed = record.get("elapsed_s")
-        if isinstance(elapsed, bool) or not isinstance(elapsed, (int, float)) or not math.isfinite(elapsed) or elapsed < 0:
+        if (isinstance(elapsed, bool) or not isinstance(elapsed, (int, float))
+                or not math.isfinite(elapsed) or elapsed < 0):
             raise ValueError(f"line {line_number}: elapsed_s must be finite and non-negative")
-        if not isinstance(record.get("metrics"), dict) or not record["metrics"]:
+        metrics = record.get("metrics")
+        if not isinstance(metrics, dict) or not metrics:
             raise ValueError(f"line {line_number}: metrics must be a non-empty object")
+        for name, metric in metrics.items():
+            if not isinstance(name, str) or not isinstance(metric, dict):
+                raise ValueError(f"line {line_number}: invalid metric")
+            expected_unit = next(
+                (unit for prefix, unit in METRIC_UNITS.items() if name.startswith(prefix)),
+                None,
+            )
+            if expected_unit is None:
+                raise ValueError(f"line {line_number}: unsupported metric name")
+            value = metric.get("value")
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value)):
+                raise ValueError(f"line {line_number}: metric values must be finite numbers")
+            if metric.get("unit") != expected_unit:
+                raise ValueError(f"line {line_number}: invalid unit for metric {name}")
         count += 1
     return count
 
 
 def _is_loopback(hostname: str) -> bool:
-    if hostname == "localhost":
+    if hostname.lower() == "localhost":
         return True
     try:
         return ipaddress.ip_address(hostname).is_loopback
@@ -62,8 +89,8 @@ def send_jsonl(
 ) -> int:
     """POST one validated JSONL batch; plain HTTP is opt-in for loopback only."""
     parsed = urlparse(endpoint)
-    if not parsed.hostname:
-        raise ValueError("endpoint must include a hostname")
+    if not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
+        raise ValueError("endpoint must be a valid URL without credentials or a fragment")
     if parsed.scheme != "https" and not (
         parsed.scheme == "http" and allow_insecure_loopback and _is_loopback(parsed.hostname)
     ):
@@ -78,6 +105,8 @@ def send_jsonl(
         return 0
 
     body = content.encode("utf-8")
+    if len(body) > MAX_BODY_BYTES:
+        raise ValueError(f"batch exceeds the {MAX_BODY_BYTES}-byte receiver limit")
     request = Request(
         endpoint,
         data=body,
@@ -91,9 +120,8 @@ def send_jsonl(
     )
     try:
         with urlopen(request, timeout=timeout) as response:
-            status = response.status
-            if not 200 <= status < 300:
-                raise RuntimeError(f"receiver returned HTTP {status}")
+            if not 200 <= response.status < 300:
+                raise RuntimeError(f"receiver returned HTTP {response.status}")
     except HTTPError as exc:
         raise RuntimeError(f"receiver returned HTTP {exc.code}") from exc
     except URLError as exc:
