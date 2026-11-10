@@ -257,7 +257,19 @@ var MenuScene = (function() {
             'Linux loading'
         ], {
             'MCU UI':        function() { return new McuUiV002DemoScene(sm); },
-            'Linux loading': function() { return new LinuxLoadingDemoScene(sm); }
+            'Linux loading': function() { return linuxLoadingMenu(sm); }
+        });
+    }
+
+    // Testing → UI Demos → Linux loading: the clip alone, or with the
+    // power meter LEDs following it.
+    function linuxLoadingMenu(sm) {
+        return new SubMenuScene(sm, 'Linux loading', [
+            'Powermeter - OFF',
+            'Powermeter - ON'
+        ], {
+            'Powermeter - OFF': function() { return new LinuxLoadingDemoScene(sm); },
+            'Powermeter - ON':  function() { return new LinuxLoadingDemoScene(sm, { meter: true }); }
         });
     }
 
