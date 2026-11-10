@@ -526,6 +526,29 @@ var McuUiV002DemoScene = (function() {
         moveMs: 350
     };
 
+    // Bubbles over the dolphin, as in the previous swim animation
+    // (dolphin-new-swim-smile_sheet.png: 14 frames at 2 fps, its bubbles
+    // gray): per frame the bubbles shown, bubble_mid (4×4) / bubble_small
+    // (3×3) at (x, y) from the dolphin's place (x from DOLPHIN's x, which
+    // sits 1 px right of the old sheet's), with the gray they had — drawn
+    // black at opacity 1 - gray / 255, so they fade as they rise.
+    var BUBBLE_FRAME_MS = 500;
+    var BUBBLE_FRAMES = [
+        [], [],
+        [['mid', 102, 13, 58]],
+        [['mid', 100, 6, 108], ['small', 103, 16, 133]],
+        [['mid', 97, 0, 215]],
+        [],
+        [['small', 104, 13, 108]],
+        [['small', 102, 3, 200], ['mid', 102, 13, 106]],
+        [['mid', 98, 6, 192]],
+        [], [],
+        [['mid', 5, 18, 78]],
+        [['mid', 8, 9, 135]],
+        [['mid', 4, 1, 214]]
+    ];
+    var BUBBLE_FILES = { mid: 'bubble_mid', small: 'bubble_small' };
+
     // Home screen background (assets/MCU_UI/MCU_Home_screen_assets),
     // drawn under the dolphin and the rest of the UI, bottom to top:
     //   - back: the sea, static at (0, 23);
@@ -614,6 +637,7 @@ var McuUiV002DemoScene = (function() {
         this._usbFresh = false;                  // a new id is present
         this._dolphinImg = null;                 // sleepd images, by DOLPHIN.files index
         this._bgImg = {};                        // home background sprites, by name
+        this._bubbleImg = {};                    // bubble sprites: mid / small
         this._dolphinLeft = null;                // null: place without moving
         this._dolphinFrom = DOLPHIN.centerX;
         this._dolphinMoveAt = 0;
@@ -1698,6 +1722,11 @@ var McuUiV002DemoScene = (function() {
                 im.onload = function() { self._dolphinImg[i] = im; repaint(); };
                 im.src = DOLPHIN.dir + name + '.png' + bust;
             });
+            Object.keys(BUBBLE_FILES).forEach(function(k) {
+                var im = new Image();
+                im.onload = function() { self._bubbleImg[k] = im; repaint(); };
+                im.src = DOLPHIN.dir + BUBBLE_FILES[k] + '.png' + bust;
+            });
             BG_FILES.forEach(function(name) {
                 var im = new Image();
                 im.onload = function() { self._bgImg[name] = im; repaint(); };
@@ -1705,21 +1734,23 @@ var McuUiV002DemoScene = (function() {
             });
         }
         if (this._timer) clearInterval(this._timer);
-        var lastTick = -1, lastSec = -1, lastFish = -1;
+        var lastTick = -1, lastSec = -1, lastFish = -1, lastBub = -1;
         this._timer = setInterval(function() {
             // Every frame while the plates slide or the dolphin moves, else
-            // on each dolphin / fish frame and each countdown second (the
+            // on each dolphin / fish / bubble frame and each countdown second (the
             // help window's resize asks for frames itself, see _drawHelp).
             var now = Date.now();
             var tick = Math.floor((now - self._startedAt) / DOLPHIN.frameMs);
             var sec = Math.floor((now - self._autoOffAt) / 1000);
             var fish = Math.floor((now - self._startedAt) / FISH_FRAME_MS);
+            var bub = Math.floor((now - self._startedAt) / BUBBLE_FRAME_MS);
             if (now - self._activeAt < SLIDE_MS + FRAME_MS
                     || now - self._dolphinMoveAt < DOLPHIN.moveMs + FRAME_MS
-                    || tick !== lastTick || sec !== lastSec || fish !== lastFish) {
+                    || tick !== lastTick || sec !== lastSec || fish !== lastFish || bub !== lastBub) {
                 lastTick = tick;
                 lastSec = sec;
                 lastFish = fish;
+                lastBub = bub;
                 repaint();
             }
         }, FRAME_MS);
@@ -2286,6 +2317,14 @@ var McuUiV002DemoScene = (function() {
         var df = DOLPHIN.frames[Math.floor((now - this._startedAt) / DOLPHIN.frameMs) % DOLPHIN.frames.length];
         var img = this._dolphinImg && this._dolphinImg[df.i];
         if (img && img.complete && img.naturalWidth) ctx.drawImage(img, dx + df.dx, DOLPHIN.y + df.dy);
+        var bubbles = BUBBLE_FRAMES[Math.floor((now - this._startedAt) / BUBBLE_FRAME_MS) % BUBBLE_FRAMES.length];
+        for (var bi = 0; bi < bubbles.length; bi++) {
+            var b = bubbles[bi], bim = this._bubbleImg[b[0]];
+            if (!bim || !bim.complete || !bim.naturalWidth) continue;
+            ctx.globalAlpha = 1 - b[3] / 255;
+            ctx.drawImage(bim, dx + b[1], DOLPHIN.y + b[2]);
+            ctx.globalAlpha = 1;
+        }
 
         // Plates start sliding when the state turns active on screen.
         if (d.active && !this._wasActive) this._activeAt = now;
