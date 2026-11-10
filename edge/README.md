@@ -28,9 +28,11 @@ python3 edge/receive_jsonl.py --host 127.0.0.1 --port 8080
 
 The receiver listens at `/v1/edge/samples`. It requires bearer authentication,
 `application/x-ndjson`, a matching SHA-256 `Idempotency-Key`, and a body no larger
-than 1 MiB. It validates the entire batch before inserting anything. Samples and
-idempotency keys are stored in SQLite in a transaction. Replayed batches are
-acknowledged as duplicates and are not inserted again.
+than 1 MiB. It validates the entire batch before inserting anything. A batch must
+contain samples from exactly one device and must use the documented source and metric
+name/unit pairs (`temp_*=Cel`, `load_*= %`, `freq_*=MHz`). Samples and idempotency
+keys are stored in SQLite in a transaction. Replayed batches are acknowledged as
+duplicates and are not inserted again.
 
 The default bind address is loopback (`127.0.0.1`). The built-in server uses HTTP and
 is for local development only. For a remote pilot, deploy behind a TLS reverse proxy,
@@ -50,9 +52,12 @@ python3 edge/send_jsonl.py results/test_run_<timestamp>/neural_link.jsonl \
 ```
 
 The sender rejects plain HTTP by default and rejects non-loopback HTTP even when the
-development flag is supplied. Remote endpoints must use HTTPS. The sender uses bearer
-authentication, a content hash as idempotency key, a timeout, and no automatic retries.
-Credentials are read from environment variables and are never printed.
+development flag is supplied. Remote endpoints must use HTTPS. Before opening a
+connection, the sender validates the complete sample schema, enforces the same
+single-device and metric-unit rules as the receiver, and rejects payloads larger than
+1 MiB. It uses bearer authentication, a content hash as idempotency key, and a timeout;
+automatic retries are intentionally disabled. Credentials are read from environment
+variables and are never printed.
 
 ## 4. Tests
 
@@ -60,9 +65,9 @@ Credentials are read from environment variables and are never printed.
 python3 -m unittest discover -s tests -v
 ```
 
-Tests cover export, validation, authentication, media type, idempotency, and receiver
-persistence behavior. Run the complete repository test suite and hardware checks before
-using this on a board.
+Tests cover export, sender/receiver schema validation, metric units, batch consistency,
+authentication, media type, payload bounds, idempotency, and receiver persistence.
+Run the complete repository test suite and hardware checks before using this on a board.
 
 ## Deployment boundary
 
