@@ -206,9 +206,9 @@ var MenuScene = (function() {
     function testingMenu(sm) {
         return new SubMenuScene(sm, 'Testing', [
             'Kickstarter demo',
+            'UI Demos',
             'Power Meter',
             'Screen backlight',
-            'UI Demos',
             'Screen',
             'Screen for photos',
             'Input',
@@ -253,33 +253,11 @@ var MenuScene = (function() {
     // submenu. Add new "* - UI demo" entries here as they land.
     function demoMenu(sm) {
         return new SubMenuScene(sm, 'UI Demos', [
-            'Boot menu',
-            'MCU UI'
+            'MCU UI',
+            'Linux loading'
         ], {
-            'Boot menu': function() { return bootMenuDemosMenu(sm); },
-            'MCU UI':    function() { return mcuUiDemosMenu(sm); }
-        });
-    }
-
-    // Testing → UI Demos → MCU UI: the MCU UI design iterations.
-    function mcuUiDemosMenu(sm) {
-        return new SubMenuScene(sm, 'MCU UI', [
-            'MCU UI - v001',
-            'MCU UI - v002'
-        ], {
-            'MCU UI - v001': function() { return new PowerMenuUIDemoScene(sm); },
-            'MCU UI - v002': function() { return new McuUiV002DemoScene(sm); }
-        });
-    }
-
-    // Testing → UI Demos → Boot menu: the boot-menu design iterations.
-    function bootMenuDemosMenu(sm) {
-        return new SubMenuScene(sm, 'Boot menu', [
-            'Boot menu - UI demo',
-            'Boot Menu v3'
-        ], {
-            'Boot menu - UI demo': function() { return new UIDemoScene(sm); },
-            'Boot Menu v3':        function() { return new BootMenuV2DemoScene(sm); }
+            'MCU UI':        function() { return new McuUiV002DemoScene(sm); },
+            'Linux loading': function() { return new LinuxLoadingDemoScene(sm); }
         });
     }
 
