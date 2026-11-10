@@ -51,6 +51,31 @@ class ValidateJsonlTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "metrics"):
             validate_jsonl(json.dumps(record))
 
+    def test_rejects_invalid_metric_unit(self):
+        record = sample()
+        record["metrics"]["temp_soc"]["unit"] = "%"
+        with self.assertRaisesRegex(ValueError, "invalid unit"):
+            validate_jsonl(json.dumps(record))
+
+    def test_rejects_non_numeric_metric(self):
+        record = sample()
+        record["metrics"]["temp_soc"]["value"] = "31.5"
+        with self.assertRaisesRegex(ValueError, "finite numbers"):
+            validate_jsonl(json.dumps(record))
+
+    def test_rejects_mixed_device_batch(self):
+        second = sample(1)
+        second["device_id"] = "edge-test-02"
+        content = json.dumps(sample()) + "\n" + json.dumps(second)
+        with self.assertRaisesRegex(ValueError, "one device_id"):
+            validate_jsonl(content)
+
+    def test_rejects_unsupported_source(self):
+        record = sample()
+        record["source"] = "unknown-source"
+        with self.assertRaisesRegex(ValueError, "unsupported source"):
+            validate_jsonl(json.dumps(record))
+
 
 class SendJsonlTests(unittest.TestCase):
     def setUp(self):
@@ -91,6 +116,19 @@ class SendJsonlTests(unittest.TestCase):
     def test_rejects_plain_http_without_opt_in(self):
         with self.assertRaisesRegex(ValueError, "HTTPS"):
             send_jsonl(self.path, "http://127.0.0.1:8080/ingest", "secret")
+
+    def test_rejects_url_with_embedded_credentials(self):
+        with self.assertRaisesRegex(ValueError, "without credentials"):
+            send_jsonl(self.path, "https://user:pass@collector.example/ingest", "secret")
+
+    def test_rejects_batch_over_receiver_limit_before_network_call(self):
+        oversized = sample()
+        oversized["metrics"] = {"temp_" + ("x" * (1_048_600)): {"value": 1, "unit": "Cel"}}
+        self.path.write_text(json.dumps(oversized) + "\n", encoding="utf-8")
+        with patch("edge.send_jsonl.urlopen") as mocked:
+            with self.assertRaisesRegex(ValueError, "receiver limit"):
+                send_jsonl(self.path, "https://collector.example/ingest", "secret")
+        mocked.assert_not_called()
 
     def test_requires_token(self):
         with self.assertRaisesRegex(ValueError, "token is required"):
