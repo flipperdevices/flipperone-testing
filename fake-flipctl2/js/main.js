@@ -266,7 +266,7 @@
             'Voice recorder':     function(sm) { return new VoiceRecorderScene(sm); },
             'Internet radio':     function(sm) { return new InternetRadioScene(sm); },
             'Wi-Fi':              function(sm) { return new WifiScene(sm); },
-            'MCU UI':             function(sm) { return new McuUiV002DemoScene(sm); },
+            'MCU UI 2.0':         function(sm) { return new McuUiV002DemoScene(sm); },
             'Wi-Fi scanner':      function(sm) { return new WifiScannerDemoScene(sm); },
             'Wi-Fi scanner v2':   function(sm) { return new WifiScannerV2DemoScene(sm); }
         };

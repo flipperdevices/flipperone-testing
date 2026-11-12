@@ -1,7 +1,7 @@
 /**
  * McuUiV002DemoScene
  *
- * Testing → UI Demos → MCU UI. Design-only mock of the MCU UI,
+ * Testing → UI Demos → MCU UI 2.0. Design-only mock of the MCU UI,
  * pixel-matched to the design mock. No status bar.
  *
  *   - Top left: the gray Auto Power OFF icon and the time left as one
@@ -55,10 +55,9 @@
  *     wins over them, as in the demos. They go dark when the app closes
  *     (the override stays lit).
  *
- * While the app is open it takes the hardware Power button from the
- * MCU (POST /api/mcu/power-key, MCU register 0x0210): a press comes in
- * as the 'power' action and flashes the Power button instead of opening
- * the MCU's menu. Leaving the app gives the button back.
+ * The hardware Power button stays with the MCU, so the app's Power is
+ * on PTT (A): it acts as the 'power' action (C on a keyboard does too)
+ * and flashes the on-screen Power button.
  *
  * Back pops (one page at a time; on the home screen it leaves the app).
  * Z (esc) goes straight to the home screen from anywhere in the app.
@@ -285,13 +284,8 @@ var McuUiV002DemoScene = (function() {
     // nothing redraws them otherwise.
     var LED_RESEND_MS = 3000;
     var FRAME_MS = 40;                           // repaint while sliding
-    // The hardware Power button belongs to this app while it's open
-    // (POST /api/mcu/power-key): it arrives as the 'power' action and
-    // flashes the Power button. The server lease runs out after 6 s
-    // without a renewal, so it's renewed every POWER_KEY_RENEW_MS.
-    var POWER_KEY_RENEW_MS = 2000;
 
-    // Power Menu (C or the hardware Power button on the home screen): a
+    // Power Menu (PTT / C on the home screen): a
     // window with a drop shadow over the washed home screen — header band
     // with power_menu_icon and "Power Menu", then Start / Power OFF (up /
     // down pick, the picked one bold in a selector frame). The Power
@@ -373,7 +367,7 @@ var McuUiV002DemoScene = (function() {
             { p: 'Plug in your screen or TV to get the picture up to 4K\u00a0@\u00a0120Hz.' }
         ] },
         { title: 'ETH0 and ETH1', blocks: [
-            { p: '1 Gbps each. Launch the {router} Router with different port configurations of WAN, LAN or Bridge mode' }
+            { p: '1 Gbps Ethernet ports. By default, ETH0 is WAN and ETH1 is LAN, bridged with Wi-Fi. More port configurations are available in the {router} Router profile.' }
         ] },
         { title: 'M.2', blocks: [
             { p: 'Hidden behind the Back Plate. Use screwdriver to instal M.2 expansion modules: cellular modems, Wi-Fi, SDR, NVMe SSDs, GNSS modules, AI accelerators, and other M.2 modules.' },
@@ -607,8 +601,8 @@ var McuUiV002DemoScene = (function() {
 
     function McuUiV002DemoScene(sceneManager) {
         this.sceneManager    = sceneManager || null;
-        this.displayName     = 'MCU UI';
-        this.breadcrumbTitle = 'MCU UI';
+        this.displayName     = 'MCU UI 2.0';
+        this.breadcrumbTitle = 'MCU UI 2.0';
         this._startedAt = 0;
         this._timer = null;
         this._pressed = null;                    // button name while flashing
@@ -621,7 +615,6 @@ var McuUiV002DemoScene = (function() {
         this._ledTimer = null;
         this._ledSent = null;                    // last colours sent, by name
         this._ledSentAt = 0;                     // last full send
-        this._powerKeyTimer = null;
         this._usbTimer = null;
         // Settings → Power values (fake: nothing on the device changes
         // except the home screen's Auto Power OFF countdown).
@@ -834,16 +827,6 @@ var McuUiV002DemoScene = (function() {
         this._ledSent = c;
         PowerMeterLeds.send(changed);
     };
-
-    function postPowerKey(toCpu) {
-        try {
-            fetch('/api/mcu/power-key', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ to_cpu: toCpu })
-            }).catch(function() { /* no MCU (desktop preview) */ });
-        } catch (e) { /* ignore */ }
-    }
 
     // Every power meter LED off; with `keepOverride`, Testing → Power
     // Meter's override (if set) stays lit instead, as the demos leave it.
@@ -1179,15 +1162,36 @@ var McuUiV002DemoScene = (function() {
                 'Haptic: ok', 'Power Delivery: ok', 'Charger: ok', 'Gauge: ok',
                 'Touchpad: ok']
     };
+    // After Starting CPU: Linux booting, endlessly, on white — the
+    // Flipper head logo, a black pill bar with a white runner sweeping
+    // left to right through it, and "Starting Linux" with its dots.
+    var LINUX_BOOT = {
+        afterLastLineMs: 500,                    // Starting CPU stays this long after its last line
+        logo: 'assets/MCU_UI/flipper_head_logo.png', logoX: 85, logoY: 20,
+        // Bar x 79..176, y 91..100; rows inset by BAR_INSET from the ends.
+        barX: 79, barY: 91, barW: 98, barInset: [2, 1, 0, 0, 0, 0, 0, 0, 1, 2],
+        // Runner: 35 × 8, its rows inset by runInset; it runs off one end
+        // and in at the other at runPxPerS, clipped to the bar's inside
+        // (the bar shape less 1 px all round, corners too: chanInset
+        // from the bar's ends per runner row), so a 1 px black stroke
+        // stays around it everywhere.
+        runY: 92, runW: 35, runInset: [2, 1, 0, 0, 0, 0, 1, 2],
+        chanInset: [3, 2, 1, 1, 1, 1, 2, 3], runPxPerS: 150,
+        // Born2bSporty, black, ink x 82.. (centred with all three dots),
+        // caps rows 116..125.
+        title: 'Starting Linux', titleX: 82, titleY: 113
+    };
     // The boot screen in two flavours, on the same background (logo,
     // serial, firmware; no title), both with the check list typed in
     // line by line under the title:
     //   'self'  — Settings → System → Self Check: "Self Check";
     //   'start' — Start in the Power Menu: "Starting CPU" with its three
     //             dots filling in one by one, over and over.
+    // 'start' then turns into the Linux boot screen (LINUX_BOOT) for
+    // good, LINUX_BOOT.afterLastLineMs after its last check line.
     // Back returns.
     function bootScene(mode) {
-        var img = null, startedAt = 0, timer = null, S = SELF_CHECK;
+        var img = null, logo = null, startedAt = 0, timer = null, S = SELF_CHECK;
         var isSelf = mode === 'self';
         return {
             breadcrumbTitle: isSelf ? 'Self Check' : 'Starting CPU',
@@ -1196,6 +1200,11 @@ var McuUiV002DemoScene = (function() {
                 var im = new Image();
                 im.onload = function() { img = im; repaint(); };
                 im.src = S.src + '?v=' + startedAt;
+                if (!isSelf) {
+                    var lg = new Image();
+                    lg.onload = function() { logo = lg; repaint(); };
+                    lg.src = LINUX_BOOT.logo + '?v=' + startedAt;
+                }
                 if (timer) clearInterval(timer);
                 timer = setInterval(function() {
                     repaint();
@@ -1216,6 +1225,12 @@ var McuUiV002DemoScene = (function() {
             },
             render: function(canvas) {
                 var ctx = canvas.ctx, t = Date.now() - startedAt;
+                var linuxAt = S.lines.length * S.lineMs + LINUX_BOOT.afterLastLineMs;
+                if (!isSelf && t >= linuxAt) {
+                    drawLinuxBoot(canvas, logo, t - linuxAt);
+                    repaint();                   // runner moves every display frame
+                    return;
+                }
                 canvas.clear('#000');
                 if (img && img.complete && img.naturalWidth) ctx.drawImage(img, 0, 0);
                 var title = isSelf ? S.selfTitle
@@ -1227,6 +1242,29 @@ var McuUiV002DemoScene = (function() {
                 }
             }
         };
+    }
+
+    // The Linux boot screen at `t` ms into it (see LINUX_BOOT).
+    function drawLinuxBoot(canvas, logo, t) {
+        var ctx = canvas.ctx, L = LINUX_BOOT, i;
+        canvas.clear('#fff');
+        if (logo && logo.naturalWidth) ctx.drawImage(logo, L.logoX, L.logoY);
+        ctx.fillStyle = '#000';
+        for (i = 0; i < L.barInset.length; i++) {
+            ctx.fillRect(L.barX + L.barInset[i], L.barY + i, L.barW - 2 * L.barInset[i], 1);
+        }
+        // Runner: from fully left of the channel to fully right of it.
+        var x0 = L.barX + 1, x1 = L.barX + L.barW - 2;         // widest inside row
+        var span = x1 - x0 + 1 + L.runW;
+        var rx = x0 - L.runW + Math.floor(t * L.runPxPerS / 1000) % span;
+        ctx.fillStyle = '#fff';
+        for (i = 0; i < L.runInset.length; i++) {
+            var a = Math.max(L.barX + L.chanInset[i], rx + L.runInset[i]);
+            var b = Math.min(L.barX + L.barW - 1 - L.chanInset[i], rx + L.runW - 1 - L.runInset[i]);
+            if (b >= a) ctx.fillRect(a, L.runY + i, b - a + 1, 1);
+        }
+        var dots = '...'.slice(0, Math.floor(t / SELF_CHECK.dotMs) % 4);
+        Born2bSportyV2FlipCTL.draw(ctx, L.title + dots, L.titleX, L.titleY, '#000');
     }
 
     // Settings → About: pages flipped with left / right (ABOUT.pages),
@@ -1759,10 +1797,6 @@ var McuUiV002DemoScene = (function() {
             // First send after a demo app's deferred PowerMeterLeds.stop().
             setTimeout(function() { self._ledTick(); }, 0);
         }
-        if (!this._powerKeyTimer) {
-            this._powerKeyTimer = setInterval(function() { postPowerKey(true); }, POWER_KEY_RENEW_MS);
-            postPowerKey(true);
-        }
         if (!this._usbTimer) {
             var poll = function() {
                 getJson('/api/usbc', function(d) {
@@ -1785,11 +1819,6 @@ var McuUiV002DemoScene = (function() {
         this._helpTouchStop();
         if (this._ledTimer) { clearInterval(this._ledTimer); this._ledTimer = null; }
         if (this._usbTimer) { clearInterval(this._usbTimer); this._usbTimer = null; }
-        if (this._powerKeyTimer) {
-            clearInterval(this._powerKeyTimer);
-            this._powerKeyTimer = null;
-            postPowerKey(false);
-        }
         if (this._sim.leds) this._ledsOff(true);
         releaseNetLeds();
         this._unhookPowerKey();
@@ -1808,7 +1837,7 @@ var McuUiV002DemoScene = (function() {
                 var orig = scene.handleInput;
                 scene._mcuPowerHooked = true;
                 scene.handleInput = function(action) {
-                    if (action === 'power') { self._powerFromAnywhere(); return; }
+                    if (action === 'power' || action === 'ptt') { self._powerFromAnywhere(); return; }
                     if (action === 'esc') { self._goHome(); return; }
                     return orig ? orig.apply(this, arguments) : undefined;
                 };
@@ -1858,6 +1887,7 @@ var McuUiV002DemoScene = (function() {
 
     McuUiV002DemoScene.prototype.handleInput = function(action) {
         var self = this;
+        if (action === 'ptt') action = 'power';  // Power lives on PTT (A)
         // Z (esc) on the home screen just closes what's open on it; Back
         // still leaves the app.
         if (action === 'esc') { this._goHome(); return; }
@@ -2038,7 +2068,7 @@ var McuUiV002DemoScene = (function() {
         var sim = this._sim, self = this;
         var rows = ['USB-C1 cable', 'USB-C1', 'PD', 'USB-C1 power', 'Battery', 'Power usage', 'Error', 'MCU LEDs'];
         var sub = new SubMenuScene(sm, 'Test', rows, {});
-        sub.setBreadcrumbTrail(['MCU UI', 'Test']);
+        sub.setBreadcrumbTrail(['MCU UI 2.0', 'Test']);
         sub.setIgnoreRun(true);
         liftLabels(sub);
         function toggle(item, get, set) {

@@ -253,10 +253,10 @@ var MenuScene = (function() {
     // submenu. Add new "* - UI demo" entries here as they land.
     function demoMenu(sm) {
         return new SubMenuScene(sm, 'UI Demos', [
-            'MCU UI',
+            'MCU UI 2.0',
             'Linux loading'
         ], {
-            'MCU UI':        function() { return new McuUiV002DemoScene(sm); },
+            'MCU UI 2.0':    function() { return new McuUiV002DemoScene(sm); },
             'Linux loading': function() { return linuxLoadingMenu(sm); }
         });
     }
