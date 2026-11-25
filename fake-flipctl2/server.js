@@ -3925,6 +3925,304 @@ async function refreshWifi() {
     };
 }
 
+// ── /api/ble-apple ──────────────────────────────────────────────
+// Passive BLE scanner for Apple Continuity adverts (Testing → Apple
+// BLE). The controller is driven directly over HCI — LE Set Extended
+// Scan Parameters / Enable, passive, duplicate filter OFF — because
+// BlueZ discovery filters duplicates and interleaves BR/EDR inquiry,
+// which leaves too few RSSI samples for tracking. `btmon` streams every
+// advertising report; this module parses address, RSSI and the raw AD
+// bytes, keeps the Apple (company 0x004C) ones and decodes their TLVs.
+// Passive scanning transmits nothing.
+//
+// Apple devices rotate their random address every few minutes. A
+// "chain" follows one physical device across rotations: a new address
+// is linked to an address of the same kind that went silent right
+// around the moment it appeared, with a similar RSSI (lower score =
+// better match). `amb` marks a link where a second candidate scored
+// almost as well.
+//
+// The scan runs only while the client polls GET /api/ble-apple; no
+// poll for BLE_APPLE_IDLE_MS (or POST /api/ble-apple/stop) stops it,
+// frees the radio and drops all state.
+var BLE_APPLE_IDLE_MS   = 8000;
+var BLE_APPLE_KEEP_MS   = 180000;  // forget chains silent this long
+var BLE_APPLE_SETTLE_MS = 3000;    // wait before linking a new address
+var BLE_APPLE_WARMUP_MS = 5000;    // no linking for addresses seen this early
+var bleApple = null;
+
+function bleAppleReset() {
+    bleApple = {
+        proc: null, timer: null, lastPoll: bleApple ? bleApple.lastPoll : 0,
+        error: null, startedAt: 0, packets: 0,
+        devices: {}, chains: {}, nextChainId: 1,
+        cur: null, hex: false, partial: ''
+    };
+}
+bleAppleReset();
+
+function bleAppleHci(args) {
+    try {
+        execSync('hcitool cmd ' + args, { timeout: 3000, stdio: 'ignore' });
+        return true;
+    } catch (e) { return false; }
+}
+
+function bleAppleStart() {
+    if (bleApple.proc) return;
+    bleAppleReset();
+    bleApple.lastPoll = Date.now();
+    bleApple.startedAt = Date.now();
+    var proc;
+    try {
+        proc = spawn('stdbuf', ['-oL', 'btmon'], { stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch (e) {
+        bleApple.error = 'btmon failed to start';
+        return;
+    }
+    bleApple.proc = proc;
+    proc.stdout.setEncoding('utf8');
+    proc.stdout.on('data', function(chunk) {
+        var text = bleApple.partial + chunk;
+        var lines = text.split('\n');
+        bleApple.partial = lines.pop();
+        for (var i = 0; i < lines.length; i++) bleAppleLine(lines[i]);
+    });
+    proc.on('error', function() { bleApple.error = 'btmon not available'; });
+    proc.on('exit', function() {
+        if (bleApple.proc === proc) { bleApple.proc = null; bleAppleHciScan(false); }
+    });
+    // Disable first: enabling an already enabled scan is rejected.
+    bleAppleHciScan(false);
+    // Own address public, accept all, 1M PHY: passive, 30 ms interval/window.
+    var ok = bleAppleHci('0x08 0x0041 00 00 01 00 30 00 30 00') && bleAppleHciScan(true);
+    if (!ok) bleApple.error = 'HCI scan setup failed';
+    bleApple.timer = setInterval(bleAppleTick, 1000);
+}
+
+function bleAppleHciScan(on) {
+    // Enable, Filter_Duplicates = 0, Duration = 0, Period = 0.
+    return bleAppleHci('0x08 0x0042 ' + (on ? '01' : '00') + ' 00 00 00 00 00');
+}
+
+function bleAppleStop() {
+    var proc = bleApple.proc;
+    if (bleApple.timer) clearInterval(bleApple.timer);
+    bleApple.proc = null;
+    bleApple.timer = null;
+    if (proc) { try { proc.kill(); } catch (e) {} }
+    bleAppleHciScan(false);
+    bleAppleReset();
+}
+
+// One btmon output line. A report looks like
+//   > HCI Event: LE Meta Event ...
+//         Address: 43:30:3D:1A:23:E2 (Resolvable)
+//         RSSI: -53 dBm (0xcb)
+//         Data length: 0x13
+//         02 01 1a 02 0a 0c 0c ff 4c 00 10 07 37 1f ca 42  ........L...7..B
+//         69 da 08                                         i..
+// (one event may carry several reports, each starting at "Address:").
+function bleAppleLine(line) {
+    var m;
+    if (/^[<>@=]/.test(line)) { bleAppleFlush(); return; }
+    if (bleApple.hex) {
+        m = /^\s+((?:[0-9a-f]{2} ){0,15}[0-9a-f]{2})(?:\s{2}|\s*$)/.exec(line);
+        if (m && bleApple.cur) { bleApple.cur.data += m[1].replace(/ /g, ''); return; }
+        bleApple.hex = false;
+    }
+    if ((m = /^\s+Address: ([0-9A-F:]{17})/.exec(line))) {
+        bleAppleFlush();
+        bleApple.cur = { addr: m[1], rssi: null, data: '' };
+        return;
+    }
+    if (!bleApple.cur) return;
+    if ((m = /^\s+RSSI: (-?\d+) dBm/.exec(line))) { bleApple.cur.rssi = +m[1]; return; }
+    if (/^\s+Data length: /.test(line)) bleApple.hex = true;
+}
+
+function bleAppleFlush() {
+    var r = bleApple.cur;
+    bleApple.cur = null;
+    bleApple.hex = false;
+    if (!r || r.rssi === null || r.rssi > 20 || !r.data) return;
+    var tlv = bleAppleParseAd(r.data);
+    if (!tlv) return;
+    bleApple.packets++;
+    bleAppleUpdate(r.addr, r.rssi, tlv);
+}
+
+// AD structures → Apple TLV map { type: Buffer }, or null if no Apple data.
+function bleAppleParseAd(hex) {
+    var b = Buffer.from(hex, 'hex'), i = 0;
+    while (i < b.length) {
+        var len = b[i];
+        if (!len || i + 1 + len > b.length) break;
+        if (b[i + 1] === 0xff && len >= 3 && b[i + 2] === 0x4c && b[i + 3] === 0x00) {
+            var tlv = {}, j = i + 4, end = i + 1 + len;
+            while (j + 1 < end) {
+                var t = b[j], l = b[j + 1];
+                if (j + 2 + l > end) break;
+                tlv[t] = b.slice(j + 2, j + 2 + l);
+                j += 2 + l;
+            }
+            return tlv;
+        }
+        i += 1 + len;
+    }
+    return null;
+}
+
+// Nearby Info action codes (low nibble of the first byte).
+var BLE_APPLE_ACTIONS = {
+    0: 'activity unknown', 1: 'reporting off', 3: 'idle', 5: 'audio, locked',
+    7: 'screen on', 9: 'video', 10: 'watch unlocked', 11: 'recent use',
+    13: 'driving', 14: 'call'
+};
+var BLE_APPLE_AIRPODS = {
+    '0220': 'AirPods', '0f20': 'AirPods 2', '1320': 'AirPods 3',
+    '0e20': 'AirPods Pro', '1420': 'AirPods Pro 2', '0a20': 'AirPods Max',
+    '2720': 'AirPods Pro 3',
+    '0320': 'Powerbeats3', '0520': 'BeatsX', '0620': 'Beats Solo3',
+    '0920': 'Beats Studio3', '0b20': 'Powerbeats Pro', '0c20': 'Beats Solo Pro',
+    '0d20': 'Powerbeats 4', '1020': 'Beats Flex', '1120': 'Beats Studio Buds',
+    '1220': 'Beats Fit Pro'
+};
+var BLE_APPLE_FINDMY_BATT = ['full', 'medium', 'low', 'critical'];
+
+function bleAppleHex(buf) { return buf.toString('hex'); }
+
+// TLV map → { kind, label, detail, fp }. `fp` holds the fields that do
+// not change while a device sits still; it helps pick the right chain.
+function bleAppleDecode(tlv) {
+    var d, nib, v;
+    if ((d = tlv[0x07]) && d.length >= 8) {
+        var model = bleAppleHex(d.slice(1, 3));
+        var name = BLE_APPLE_AIRPODS[model] || ('model ' + model);
+        var batt = function(n) { return n <= 10 ? (n * 10) + '%' : '-'; };
+        v = 'buds ' + batt(d[4] >> 4) + '/' + batt(d[4] & 15) +
+            ' case ' + batt(d[5] & 15) + (d[5] >> 4 ? ' chg' : '') +
+            ' col ' + d[7];
+        return { kind: 'AirPods', label: name, detail: v, fp: 'ap' + model + ':' + d[7] };
+    }
+    if ((d = tlv[0x10]) && d.length >= 1) {
+        nib = d[0] & 15;
+        v = (BLE_APPLE_ACTIONS[nib] || ('act ' + nib)) +
+            ' f' + (d[0] >> 4).toString(16) + (d.length > 1 ? ' d' + d[1].toString(16) : '');
+        if (tlv[0x0c]) v += ' handoff';
+        return { kind: 'Nearby', label: 'iPhone/iPad/Mac', detail: v, fp: 'ni' + (d[0] >> 4) };
+    }
+    if ((d = tlv[0x09]) && d.length >= 6) {
+        v = 'IP ' + d[2] + '.' + d[3] + '.' + d[4] + '.' + d[5];
+        return { kind: 'AirPlay', label: 'AirPlay', detail: v, fp: 'apl' + v };
+    }
+    if ((d = tlv[0x12]) && d.length >= 1) {
+        v = (d.length <= 2 ? 'near owner' : 'separated') +
+            ' batt ' + BLE_APPLE_FINDMY_BATT[(d[0] >> 6) & 3];
+        return { kind: 'FindMy', label: 'Find My', detail: v, fp: 'fm' + ((d[0] >> 6) & 3) };
+    }
+    if ((d = tlv[0x0f]) && d.length >= 2) {
+        return { kind: 'Action', label: 'Nearby Action', detail: 'type 0x' + d[1].toString(16), fp: 'na' + d[1] };
+    }
+    if (tlv[0x02]) return { kind: 'iBeacon', label: 'iBeacon', detail: bleAppleHex(tlv[0x02].slice(0, 16)), fp: 'ib' + bleAppleHex(tlv[0x02]) };
+    var types = Object.keys(tlv).map(function(t) { return (+t).toString(16); }).join(',');
+    return { kind: 'Apple', label: 'Apple', detail: 'tlv ' + types, fp: 'a' + types };
+}
+
+function bleAppleUpdate(addr, rssi, tlv) {
+    var now = Date.now(), info = bleAppleDecode(tlv);
+    var dev = bleApple.devices[addr];
+    if (!dev) {
+        dev = bleApple.devices[addr] = {
+            addr: addr, first: now, last: now, n: 0, rssi: rssi, chain: 0,
+            kind: info.kind, label: info.label, detail: info.detail, fp: info.fp
+        };
+    }
+    // One address can send several advert types (e.g. Nearby Info and
+    // Find My); the first kind it was seen with stays its kind.
+    if (info.kind === dev.kind) { dev.label = info.label; dev.detail = info.detail; dev.fp = info.fp; }
+    dev.last = now;
+    dev.n++;
+    dev.rssi = Math.round(dev.rssi * 0.7 + rssi * 0.3);
+    dev.raw = rssi;
+}
+
+function bleAppleTick() {
+    var now = Date.now(), devs = bleApple.devices, chains = bleApple.chains, k;
+    if (now - bleApple.lastPoll > BLE_APPLE_IDLE_MS) { bleAppleStop(); return; }
+    var fresh = [];
+    for (k in devs) {
+        var d = devs[k];
+        if (!d.chain && now - d.first >= BLE_APPLE_SETTLE_MS) fresh.push(d);
+    }
+    fresh.sort(function(a, b) { return a.first - b.first; });
+    fresh.forEach(function(d) {
+        var best = null, bestScore = 1e9, second = 1e9;
+        // Addresses heard in the first seconds are the initial
+        // discovery, not rotations.
+        var canLink = d.first - bleApple.startedAt > BLE_APPLE_WARMUP_MS;
+        for (var id in chains) {
+            if (!canLink) break;
+            var c = chains[id], old = devs[c.cur];
+            if (!old || old.kind !== d.kind || old.n < 3) continue;
+            // Silent for several of its own advert intervals, so it is
+            // gone rather than between two sparse beacons.
+            var interval = (old.last - old.first) / (old.n - 1);
+            if (now - old.last < Math.max(BLE_APPLE_SETTLE_MS, 3 * interval)) continue;
+            var gap = d.first - old.last;
+            if (gap < -Math.max(1000, interval) || gap > 5000) continue;  // not a hand-over
+            var score = Math.abs(gap) / 1000 + Math.abs(old.rssi - d.rssi) / 6 +
+                        (old.fp === d.fp ? 0 : 1);
+            if (score < bestScore) { second = bestScore; bestScore = score; best = c; }
+            else if (score < second) second = score;
+        }
+        if (best && bestScore < 3) {
+            best.addrs.push(d.addr);
+            best.cur = d.addr;
+            best.rot++;
+            best.amb = second - bestScore < 0.5;
+            d.chain = best.id;
+        } else {
+            var id2 = bleApple.nextChainId++;
+            chains[id2] = { id: id2, addrs: [d.addr], cur: d.addr, rot: 0, amb: false, first: d.first };
+            d.chain = id2;
+        }
+    });
+    for (k in chains) {
+        var c2 = chains[k], cur = devs[c2.cur];
+        if (!cur || now - cur.last > BLE_APPLE_KEEP_MS) {
+            c2.addrs.forEach(function(a) { delete devs[a]; });
+            delete chains[k];
+        }
+    }
+    for (k in devs) {
+        if (!devs[k].chain && now - devs[k].last > BLE_APPLE_KEEP_MS) delete devs[k];
+    }
+}
+
+function bleAppleSnapshot() {
+    var now = Date.now(), list = [];
+    for (var id in bleApple.chains) {
+        var c = bleApple.chains[id], d = bleApple.devices[c.cur];
+        if (!d) continue;
+        list.push({
+            id: c.id, kind: d.kind, label: d.label, detail: d.detail,
+            rssi: d.rssi, raw: d.raw, ago: now - d.last, addr: d.addr,
+            rot: c.rot, amb: c.amb, age: now - c.first
+        });
+    }
+    list.sort(function(a, b) {
+        var sa = a.ago > 10000, sb = b.ago > 10000;
+        if (sa !== sb) return sa ? 1 : -1;
+        return b.rssi - a.rssi;
+    });
+    return {
+        running: !!bleApple.proc, error: bleApple.error,
+        packets: bleApple.packets, uptime: bleApple.startedAt ? now - bleApple.startedAt : 0,
+        chains: list
+    };
+}
+
 // ── /api/wifi/scan ──────────────────────────────────────────────
 // Visible-networks list. `nmcli device wifi list` returns whatever
 // scan results NetworkManager already has cached; we don't trigger
@@ -4340,6 +4638,19 @@ var server = http.createServer(function(req, res) {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ ok: true }));
         });
+        return;
+    }
+    if (req.url === '/api/ble-apple' && req.method === 'GET') {
+        bleApple.lastPoll = Date.now();
+        bleAppleStart();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(bleAppleSnapshot()));
+        return;
+    }
+    if (req.url === '/api/ble-apple/stop' && req.method === 'POST') {
+        bleAppleStop();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
         return;
     }
     if (req.url === '/api/wifi') {

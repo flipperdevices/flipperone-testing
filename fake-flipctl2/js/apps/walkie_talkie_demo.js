@@ -62,6 +62,10 @@ var WalkieTalkieDemoScene = (function() {
     var IDLE_PATH    = '/assets/apps/walkie_talkie/idle.png';
     var IDLE_V2_PATH = '/assets/apps/walkie_talkie/idle_kickstarter.png';
     var PRESSED_V2_PATH = '/assets/apps/walkie_talkie/pressed_kickstarter.png';
+    // The idle art's status strip has a "5G" + signal bars icon baked
+    // in (x 3..9, y 119..140, white on the black strip); it is painted
+    // over with the strip's black, so no 5G shows.
+    var HIDE_5G = { x: 3, y: 119, w: 7, h: 22 };
     // v2 transmit: thin white power strip where the RSSI column was, and
     // the microphone's input gain while the app is open.
     var TX_STRIP_X = 63, TX_STRIP_W = 3;           // centred on x = 64
@@ -444,6 +448,8 @@ var WalkieTalkieDemoScene = (function() {
         canvas.clear('#fff');
         if (this._idleImg && this._idleImg.complete && this._idleImg.naturalWidth > 0) {
             ctx.drawImage(this._idleImg, 0, 0);
+            ctx.fillStyle = '#000';
+            ctx.fillRect(HIDE_5G.x, HIDE_5G.y, HIDE_5G.w, HIDE_5G.h);
         }
         var tx = this._ptt();
         if (tx && this._pressedImg

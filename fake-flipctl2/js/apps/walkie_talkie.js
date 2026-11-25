@@ -20,6 +20,10 @@
 var WalkieTalkieScene = (function() {
     var IDLE_PATH    = '/assets/apps/walkie_talkie/idle.png';
     var PRESSED_PATH = '/assets/apps/walkie_talkie/pressed.png';
+    // The idle art's status strip has a "5G" + signal bars icon baked
+    // in (x 3..9, y 119..140, white on the black strip); it is painted
+    // over with the strip's black, so no 5G shows.
+    var HIDE_5G = { x: 3, y: 119, w: 7, h: 22 };
 
     // ── Animation sequence for Signal_level_01 ────────────────────
     // Channel 0's "real-audio" path runs a hand-authored timeline
@@ -624,6 +628,8 @@ var WalkieTalkieScene = (function() {
             ? window.input.isHeld('ptt') : false;
         if (this._idleImg && this._idleImg.complete && this._idleImg.naturalWidth > 0) {
             canvas.ctx.drawImage(this._idleImg, 0, 0);
+            canvas.ctx.fillStyle = '#000';
+            canvas.ctx.fillRect(HIDE_5G.x, HIDE_5G.y, HIDE_5G.w, HIDE_5G.h);
         }
         if (held && this._pressedImg
                 && this._pressedImg.complete && this._pressedImg.naturalWidth > 0) {

@@ -505,8 +505,8 @@ var McuUiV002DemoScene = (function() {
 
     // Sleeping dolphin (MCU_Home_screen_assets/sleepd_*.png, transparent
     // around the body), over the home background and under the rest of
-    // the UI. Timing and offsets from the design GIF (dolphin-mcu.gif):
-    // sleepd 1 → 2 → 3 → 2, FRAME_MS each, looped; sleepd_1 at
+    // the UI. Offsets from the design GIF (dolphin-mcu.gif):
+    // sleepd 1 → 2 → 3 → 2, frameMs each (2 fps, like the bubbles), looped; sleepd_1 at
     // (centerX, y), sleepd_2 at (+1, +1), sleepd_3 at (+1, +2). Centred
     // on the screen; moves to leftX while any status line shows.
     var DOLPHIN = {
@@ -515,7 +515,7 @@ var McuUiV002DemoScene = (function() {
         // Loop order: file index and offset from (x, y).
         frames: [{ i: 0, dx: 0, dy: 0 }, { i: 1, dx: 1, dy: 1 },
                  { i: 2, dx: 1, dy: 2 }, { i: 1, dx: 1, dy: 1 }],
-        frameMs: 400,
+        frameMs: 500,
         y: 41, centerX: 72, leftX: 10,
         moveMs: 350
     };
@@ -553,11 +553,11 @@ var McuUiV002DemoScene = (function() {
     //     fishl* to the left from 256 to -34 (y 75); their two frames
     //     swap every 3 frames and they bob y ±1 (one step every 4
     //     frames: 0, -1, 0, +1);
-    //   - foliage: two frames swapping every 800 ms (as in the GIF),
-    //     at (1, 83).
+    //   - foliage: two frames swapping every 500 ms (2 fps, like the
+    //     dolphin and the bubbles), at (1, 83).
     var BG_DIR = 'assets/MCU_UI/MCU_Home_screen_assets/background/';
     var BG_BACK = { x: 0, y: 23 };
-    var BG_FOLIAGE = { x: 1, y: 83, frameMs: 800 };
+    var BG_FOLIAGE = { x: 1, y: 83, frameMs: 500 };
     var FISH_FRAME_MS = 200;                     // 5 fps
     var FISH_STEP = 5;                           // px per frame
     var FISH_SWAP_FRAMES = 3;
@@ -1171,15 +1171,16 @@ var McuUiV002DemoScene = (function() {
         // Bar x 79..176, y 91..100; rows inset by BAR_INSET from the ends.
         barX: 79, barY: 91, barW: 98, barInset: [2, 1, 0, 0, 0, 0, 0, 0, 1, 2],
         // Runner: 35 × 8, its rows inset by runInset; it runs off one end
-        // and in at the other at runPxPerS, clipped to the bar's inside
+        // and in at the other once every runPeriodMs, clipped to the bar's inside
         // (the bar shape less 1 px all round, corners too: chanInset
         // from the bar's ends per runner row), so a 1 px black stroke
         // stays around it everywhere.
         runY: 92, runW: 35, runInset: [2, 1, 0, 0, 0, 0, 1, 2],
-        chanInset: [3, 2, 1, 1, 1, 1, 2, 3], runPxPerS: 150,
+        chanInset: [3, 2, 1, 1, 1, 1, 2, 3], runPeriodMs: 1000,
         // Born2bSporty, black, ink x 82.. (centred with all three dots),
         // caps rows 116..125.
-        title: 'Starting Linux', titleX: 82, titleY: 113
+        title: 'Starting Linux', titleX: 82, titleY: 113,
+        dotMs: 250                               // dots: none → 1 → 2 → 3, a 1 s cycle
     };
     // The boot screen in two flavours, on the same background (logo,
     // serial, firmware; no title), both with the check list typed in
@@ -1256,14 +1257,14 @@ var McuUiV002DemoScene = (function() {
         // Runner: from fully left of the channel to fully right of it.
         var x0 = L.barX + 1, x1 = L.barX + L.barW - 2;         // widest inside row
         var span = x1 - x0 + 1 + L.runW;
-        var rx = x0 - L.runW + Math.floor(t * L.runPxPerS / 1000) % span;
+        var rx = x0 - L.runW + Math.floor((t % L.runPeriodMs) * span / L.runPeriodMs);
         ctx.fillStyle = '#fff';
         for (i = 0; i < L.runInset.length; i++) {
             var a = Math.max(L.barX + L.chanInset[i], rx + L.runInset[i]);
             var b = Math.min(L.barX + L.barW - 1 - L.chanInset[i], rx + L.runW - 1 - L.runInset[i]);
             if (b >= a) ctx.fillRect(a, L.runY + i, b - a + 1, 1);
         }
-        var dots = '...'.slice(0, Math.floor(t / SELF_CHECK.dotMs) % 4);
+        var dots = '...'.slice(0, Math.floor(t / L.dotMs) % 4);
         Born2bSportyV2FlipCTL.draw(ctx, L.title + dots, L.titleX, L.titleY, '#000');
     }
 

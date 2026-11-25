@@ -223,8 +223,10 @@ var MenuScene = (function() {
             'UI Builder live preview',
             'UI PNG viewer',
             'GPIO',
+            'Apple BLE',
             'Switch to fake-flipctl'
         ], {
+            'Apple BLE': function() { return new AppleBleScene(sm); },
             'Screen': function() { return new ScreenTestScene(); },
             'Screen for photos': function() { return new ScreenForPhotosScene(sm); },
             'Screen backlight': function() { return BacklightTestScene(sm); },
@@ -299,7 +301,8 @@ var MenuScene = (function() {
             'FlipSDR',
             'TV Media Box',
             '5G Modem',
-            'Ethernet Sniffer'
+            'Ethernet Sniffer',
+            'Katakana'
         ], {
             'Wi-Fi scanner': function() { return wifiScannerVersionsMenu(sm); },
             'Walkie Talkie': function() { return walkieVersionsMenu(sm); },
@@ -308,7 +311,8 @@ var MenuScene = (function() {
             'FlipSDR': function() { return flipSdrVersionsMenu(sm); },
             'TV Media Box': function() { return new TvMediaBoxDemoScene(sm); },
             '5G Modem': function() { return modem5gVersionsMenu(sm); },
-            'Ethernet Sniffer': function() { return new EthernetSnifferDemoScene(sm); }
+            'Ethernet Sniffer': function() { return new EthernetSnifferDemoScene(sm); },
+            'Katakana': function() { return katakanaMenu(sm); }
         });
     }
 
@@ -323,7 +327,8 @@ var MenuScene = (function() {
             'FlipSDR v1',
             'Desktop Mode',
             'TV Media Box',
-            'Ethernet Sniffer'
+            'Ethernet Sniffer',
+            'Katakana'
         ], {
             'Wi-Fi Scanner v7': function() { return new WifiScannerV7DemoScene(sm); },
             '5G Modem Low-Full': function() { return new Modem5gDemoScene(sm); },
@@ -333,7 +338,20 @@ var MenuScene = (function() {
             'FlipSDR v1': function() { return FlipSdrBandsMenu(sm); },
             'Desktop Mode': function() { return new DesktopComputerV3DemoScene(sm); },
             'TV Media Box': function() { return new TvMediaBoxDemoScene(sm); },
-            'Ethernet Sniffer': function() { return new EthernetSnifferDemoScene(sm); }
+            'Ethernet Sniffer': function() { return new EthernetSnifferDemoScene(sm); },
+            'Katakana': function() { return katakanaMenu(sm); }
+        });
+    }
+
+    // Kickstarter demo → Katakana: the teaser clip's last frame, or the
+    // clip looped.
+    function katakanaMenu(sm) {
+        return new SubMenuScene(sm, 'Katakana', [
+            'Static',
+            'Anim'
+        ], {
+            'Static': function() { return new KatakanaDemoScene(sm); },
+            'Anim': function() { return new KatakanaDemoScene(sm, { anim: true }); }
         });
     }
 
